@@ -1,0 +1,22 @@
+[
+  {
+    "id": "lead_1781806977675",
+    "userId": "customer_sim_99",
+    "name": "Unknown User",
+    "channel": "instagram",
+    "cart": [
+      {
+        "productId": 77114,
+        "name": "ARSENAL HOME 26/27",
+        "price": 849,
+        "size": "XXL",
+        "qty": 2
+      }
+    ],
+    "address": "Alice Smith, Flat 401, Sapphire Heights, Mumbai 400053, Ph: 9819928374",
+    "status": "checkout",
+    "requiresEscalation": false,
+    "createdAt": "2026-06-18T18:22:57.675Z",
+    "updatedAt": "2026-06-18T18:22:57.675Z"
+  }
+]

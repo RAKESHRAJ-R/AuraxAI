@@ -1,0 +1,20 @@
+{
+  "name": "theaurax-ai-sales-assistant",
+  "version": "1.0.0",
+  "description": "AI Sales Assistant for Theaurax.in",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "sync": "node src/services/woocommerce.js --sync",
+    "test-agent": "node src/test_agent.js",
+    "test-whatsapp": "node src/test_whatsapp.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "openai": "^4.82.0",
+    "pdfkit": "^0.19.1"
+  }
+}

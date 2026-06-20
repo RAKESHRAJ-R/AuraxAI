@@ -1,0 +1,44 @@
+[
+  {
+    "category": "COD & Payment",
+    "keywords": ["cod", "cash on delivery", "payment methods", "pay", "gpay", "phonepe", "upi"],
+    "question": "Do you support Cash on Delivery (COD) or online payments?",
+    "answer": "Yes, we support both Cash on Delivery (COD) and Online Payments (UPI, GPAY, PhonePe, Cards). For online payments, there is no extra charge. For COD, there is a flat extra fee of ₹50 charged by the courier partner. You can choose your preferred method at checkout on Theaurax.in."
+  },
+  {
+    "category": "Shipping & Delivery",
+    "keywords": ["delivery time", "shipping time", "how long", "when will i get", "shipping charge", "delivery charge", "charges"],
+    "question": "What are the shipping charges and delivery timelines?",
+    "answer": "We ship all across India! Shipping is FREE for all online prepaid orders. For Cash on Delivery (COD) orders, a flat fee of ₹50 applies. Delivery takes 3 to 5 business days for metro cities, and 5 to 7 business days for the rest of India. You will receive a tracking link via WhatsApp/SMS once your order is shipped."
+  },
+  {
+    "category": "Sizing & Fit",
+    "keywords": ["size chart", "sizes", "fit", "m", "l", "xl", "xxl", "jersey size", "dimensions"],
+    "question": "What sizes do you have and is there a size chart?",
+    "answer": "Our jerseys are available in sizes S, M, L, XL, and XXL. They are standard athletic/slim fit. We highly recommend checking our size chart on the website (https://theaurax.in/size-chart) to find your perfect fit. If you prefer a loose/relaxed fit, we suggest ordering one size up."
+  },
+  {
+    "category": "Customization",
+    "keywords": ["custom", "customize", "name", "number", "print", "customised", "my name"],
+    "question": "Can I customize the jersey with my own name and number?",
+    "answer": "Yes! Customization (adding your name and favorite number on the back of the jersey) is available for an additional ₹100. During the checkout process on our website, you will see a text box to enter the Name and Number you want printed. Please note that customized jerseys cannot be returned or exchanged unless there is a manufacturing defect."
+  },
+  {
+    "category": "Return & Exchange",
+    "keywords": ["return", "exchange", "refund", "replace", "wrong size", "damaged"],
+    "question": "What is your return and exchange policy?",
+    "answer": "We offer a 7-day exchange policy for size issues or defects. The jersey must be unused, with all tags intact. However, please note that custom-printed jerseys (with custom names/numbers) cannot be exchanged or returned. To initiate an exchange, please contact us here with your order details."
+  },
+  {
+    "category": "Jersey Quality",
+    "keywords": ["quality", "material", "fabric", "original", "copy", "first copy", "master copy", "polyester"],
+    "question": "What is the fabric quality and material of the jerseys?",
+    "answer": "Our jerseys are premium master quality (1:1 replicated player/fan version jerseys). They are made of 100% high-grade polyester fabric with sweat-wicking dry-fit technology, complete with high-density embroidered brand logos and team crests. They look and feel exactly like the ones worn by players on the pitch."
+  },
+  {
+    "category": "Wholesale / Bulk Orders",
+    "keywords": ["bulk", "wholesale", "50 pieces", "many pieces", "wholesale price", "team kit", "discount"],
+    "question": "Do you offer discounts for wholesale or bulk orders?",
+    "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Please share the quantity you are looking for, and we will connect you directly with our wholesale team to provide the best quote."
+  }
+]
