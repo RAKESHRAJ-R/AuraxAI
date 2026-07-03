@@ -25,6 +25,10 @@ const config = {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
   },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    chatId: process.env.TELEGRAM_CHAT_ID || '',
+  },
   instagram: {
     pageAccessToken: process.env.INSTAGRAM_PAGE_ACCESS_TOKEN || '',
     verifyToken: process.env.INSTAGRAM_VERIFY_TOKEN || 'theaurax_verify_token_2026',
@@ -34,6 +38,18 @@ const config = {
     instagramId: process.env.OWNER_INSTAGRAM_ID || '',
     bulkThreshold: parseInt(process.env.BULK_ORDER_THRESHOLD || '20', 10),
   },
+  wati: {
+    endpoint: process.env.WATI_API_ENDPOINT || '',
+    accessToken: process.env.WATI_ACCESS_TOKEN || '',
+    allowedTestNumbers: (process.env.ALLOWED_TEST_NUMBERS || '')
+      .split(',')
+      .map(num => num.replace(/[^0-9]/g, ''))
+      .filter(num => num.length > 0)
+  },
+  whatsappWeb: {
+    enabled: process.env.WHATSAPP_WEB_ENABLED === 'true',
+  },
+  baseUrl: process.env.BASE_URL || 'http://localhost:3000',
 };
 
 // Basic validation

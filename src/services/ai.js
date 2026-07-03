@@ -1,436 +1,364 @@
-import { OpenAI } from 'openai';
-import axios from 'axios';
+import OpenAI from 'openai';
 import config from '../config/config.js';
 import faqService from './faq.js';
 import woocommerceService from './woocommerce.js';
 import dbService from './db.js';
 import { generateInvoicePDF } from './invoice.js';
-import whatsappService from './whatsapp.js';
-import instagramService from './instagram.js';
+import whatsappWebBot from './whatsapp-web-bot.js';
+import telegramService from './telegram.js';
+import sheetsService from './sheets.js';
 
 class AIService {
   constructor() {
-    this.openaiApiKey = config.openai.apiKey;
-    this.geminiApiKey = config.gemini.apiKey;
-    
-    // Setup OpenAI if key is valid
-    const isOpenaiValid = this.openaiApiKey && !this.openaiApiKey.includes('your_openai') && !this.openaiApiKey.startsWith('sk-proj-k6hqxXOGCd');
-    if (isOpenaiValid) {
-      this.openai = new OpenAI({ apiKey: this.openaiApiKey });
-      console.log('[AI Service] OpenAI Client initialized successfully.');
+    const groqKey = process.env.GROQ_API_KEY || config.groq?.apiKey || '';
+    if (groqKey && !groqKey.includes('your_groq')) {
+      this.openai = new OpenAI({
+        apiKey: groqKey,
+        baseURL: "https://api.groq.com/openai/v1"
+      });
+      console.log(`[AI Service] Loaded Groq API Key for Agent.`);
     } else {
+      console.warn(`[AI Service] No GROQ_API_KEY found!`);
       this.openai = null;
-    }
-
-    // Setup Gemini
-    if (this.geminiApiKey) {
-      console.log('[AI Service] Gemini Client initialized successfully.');
-    } else {
-      console.log('[AI Service] No Gemini API key provided.');
-    }
-
-    if (!this.openai && !this.geminiApiKey) {
-      console.log('[AI Service] Running in complete Fallback MOCK Mode.');
     }
   }
 
-  /**
-   * Main query handler. Loads user state, runs LLM (or fallback state engine), and saves updated state.
-   */
-  async answerQuery(senderId, userQuery) {
-    // 1. Fetch current session for the user
-    const session = await dbService.getSession(senderId);
+  generateSystemPrompt(session) {
+    return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
+Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
 
-    // 2. Query local products and FAQs for context matching
-    const matchedProducts = woocommerceService.searchProducts(userQuery);
-    const matchedFAQs = faqService.searchFAQs(userQuery);
-    
-    // Skip bulk order checking when user is inputting shipping address
-    const isBulkIntent = session.state === 'COLLECTING_ADDRESS' ? false : this.checkBulkIntent(userQuery);
+Language & Tone Rule (CRITICAL):
+- MIRROR THE CUSTOMER'S LANGUAGE. 
+- If the customer speaks purely in English, you MUST reply entirely in fluent, professional English. Do NOT use Tanglish.
+- If the customer uses Tanglish or Tamil, you MUST switch to natural "Tanglish" (Tamil words written in English letters). 
+- Tanglish Persona: Use words like "Bro", "Machan", "Kandippa", "Indha jersey ungaluku pakka va irukum!", "Unga full address anupunga machan, order podalam."
+- English Persona: Be warm and highly professional. "Here are our best options for you!", "Could you please provide your full shipping address so we can confirm the order?"
+- Never sound like a robot. Be local, friendly, and hype up the products.
+- If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
 
-    let result = null;
+Current Session Context:
+Cart: ${JSON.stringify(session.cart || [])}
+Address: ${session.address || 'Not provided'}
 
-    // 3. Try OpenAI if configured
-    if (this.openai) {
-      try {
-        result = await this.callOpenAI(session, userQuery, matchedProducts, matchedFAQs);
-      } catch (err) {
-        console.error('[AI Service] OpenAI error, attempting Gemini fallback...', err.message);
-      }
-    }
+Instructions:
+1. ALWAYS use 'search_products' when asked about jerseys. Never guess prices or stock.
+2. If products are found, provide exact name, price, sizes, and permalink. Hype it up! (e.g., "Bro, indha jersey vera level!" OR "This jersey is absolutely stunning!")
+3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
+4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
+5. Once the address is provided, use 'set_shipping_address'.
+6. If the tool says "Address saved", display an order summary and ask them to reply YES to confirm. Once confirmed, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
+7. Use emojis naturally to make it engaging.
+8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
+9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.`;
+  }
 
-    // 4. Try Gemini if OpenAI is not configured or failed
-    if (!result && this.geminiApiKey) {
-      try {
-        result = await this.callGemini(session, userQuery, matchedProducts, matchedFAQs);
-      } catch (err) {
-        console.error('[AI Service] Gemini error, attempting rule-based fallback...', err.message);
-      }
-    }
-
-    // 5. Run rule-based fallback if no LLM responded
-    if (!result) {
-      result = this.processFallbackStateFlow(session, userQuery, matchedProducts, matchedFAQs, isBulkIntent);
-    }
-
-    // 6. Update and save the user's session state
-    if (result.sessionUpdate) {
-      // Check if transitioning from CONFIRMING_ORDER to IDLE, indicating order confirmed!
-      const isConfirmed = session.state === 'CONFIRMING_ORDER' && result.sessionUpdate.state === 'IDLE' && session.cart.length > 0;
-      
-      if (isConfirmed) {
-        try {
-          const orderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
-          const invoicePath = await generateInvoicePDF(orderId, {
-            userId: senderId,
-            customerName: `Customer (${senderId})`,
-            cart: session.cart,
-            address: session.address
-          });
-          console.log(`[AI Service] Dynamic PDF proforma invoice created at: ${invoicePath}`);
-          result.replyText += `\n\n📄 *Proforma Invoice Generated*:\nDownload here: http://localhost:3000/invoices/invoice_${orderId}.pdf`;
-        } catch (invoiceErr) {
-          console.error('[AI Service] Proforma invoice PDF generation failed:', invoiceErr.message);
+  getTools() {
+    return [
+      {
+        type: "function",
+        function: {
+          name: "search_products",
+          description: "Search the WooCommerce catalog for jerseys by team, player, or design.",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string", description: "The search keyword." } },
+            required: ["query"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "get_faqs",
+          description: "Get answers to frequently asked questions about shipping, COD, sizing, delivery time, etc.",
+          parameters: {
+            type: "object",
+            properties: { topic: { type: "string", description: "The FAQ topic to search for." } },
+            required: ["topic"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "update_cart",
+          description: "Add a jersey to the user's cart. Call this ONLY after confirming size and quantity with the user.",
+          parameters: {
+            type: "object",
+            properties: {
+              productId: { type: "number", description: "WooCommerce ID of the product." },
+              name: { type: "string", description: "Product name." },
+              price: { type: "number", description: "Product price." },
+              size: { type: "string", description: "Requested size (e.g. S, M, L)." },
+              qty: { type: "number", description: "Quantity." }
+            },
+            required: ["productId", "name", "price", "size", "qty"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "set_shipping_address",
+          description: "Save the user's shipping address after they provide Name, Pincode, and Mobile.",
+          parameters: {
+            type: "object",
+            properties: { address: { type: "string", description: "The full shipping address." } },
+            required: ["address"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "escalate_to_human",
+          description: "Flag the conversation for human intervention if the customer wants a bulk/wholesale order (e.g. >= 10 items) or has a complex request.",
+          parameters: {
+            type: "object",
+            properties: { 
+              reason: { type: "string", description: "The reason for escalating to a human." },
+              customerName: { type: "string", description: "The customer's name." },
+              customerPhone: { type: "string", description: "The customer's phone number." },
+              customerAddress: { type: "string", description: "The customer's full shipping address." }
+            },
+            required: ["reason", "customerName", "customerPhone", "customerAddress"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "confirm_order",
+          description: "Finalize the order after the cart and shipping address are collected and the user has replied YES to confirm.",
+          parameters: {
+            type: "object",
+            properties: {
+              confirm: { type: "boolean", description: "Set to true to confirm." }
+            },
+            required: ["confirm"]
+          }
         }
       }
+    ];
+  }
 
-      Object.assign(session, result.sessionUpdate);
-    }
+  sendEscalationAlert(senderId, userQuery, session) {
+    const isSim = senderId.toString().includes('sim') || senderId.toString().includes('test');
+    const channel = isSim ? 'Test Simulation' : 'Live Chat';
     
-    // Mark if escalation was flagged and alert owner if not already escalated
-    if (result.requiresEscalation && !session.requiresEscalation) {
-      session.requiresEscalation = true;
-      
-      const isSim = senderId.toString().includes('sim') || senderId.toString().includes('test');
-      const channel = isSim ? 'Test Simulation' : 'Live Chat';
-      const alertMsg = `🚨 *New Wholesale Lead Alert!* 🚨\n\nChannel: *${channel}*\nCustomer ID: *${senderId}*\nQuery: "${userQuery}"\n\nPlease step in to negotiate!`;
+    const details = session.escalationDetails || {};
+    const name = details.name || session.customerName || 'Unknown';
+    const phone = details.phone || senderId.toString().replace(/[^0-9]/g, '');
+    const address = details.address || session.address || 'Not provided';
+    const reason = details.reason || 'Wholesale / Bulk Order';
 
-      // 1. Send WhatsApp Alert
-      const ownerNumber = config.owner.whatsappNumber;
-      if (ownerNumber) {
-        whatsappService.sendTextMessage(ownerNumber, alertMsg).catch(err => {
-          console.error('[AI Service] Failed to send WhatsApp owner escalation alert:', err.message);
-        });
-      }
+    const mdAlertMsg = `🚨 *New Wholesale Lead Alert!* 🚨\n\n*Customer Details:*\n👤 Name: ${name}\n📱 Phone: ${phone}\n📍 Address: ${address}\n\n*Request Reason:*\n${reason}\n\n*Latest Message:*\n"${userQuery}"\n\nPlease step in to negotiate!`;
+    const htmlAlertMsg = `🚨 <b>New Wholesale Lead Alert!</b><br><br><b>Customer Details:</b><br>👤 Name: ${name}<br>📱 Phone: ${phone}<br>📍 Address: ${address}<br><br><b>Reason:</b> ${reason}<br><b>Message:</b> "${userQuery}"`;
 
-      // 2. Send Instagram DM Alert
-      const ownerInstagramId = config.owner.instagramId;
-      if (ownerInstagramId) {
-        instagramService.sendTextMessage(ownerInstagramId, alertMsg).catch(err => {
-          console.error('[AI Service] Failed to send Instagram owner escalation alert:', err.message);
-        });
-      }
-    }
-
-    await dbService.saveSession(senderId, session);
-
-    // Save lead details (save active cart/address if not cleared, or track overall status)
-    if (session.cart && session.cart.length > 0) {
-      await dbService.saveLead({
-        userId: senderId,
-        cart: session.cart,
-        address: session.address,
-        requiresEscalation: session.requiresEscalation,
-        status: session.state === 'IDLE' ? 'completed' : 'checkout'
+    const ownerNumber = config.owner?.whatsappNumber;
+    if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+      const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
+      whatsappWebBot.client.sendMessage(cleanOwner, mdAlertMsg).catch(err => {
+        console.error('[AI Service] Failed to send WhatsApp owner escalation alert:', err.message);
       });
     }
 
-    return {
-      replyText: result.replyText,
-      intent: result.intent || 'other',
-      requiresEscalation: result.requiresEscalation || false,
-      suggestedProductIds: result.suggestedProductIds || []
-    };
+    if (config.telegram?.botToken && config.telegram?.chatId) {
+      telegramService.sendAlert(htmlAlertMsg).catch(err => {
+        console.error('[AI Service] Failed to send Telegram owner escalation alert:', err.message);
+      });
+    }
   }
 
-  /**
-   * Call OpenAI API
-   */
-  async callOpenAI(session, userQuery, matchedProducts, matchedFAQs) {
-    const systemPrompt = this.generateSystemPrompt(session, matchedProducts, matchedFAQs);
-    const completion = await this.openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userQuery }
-      ],
-      response_format: { type: 'json_object' }
-    });
+  async answerQuery(senderId, userQuery, customerName = null, customerPhone = null) {
+    const session = await dbService.getSession(senderId);
+    if (customerName && customerName !== 'Customer') session.customerName = customerName;
 
-    return JSON.parse(completion.choices[0].message.content);
-  }
+    session.history = session.history || [];
 
-  /**
-   * Call Gemini API (2.5 Flash) via direct Axios JSON REST request
-   */
-  async callGemini(session, userQuery, matchedProducts, matchedFAQs) {
-    const systemPrompt = this.generateSystemPrompt(session, matchedProducts, matchedFAQs);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.geminiApiKey}`;
+    // Log to Google Sheets if this is a first-time inquiry
+    if (session.history.length === 0) {
+      sheetsService.appendRow([
+        new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), 
+        customerPhone || senderId.replace(/[^0-9]/g, ''), 
+        customerName || 'Customer', 
+        userQuery
+      ]).catch(e => console.error(e));
+    }
+
+    const validHistory = session.history.filter(m => m.role === 'user' || m.role === 'assistant');
+    session.history = validHistory.slice(-10);
     
-    const response = await axios.post(url, {
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: userQuery }]
-        }
-      ],
-      generationConfig: {
-        responseMimeType: 'application/json'
-      },
-      systemInstruction: {
-        parts: [{ text: systemPrompt }]
-      }
-    });
-
-    const responseText = response.data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!responseText) {
-      throw new Error('Gemini API returned an empty response.');
-    }
-    return JSON.parse(responseText.trim());
-  }
-
-  /**
-   * Constructs system instructions for the LLM
-   */
-  generateSystemPrompt(session, matchedProducts, matchedFAQs) {
-    const productContext = matchedProducts.length > 0 
-      ? matchedProducts.map(p => `Product ID: ${p.id}\nName: ${p.name}\nPrice: ₹${p.price}\nStock: ${p.stock_status}\nSizes: ${p.sizes.join(', ')}\nLink: ${p.permalink}`).join('\n\n')
-      : 'No matching products found in the catalog.';
-
-    const faqContext = matchedFAQs.length > 0
-      ? matchedFAQs.map(f => `Question: ${f.question}\nAnswer: ${f.answer}`).join('\n\n')
-      : 'No specific FAQ matching. Standard rules: 3-5 days delivery for metros, 5-7 days other. ₹50 COD fee, FREE shipping on prepaid online orders.';
-
-    return `You are a helpful, professional, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer and wholesaler in India). Your goal is to reply to customer messages on WhatsApp/Instagram, solve their queries, recommend products, and guide them to make a successful purchase.
-
-Use the following Context to answer:
----
-[PRODUCT SEARCH RESULTS]
-${productContext}
-
-[RELEVANT STORE FAQs]
-${faqContext}
-
-[CURRENT CUSTOMER SESSION STATE]
-${JSON.stringify(session, null, 2)}
----
-
-State Machine Flow Rules:
-1. The assistant guides the customer through a step-by-step order collection flow if the customer expresses intent to buy a specific jersey:
-   - State 'IDLE': Normal Q&A. If the user indicates buying a specific jersey (or matches a search product and expresses a desire to order/buy), push the product details { productId: id, name, price } to the "cart", transition state to 'COLLECTING_SIZE', and ask what size they need (mention the available sizes from the product catalog).
-   - State 'COLLECTING_SIZE': Ask for size. Once they provide a size matching the available list, store it in the cart item and transition state to 'COLLECTING_QTY'. If the size is invalid, gently ask them to choose one of the available sizes.
-   - State 'COLLECTING_QTY': Ask how many jerseys. Once they specify quantity, parse it as a number, store it in the cart item, and transition state to 'COLLECTING_ADDRESS'. (If quantity is >= ${config.owner.bulkThreshold}, set state to 'IDLE', set "requiresEscalation" to true, and alert the wholesale team).
-   - State 'COLLECTING_ADDRESS': Ask for their shipping address. Once provided, save it to "address" and transition state to 'CONFIRMING_ORDER'.
-   - State 'CONFIRMING_ORDER': Display a neat order summary (Product, Size, Qty, Total Price) and ask: "Does this look correct? Reply YES to confirm or NO to start over."
-   - Once they reply YES in 'CONFIRMING_ORDER', clear/reset the session state back to 'IDLE', mark status as checkout/complete, and say: "Order confirmed! A support representative will send your invoice and checkout link shortly."
-
-Rules for your response:
-1. **Be Concise and Engaging**: WhatsApp/Instagram messages should be easy to read. Use bullet points and emojis. Keep paragraphs short (1-2 sentences).
-2. **Sales-Driven**: Always invite them to order. If products are listed, include their price and direct link. Example: "You can buy it here: [link]".
-3. **No Markup/HTML**: Do not use Markdown headers (# or ##) or HTML tags. You can use standard WhatsApp formatting: *bold* for emphasis (e.g. *₹799*).
-
-Generate your response as a JSON object with the following keys:
-{
-  "replyText": "The actual message text to send to the user (with emojis, WhatsApp formatting, and product links if applicable)",
-  "intent": "one of: faq, product_query, bulk_order, checkout_guidance, other",
-  "requiresEscalation": true/false (set to true if bulk order or complex custom request),
-  "suggestedProductIds": [list of product IDs that match their query],
-  "sessionUpdate": {
-    "state": "The updated state: IDLE, COLLECTING_SIZE, COLLECTING_QTY, COLLECTING_ADDRESS, or CONFIRMING_ORDER",
-    "cart": [updated array of cart items],
-    "address": "updated address string or null",
-    "customPrinting": "updated custom printing details or null"
-  }
-}`;
-  }
-
-  /**
-   * Fallback rule-based state machine for conversation flow when LLMs are not responsive
-   */
-  processFallbackStateFlow(session, userQuery, matchedProducts, matchedFAQs, isBulkIntent) {
-    let replyText = '';
-    let intent = 'other';
+    let resultText = "";
+    let isConfirmed = false;
     let requiresEscalation = false;
-    const cleanQuery = userQuery.toLowerCase().trim();
-    const suggestedProductIds = matchedProducts.map(p => p.id);
 
-    // Initial state cloned to sessionUpdate
-    const sessionUpdate = {
-      state: session.state,
-      cart: [...session.cart],
-      address: session.address,
-      customPrinting: session.customPrinting
-    };
-
-    // 0. Handle bulk order override at any point
-    if (isBulkIntent) {
-      sessionUpdate.state = 'IDLE';
-      sessionUpdate.cart = [];
-      sessionUpdate.address = null;
-      requiresEscalation = true;
-      replyText = `⚽ *Theaurax Bulk & Team Orders* ⚽\n\nYes, we offer special wholesale pricing for team kits and orders of *${config.owner.bulkThreshold}+ jerseys*!\n\nCould you please let us know:\n1. Which team/club jerseys you need?\n2. Approximate quantity and sizes?\n3. Do you need custom names & numbers printed?\n\nI will forward your inquiry to our wholesale team right away, and they will message you here directly.`;
-      return { replyText, intent: 'bulk_order', requiresEscalation, suggestedProductIds, sessionUpdate };
+    if (!this.openai) {
+      resultText = "I'm currently undergoing maintenance. Please reach out to our support number directly on WhatsApp.";
+      return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
     }
 
-    // 1. IDLE STATE: Standard FAQ and Product query handling
-    if (session.state === 'IDLE') {
-      const buyKeywords = ['buy', 'order', 'purchase', 'want to get', 'checkout', 'size chart', 'in stock', 'price of'];
-      const isBuyingIntent = buyKeywords.some(kw => cleanQuery.includes(kw));
+    let messages = [
+      { role: "system", content: this.generateSystemPrompt(session) }
+    ];
 
-      if (matchedProducts.length > 0 && isBuyingIntent) {
-        const prod = matchedProducts[0];
-        const newCartItem = {
-          productId: prod.id,
-          name: prod.name,
-          price: parseFloat(prod.price || '849'),
-          size: null,
-          qty: 1
-        };
-        sessionUpdate.cart = [newCartItem];
-        sessionUpdate.state = 'COLLECTING_SIZE';
-        intent = 'checkout_guidance';
-        replyText = `👋 Hey! I can help you place an order for the *${prod.name}* (₹${prod.price}).\n\nWhat size do you need? Available sizes: *${prod.sizes.join(', ') || 'S, M, L, XL, XXL'}*.`;
-      } else if (matchedProducts.length > 0) {
-        intent = 'product_query';
-        const prod = matchedProducts[0];
-        replyText = `👋 Hey! Yes, we have *${prod.name}* available!\n\n💵 *Price:* ₹${prod.price}\n📦 *Stock:* ${prod.stock_status === 'instock' ? 'In Stock' : 'Out of Stock'}\n👕 *Sizes:* ${prod.sizes.join(', ') || 'S, M, L, XL, XXL'}\n\n🔗 *Buy here:* ${prod.permalink}\n\nWould you like to place an order? I can guide you through the process here!`;
-      } else if (matchedFAQs.length > 0) {
-        intent = 'faq';
-        replyText = `👋 Hello!\n\n${matchedFAQs[0].answer}\n\nLet me know if you'd like to browse our catalog or place an order!`;
-      } else {
-        intent = 'other';
-        replyText = `👋 Welcome to *Theaurax*! \n\nI'm your AI Sales Assistant. We sell premium master-quality football jerseys starting at ₹799!\n\nAre you looking for a specific team's jersey (e.g., Real Madrid, Manchester United, Arsenal) or did you have a question about sizing, COD, or delivery?\n\nLet me know and I'll help you out!`;
-      }
+    for (const msg of session.history) {
+      messages.push({ role: msg.role, content: msg.content || "" });
     }
+    messages.push({ role: "user", content: userQuery });
 
-    // 2. COLLECTING_SIZE STATE
-    else if (session.state === 'COLLECTING_SIZE') {
-      const queryTokens = cleanQuery.split(/[\s/,\-_?!.]+/);
-      const sizes = ['s', 'm', 'l', 'xl', 'xxl'];
-      const matchedSize = sizes.find(s => queryTokens.includes(s)) || sizes.find(s => cleanQuery === s);
+    let keepLooping = true;
+    let loops = 0;
 
-      if (matchedSize) {
-        const sizeUpper = matchedSize.toUpperCase();
-        if (sessionUpdate.cart.length > 0) {
-          sessionUpdate.cart[0].size = sizeUpper;
-        }
-        sessionUpdate.state = 'COLLECTING_QTY';
-        intent = 'checkout_guidance';
-        replyText = `Got it, size *${sizeUpper}*. \n\nHow many pieces of this jersey do you want to order?`;
-      } else {
-        replyText = `Please select a valid size: *S, M, L, XL, or XXL*. What size would you like?`;
-      }
-    }
-
-    // 3. COLLECTING_QTY STATE
-    else if (session.state === 'COLLECTING_QTY') {
-      const numbers = cleanQuery.match(/\d+/);
-      if (numbers) {
-        const qty = parseInt(numbers[0], 10);
-        if (qty >= config.owner.bulkThreshold) {
-          sessionUpdate.state = 'IDLE';
-          sessionUpdate.cart = [];
-          requiresEscalation = true;
-          intent = 'bulk_order';
-          replyText = `Since you want to order *${qty}* pieces, you qualify for wholesale rates! I'm alerting our team to contact you right away.`;
-        } else {
-          if (sessionUpdate.cart.length > 0) {
-            sessionUpdate.cart[0].qty = qty;
-          }
-          sessionUpdate.state = 'COLLECTING_ADDRESS';
-          intent = 'checkout_guidance';
-          replyText = `Understood, *${qty}* piece(s). \n\nWhat is your full shipping address? (Please include Name, Pincode, and Mobile number).`;
-        }
-      } else {
-        replyText = `Please tell me the quantity you want to order as a number (e.g., 1, 2, 3).`;
-      }
-    }
-
-    // 4. COLLECTING_ADDRESS STATE
-    else if (session.state === 'COLLECTING_ADDRESS') {
-      if (cleanQuery.length > 10) {
-        sessionUpdate.address = userQuery;
-        sessionUpdate.state = 'CONFIRMING_ORDER';
-        intent = 'checkout_guidance';
-
-        const item = sessionUpdate.cart[0] || { name: 'Jersey', price: 849, size: 'L', qty: 1 };
-        const subtotal = item.price * item.qty;
-
-        replyText = `📋 *Order Confirmation Details*:\n\n` +
-                    `👕 *Jersey:* ${item.name}\n` +
-                    `📏 *Size:* ${item.size}\n` +
-                    `📦 *Quantity:* ${item.qty}\n` +
-                    `📍 *Address:* ${userQuery}\n\n` +
-                    `💵 *Grand Total:* ₹${subtotal} (FREE delivery for prepaid, ₹50 extra for COD).\n\n` +
-                    `Does this look correct? Please reply *YES* to confirm your order, or *NO* to cancel and start over.`;
-      } else {
-        replyText = `That address seems too short. Please provide your complete delivery address, including Name, Mobile Number, and Pincode.`;
-      }
-    }
-
-    // 5. CONFIRMING_ORDER STATE
-    else if (session.state === 'CONFIRMING_ORDER') {
-      const yesKeywords = ['yes', 'yeah', 'yep', 'correct', 'confirm', 'y', 'ok', 'haan'];
-      const noKeywords = ['no', 'cancel', 'wrong', 'change', 'n'];
-
-      if (yesKeywords.some(kw => cleanQuery.includes(kw))) {
-        sessionUpdate.state = 'IDLE';
-        intent = 'checkout_guidance';
-        replyText = `🎉 *Order Confirmed!* Thank you for ordering with Theaurax.\n\n` +
-                    `We are processing your invoice and checkout link. A customer support manager will ping you here shortly with details. Let us know if you need anything else!`;
-        // Cart is cleared after confirmation
-        sessionUpdate.cart = [];
-        sessionUpdate.address = null;
-      } else if (noKeywords.some(kw => cleanQuery.includes(kw))) {
-        sessionUpdate.state = 'IDLE';
-        sessionUpdate.cart = [];
-        sessionUpdate.address = null;
-        intent = 'checkout_guidance';
-        replyText = `No problem! I have cancelled this order. What jersey or query can I help you with now?`;
-      } else {
-        replyText = `Please reply with *YES* to confirm this order and get your checkout link, or *NO* to cancel and start over.`;
-      }
-    }
-
-    return { replyText, intent, requiresEscalation, suggestedProductIds, sessionUpdate };
-  }
-
-  /**
-   * Check if user is asking for bulk/wholesale quantities
-   */
-  checkBulkIntent(query) {
-    const cleanQuery = query.toLowerCase().trim();
-    const bulkKeywords = ['bulk', 'wholesale', 'team kit', 'many pieces', 'wholesale price', 'team order'];
-    if (bulkKeywords.some(kw => cleanQuery.includes(kw))) {
-      return true;
-    }
-
-    const numberMatches = cleanQuery.match(/\d+/g);
-    if (numberMatches) {
-      const queryTokens = new Set(cleanQuery.split(/[\s/,\-_?!.]+/));
-      const priceKeywords = ['rupees', 'rs', 'rupee', 'under', 'budget', 'price', 'cost', 'below'];
-      const hasPriceKeyword = priceKeywords.some(kw => queryTokens.has(kw)) || cleanQuery.includes('₹');
-      
-      if (!hasPriceKeyword) {
-        const quantityKeywords = ['pieces', 'pcs', 'qty', 'quantity', 'jerseys', 'items', 'sets', 'kits'];
-        const hasQuantityKeyword = quantityKeywords.some(kw => queryTokens.has(kw));
-
-        const hasLargeNumber = numberMatches.some(numStr => {
-          const num = parseInt(numStr, 10);
-          if (num >= 2020 && num <= 2030) return false; // ignore years
-          
-          // Realistic team order quantities (pincodes and mobile numbers are much larger)
-          if (num >= config.owner.bulkThreshold && num <= 500) {
-            // Require a quantity/unit keyword to avoid matching flat/house numbers (e.g. Flat 401)
-            return hasQuantityKeyword;
-          }
-          return false;
+    while (keepLooping && loops < 5) {
+      loops++;
+      try {
+        const completion = await this.openai.chat.completions.create({
+          model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+          messages: messages,
+          tools: this.getTools(),
+          tool_choice: "auto"
         });
 
-        if (hasLargeNumber) return true;
+        const responseMessage = completion.choices[0].message;
+        
+        if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+          messages.push(responseMessage);
+          
+          for (const toolCall of responseMessage.tool_calls) {
+            const fnName = toolCall.function.name;
+            const args = JSON.parse(toolCall.function.arguments);
+            let toolResultObj = {};
+
+            if (fnName === "search_products") {
+              const products = woocommerceService.searchProducts(args.query || "");
+              toolResultObj = { products: products.length > 0 ? products : null, message: products.length > 0 ? "Found products" : "No matching products found. Advise user to search website: https://theaurax.in/?s=" + encodeURIComponent(args.query || "") };
+            } else if (fnName === "get_faqs") {
+              const faqs = faqService.searchFAQs(args.topic || "");
+              toolResultObj = { faqs: faqs.length > 0 ? faqs : null, message: faqs.length > 0 ? "Found FAQs" : "No specific FAQ found." };
+            } else if (fnName === "update_cart") {
+              session.cart = [{
+                productId: args.productId,
+                name: args.name,
+                price: args.price,
+                size: args.size,
+                qty: args.qty
+              }];
+              session.state = 'COLLECTING_ADDRESS';
+              toolResultObj = { status: "success", message: "Cart updated successfully. Ask user for their shipping address next." };
+            } else if (fnName === "set_shipping_address") {
+              session.address = args.address;
+              
+              const totalQty = session.cart.reduce((sum, item) => sum + parseInt(item.qty || 0), 0);
+              const bulkThreshold = config.owner?.bulkThreshold || 10;
+              
+              if (totalQty >= bulkThreshold) {
+                requiresEscalation = true;
+                session.requiresEscalation = true;
+                session.state = 'IDLE';
+                session.escalationDetails = {
+                  reason: `Bulk Order (${totalQty} items)`,
+                  name: session.customerName,
+                  phone: senderId.replace(/[^0-9]/g, ''),
+                  address: args.address
+                };
+                toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
+              } else {
+                session.state = 'CONFIRMING_ORDER';
+                toolResultObj = { status: "success", message: "Address saved. Summarize the order and ask them to reply YES to confirm." };
+              }
+            } else if (fnName === "escalate_to_human") {
+              requiresEscalation = true;
+              session.requiresEscalation = true;
+              session.state = 'IDLE';
+              session.escalationDetails = {
+                reason: args.reason,
+                name: args.customerName,
+                phone: args.customerPhone,
+                address: args.customerAddress
+              };
+              toolResultObj = { status: "success", message: "Escalated. Tell the user our wholesale/support team will reach out to them shortly." };
+            } else if (fnName === "confirm_order") {
+              isConfirmed = true;
+              session.state = 'IDLE';
+              toolResultObj = { status: "success", message: "Order is confirmed. End the conversation politely." };
+            }
+
+            messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              name: fnName,
+              content: JSON.stringify(toolResultObj)
+            });
+          }
+        } else {
+          resultText = responseMessage.content || "Sorry, I couldn't process that.";
+          // Groq Bug Fix: Clean any leaked XML or malformed tool tags from the final text
+          resultText = resultText.replace(/<?\/?function=.*?>.*?<\/function>/gs, '').trim();
+          resultText = resultText.replace(/[a-zA-Z_]+>\s*\{.*?\}/gs, '').trim();
+          if (!resultText) resultText = "Oops, let me try that again! What exactly were you looking for?";
+          keepLooping = false;
+        }
+      } catch (err) {
+        console.error('[AI Service] Groq API error:', err.error ? JSON.stringify(err.error) : err.message || err);
+        resultText = "Oops! Something went wrong on my end. Please give me a second and try again!";
+        keepLooping = false;
       }
     }
-    return false;
+
+    session.history.push({ role: 'user', content: userQuery });
+    session.history.push({ role: 'assistant', content: resultText });
+
+    if (isConfirmed && session.cart && session.cart.length > 0) {
+      try {
+        const orderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
+        const invoicePath = await generateInvoicePDF(orderId, {
+          userId: senderId,
+          customerName: session.customerName || `Customer (${senderId})`,
+          cart: session.cart,
+          address: session.address
+        });
+        console.log(`[AI Service] Dynamic PDF proforma invoice created at: ${invoicePath}`);
+        const baseUrl = config.baseUrl || 'http://localhost:3000';
+        resultText += `\n\n📄 *Proforma Invoice Generated*:\nDownload here: ${baseUrl}/invoices/invoice_${orderId}.pdf`;
+      } catch (invoiceErr) {
+        console.error('[AI Service] Proforma invoice PDF generation failed:', invoiceErr.message);
+      }
+      session.cart = []; 
+      session.address = null;
+      session.history = [];
+    }
+
+    if (requiresEscalation) {
+      this.sendEscalationAlert(senderId, userQuery, session);
+      // Reset the session so future bulk orders also trigger alerts
+      session.cart = [];
+      session.address = null;
+      session.history = [];
+      session.hasEscalated = false;
+      session.requiresEscalation = false;
+    }
+
+    await dbService.saveSession(senderId, session);
+    
+    await dbService.saveLead({
+      userId: senderId,
+      name: session.customerName || customerName || 'Customer',
+      phone: senderId.replace(/[^0-9]/g, ''),
+      channel: 'whatsapp',
+      cart: session.cart || [],
+      address: session.address || null,
+      requiresEscalation: session.requiresEscalation || false,
+      status: session.state === 'IDLE' && session.cart.length === 0 ? 'completed' : 'active',
+      conversation: session.history || []
+    });
+
+    return {
+      replyText: resultText,
+      intent: 'agent_handled',
+      requiresEscalation: requiresEscalation,
+      suggestedProductIds: []
+    };
   }
 }
 

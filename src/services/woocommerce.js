@@ -143,6 +143,27 @@ class WooCommerceService {
   }
 
   /**
+   * Parse budget/price limit from query string
+   */
+  parsePriceLimit(query) {
+    const cleanQuery = query.toLowerCase().trim();
+    let priceLimit = null;
+    const priceRegexes = [
+      /(?:under|less than|below|within|max|maximum|budget of|budget)\s*(?:rs\.?|rupees|₹)?\s*(\d+)/i,
+      /(?:rs\.?|rupees|₹)?\s*(\d+)\s*(?:or less|or below|max|maximum|budget)/i,
+      /<\s*(\d+)/
+    ];
+    for (const regex of priceRegexes) {
+      const match = cleanQuery.match(regex);
+      if (match) {
+        priceLimit = parseInt(match[1], 10);
+        break;
+      }
+    }
+    return priceLimit;
+  }
+
+  /**
    * Search local products cache based on queries using token-matching for natural language compatibility
    */
   searchProducts(query) {
@@ -150,35 +171,128 @@ class WooCommerceService {
     const products = this.getLocalProducts();
     const cleanQuery = query.toLowerCase().trim();
 
-    return products.filter((p) => {
-      // 1. Check if the product name contains the query (e.g., query is "real madrid")
-      if (p.name.toLowerCase().includes(cleanQuery)) {
-        return true;
-      }
+    // Parse price budget limit
+    const priceLimit = this.parsePriceLimit(cleanQuery);
 
-      // 2. Check if the query contains any of the product's categories (e.g., query is "Do you have Arsenal jerseys?", category is "Arsenal")
-      const categoryMatch = p.categories.some((cat) => cleanQuery.includes(cat.toLowerCase()));
-      if (categoryMatch) {
-        return true;
-      }
+    // Detect if looking for cheapest/budget items
+    const cheapKeywords = ['cheap', 'cheapest', 'lowest price', 'lowest cost', 'least price', 'less price', 'low price', 'minimum price', 'affordable', 'best deals', 'budget', 'lowest'];
+    const isCheapSearch = cheapKeywords.some(kw => cleanQuery.includes(kw));
 
-      // 3. Token-based overlap: check if query contains significant tokens from the product name
-      const stopWords = new Set(['do', 'you', 'have', 'in', 'size', 'jersey', 'jerseys', 'home', 'away', 'for', 'the', 'is', 'are', 'a', 'an', 'of', 'with', 'to', 'on', 'at']);
-      const nameTokens = p.name.toLowerCase().split(/[\s/,\-_]+/);
-      
-      // Filter out short and generic stop-words
-      const significantTokens = nameTokens.filter(token => token.length > 2 && !stopWords.has(token));
-      
-      if (significantTokens.length > 0) {
-        // Match if the query contains any of the unique/significant tokens (e.g. "madrid", "united", "arsenal")
-        const tokenMatch = significantTokens.some(token => cleanQuery.includes(token));
-        if (tokenMatch) {
-          return true;
+    // Detect if they specifically want adult/grown items, or want to exclude kids items
+    const adultKeywords = ['adult', 'adults', 'grown ones', 'grown', 'men', 'mens', 'man', 'women', 'womens', 'fv', 'pv', 'player version', 'fan version', 'retro'];
+    const isAdultSearch = adultKeywords.some(kw => cleanQuery.includes(kw));
+
+    // Stop words to filter out from query tokens
+    const stopWords = new Set([
+      'do', 'you', 'have', 'in', 'size', 'jersey', 'jerseys', 'home', 'away', 'for', 
+      'the', 'is', 'are', 'a', 'an', 'of', 'with', 'to', 'on', 'at', 'any', 'there', 
+      'available', 'show', 'me', 'find', 'some', 'any', 'under', 'below', 'less', 
+      'than', 'rs', 'rupees', '₹', 'give', 'suggest', 'underneath', 'within', 'budget', 
+      'max', 'maximum', 'please', 'need', 'want', 'buy', 'order', 'purchase', 'i'
+    ]);
+    const queryTokens = cleanQuery.split(/[\s/,\-_?!.]+/).filter(t => t.length > 2 && !stopWords.has(t) && isNaN(t));
+
+    // Handle pure budget queries (e.g. "jerseys under 700") with no specific keywords
+    if (priceLimit !== null && queryTokens.length === 0) {
+      let matches = products.filter(p => p.price && !isNaN(parseFloat(p.price)) && parseFloat(p.price) <= priceLimit);
+      if (isAdultSearch) {
+        matches = matches.filter(p => {
+          const productName = p.name.toLowerCase();
+          const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
+          const hasKidsCategory = p.categories.some(cat => cat.toLowerCase().includes('kid') || cat.toLowerCase().includes('youth'));
+          return !(hasKidsTerm || hasKidsCategory);
+        });
+      }
+      return matches
+        .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+        .slice(0, 10);
+    }
+
+    let scoredMatches = [];
+
+    for (const p of products) {
+      // If looking for adult/grown, filter out kids/youth products
+      if (isAdultSearch) {
+        const productName = p.name.toLowerCase();
+        const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
+        const hasKidsCategory = p.categories.some(cat => {
+          const catName = cat.toLowerCase();
+          return catName.includes('kids') || catName.includes('kid') || catName.includes('youth') || catName.includes('child');
+        });
+        if (hasKidsTerm || hasKidsCategory) {
+          continue;
         }
       }
 
-      return false;
-    });
+      let score = 0;
+      const productNameLower = p.name.toLowerCase();
+
+      // 1. Direct name substring match (highest priority)
+      if (cleanQuery.length >= 3 && productNameLower.includes(cleanQuery)) {
+        score += 15;
+      }
+
+      // 2. Query token matching with relevance weighting
+      if (queryTokens.length > 0) {
+        let matchedTokensCount = 0;
+        for (const token of queryTokens) {
+          if (productNameLower.includes(token)) {
+            score += 5;
+            matchedTokensCount++;
+          } else if (p.categories.some(cat => cat.toLowerCase().includes(token))) {
+            score += 2;
+            matchedTokensCount++;
+          }
+        }
+        // Bonus points if ALL significant query keywords matched
+        if (matchedTokensCount === queryTokens.length) {
+          score += 5;
+        }
+      }
+
+      // 3. Category matching for clean query
+      if (cleanQuery.length >= 3) {
+        const categoryMatch = p.categories.some(cat => cleanQuery.includes(cat.toLowerCase()));
+        if (categoryMatch) {
+          score += 3;
+        }
+      }
+
+      if (score > 0) {
+        scoredMatches.push({ product: p, score });
+      }
+    }
+
+    // Filter by price limit if present
+    if (priceLimit !== null) {
+      scoredMatches = scoredMatches.filter(m => m.product.price && !isNaN(parseFloat(m.product.price)) && parseFloat(m.product.price) <= priceLimit);
+    }
+
+    // Sort by relevance score in descending order
+    scoredMatches.sort((a, b) => b.score - a.score);
+    let finalMatches = scoredMatches.map(m => m.product);
+
+    // If cheap search is requested:
+    if (isCheapSearch) {
+      let sourceList = finalMatches.length > 0 ? finalMatches : products;
+      if (isAdultSearch) {
+        sourceList = sourceList.filter(p => {
+          const productName = p.name.toLowerCase();
+          const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
+          const hasKidsCategory = p.categories.some(cat => {
+            const catName = cat.toLowerCase();
+            return catName.includes('kids') || catName.includes('kid') || catName.includes('youth') || catName.includes('child');
+          });
+          return !(hasKidsTerm || hasKidsCategory);
+        });
+      }
+      return sourceList
+        .filter(p => p.price && !isNaN(parseFloat(p.price)))
+        .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+        .slice(0, 10);
+    }
+
+    return finalMatches.slice(0, 10);
   }
 }
 

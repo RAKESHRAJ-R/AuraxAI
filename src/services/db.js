@@ -16,7 +16,8 @@ const DEFAULT_SESSION = {
   address: null,         // Shipping address string
   customPrinting: null,  // { name, number } if customized
   lastActive: null,
-  requiresEscalation: false
+  requiresEscalation: false,
+  history: []            // Array of { role: 'user'|'model', content: string }
 };
 
 class DatabaseService {
@@ -151,20 +152,26 @@ class DatabaseService {
       id: leadData.id || `lead_${Date.now()}`,
       userId: leadData.userId,
       name: leadData.name || 'Unknown User',
+      phone: leadData.phone || '',
       channel: leadData.channel || 'instagram', // instagram, whatsapp
       cart: leadData.cart || [],
       address: leadData.address || null,
       status: leadData.status || 'lead', // lead, billing, checkout, completed, cold
       requiresEscalation: leadData.requiresEscalation || false,
+      conversation: leadData.conversation || [],
       createdAt: leadData.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
     if (this.useMongo) {
       try {
+        const { createdAt, ...updateFields } = newLead;
         await this.db.collection('leads').updateOne(
-          { userId: newLead.userId, status: { $ne: 'completed' } },
-          { $set: newLead },
+          { userId: newLead.userId },
+          { 
+            $set: updateFields,
+            $setOnInsert: { createdAt }
+          },
           { upsert: true }
         );
         return newLead;
@@ -176,10 +183,15 @@ class DatabaseService {
     // JSON Fallback
     try {
       const leads = JSON.parse(fs.readFileSync(LEADS_FILE, 'utf-8'));
-      const existingIndex = leads.findIndex(l => l.userId === newLead.userId && l.status !== 'completed');
+      const existingIndex = leads.findIndex(l => l.userId === newLead.userId);
       
       if (existingIndex !== -1) {
-        leads[existingIndex] = { ...leads[existingIndex], ...newLead };
+        leads[existingIndex] = {
+          ...leads[existingIndex],
+          ...newLead,
+          id: leads[existingIndex].id,
+          createdAt: leads[existingIndex].createdAt
+        };
       } else {
         leads.push(newLead);
       }

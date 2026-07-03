@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theaurax AI - WhatsApp Link Dashboard</title>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #020617 100%);
+      --accent-green: #10b981;
+      --accent-green-glow: rgba(16, 185, 129, 0.4);
+      --accent-purple: #8b5cf6;
+      --accent-purple-glow: rgba(139, 92, 246, 0.4);
+      --glass-bg: rgba(255, 255, 255, 0.03);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow-x: hidden;
+    }
+
+    /* Ambient background glows */
+    .glow-sphere {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      z-index: 0;
+      opacity: 0.15;
+    }
+    
+    .glow-1 {
+      width: 400px;
+      height: 400px;
+      background: var(--accent-green);
+      top: -100px;
+      left: -100px;
+      animation: drift 15s infinite alternate ease-in-out;
+    }
+
+    .glow-2 {
+      width: 500px;
+      height: 500px;
+      background: var(--accent-purple);
+      bottom: -150px;
+      right: -100px;
+      animation: drift 20s infinite alternate-reverse ease-in-out;
+    }
+
+    @keyframes drift {
+      0% { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(50px, 50px) scale(1.1); }
+    }
+
+    .container {
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      max-width: 500px;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 24px;
+      padding: 40px 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transition: all 0.3s ease;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .logo-icon {
+      font-size: 2rem;
+      animation: float 3s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-5px); }
+    }
+
+    .logo-text {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(90deg, #10b981, #8b5cf6);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 32px;
+      line-height: 1.5;
+    }
+
+    /* Status Badge styling */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 100px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 32px;
+      border: 1px solid transparent;
+      transition: all 0.3s ease;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    /* Statuses */
+    .status-disconnected {
+      background: rgba(239, 68, 68, 0.1);
+      border-color: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+    .status-disconnected .status-dot {
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+    }
+
+    .status-connecting {
+      background: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.2);
+      color: #f59e0b;
+    }
+    .status-connecting .status-dot {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+      animation: pulse 1.5s infinite alternate;
+    }
+
+    .status-qr {
+      background: rgba(139, 92, 246, 0.1);
+      border-color: rgba(139, 92, 246, 0.2);
+      color: #a78bfa;
+    }
+    .status-qr .status-dot {
+      background: #8b5cf6;
+      box-shadow: 0 0 8px #8b5cf6;
+      animation: pulse-purple 1.5s infinite alternate;
+    }
+
+    .status-connected {
+      background: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+    }
+    .status-connected .status-dot {
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      100% { opacity: 1; transform: scale(1.2); }
+    }
+    @keyframes pulse-purple {
+      0% { opacity: 0.4; box-shadow: 0 0 2px #8b5cf6; }
+      100% { opacity: 1; transform: scale(1.2); box-shadow: 0 0 10px #8b5cf6; }
+    }
+
+    /* QR Code Display Container */
+    .qr-container {
+      width: 250px;
+      height: 250px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      margin-bottom: 32px;
+      overflow: hidden;
+    }
+
+    .qr-image {
+      width: calc(100% - 20px);
+      height: calc(100% - 20px);
+      border-radius: 12px;
+      display: none;
+    }
+
+    .loader {
+      width: 48px;
+      height: 48px;
+      border: 3px solid rgba(255, 255, 255, 0.05);
+      border-radius: 50%;
+      border-top-color: var(--accent-purple);
+      animation: spin 1s infinite linear;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .success-icon {
+      font-size: 5rem;
+      color: var(--accent-green);
+      text-shadow: 0 0 20px var(--accent-green-glow);
+      display: none;
+      animation: scaleIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+    }
+
+    @keyframes scaleIn {
+      0% { transform: scale(0); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Instruction text */
+    .instructions {
+      text-align: left;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 16px;
+      padding: 20px;
+      margin-top: 16px;
+      display: none;
+    }
+
+    .instructions-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .instructions-list {
+      list-style-type: none;
+    }
+
+    .instructions-list li {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      padding-left: 20px;
+      position: relative;
+      line-height: 1.4;
+    }
+
+    .instructions-list li::before {
+      content: attr(data-step);
+      position: absolute;
+      left: 0;
+      top: 1px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent-purple);
+      color: white;
+      font-size: 0.65rem;
+      font-weight: bold;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .instructions-list li:last-child {
+      margin-bottom: 0;
+    }
+
+    .success-panel {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      0% { opacity: 0; transform: translateY(10px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    .success-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--accent-green);
+      margin-top: 16px;
+      margin-bottom: 8px;
+    }
+
+    .success-desc {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    .allowed-numbers-banner {
+      margin-top: 24px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px dashed var(--glass-border);
+      padding: 10px 16px;
+      border-radius: 10px;
+      width: 100%;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Ambient blur lights -->
+  <div class="glow-sphere glow-1"></div>
+  <div class="glow-sphere glow-2"></div>
+
+  <div class="container">
+    <div class="card">
+      <div class="logo-container">
+        <span class="logo-icon">⚽</span>
+        <span class="logo-text">THEAURAX AI</span>
+      </div>
+      
+      <h1>WhatsApp Web Link</h1>
+      <p class="subtitle">Connect your business or personal WhatsApp number directly to the AI Assistant without Meta restrictions.</p>
+      
+      <!-- Status Badge -->
+      <div id="statusBadge" class="status-badge status-disconnected">
+        <span class="status-dot"></span>
+        <span id="statusText">Disconnected</span>
+      </div>
+
+      <!-- QR Box / Status view -->
+      <div class="qr-container">
+        <div id="qrLoader" class="loader"></div>
+        <img id="qrImage" class="qr-image" src="" alt="WhatsApp QR Code">
+        <span id="successIcon" class="success-icon">✓</span>
+      </div>
+
+      <!-- Success Panel -->
+      <div id="successPanel" class="success-panel">
+        <p class="success-title">Connected Successfully!</p>
+        <p class="success-desc">Your WhatsApp account has been securely linked. The AI Agent will now automatically answer queries sent to your number.</p>
+      </div>
+
+      <!-- Scanning Instructions -->
+      <div id="instructions" class="instructions">
+        <p class="instructions-title">🤳 Pairing Instructions</p>
+        <ul class="instructions-list">
+          <li data-step="1">Open <strong>WhatsApp</strong> on your mobile phone</li>
+          <li data-step="2">Tap <strong>Menu</strong> (Android) or <strong>Settings</strong> (iOS)</li>
+          <li data-step="3">Select <strong>Linked Devices</strong> and tap <strong>Link a Device</strong></li>
+          <li data-step="4">Scan the QR code displayed above with your phone camera</li>
+        </ul>
+      </div>
+
+      <div class="allowed-numbers-banner">
+        🔒 <strong>Safe Mode Active</strong>: The bot will only respond to pre-approved tester numbers.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusBadge = document.getElementById('statusBadge');
+    const statusText = document.getElementById('statusText');
+    const qrLoader = document.getElementById('qrLoader');
+    const qrImage = document.getElementById('qrImage');
+    const successIcon = document.getElementById('successIcon');
+    const successPanel = document.getElementById('successPanel');
+    const instructions = document.getElementById('instructions');
+
+    let currentStatus = 'DISCONNECTED';
+
+    function updateUI(data) {
+      const { status, qrDataUrl } = data;
+      
+      if (currentStatus === status && status !== 'QR_READY') return;
+      currentStatus = status;
+
+      // Reset styles
+      statusBadge.className = 'status-badge';
+      qrLoader.style.display = 'none';
+      qrImage.style.display = 'none';
+      successIcon.style.display = 'none';
+      successPanel.style.display = 'none';
+      instructions.style.display = 'none';
+
+      switch (status) {
+        case 'DISCONNECTED':
+          statusBadge.classList.add('status-disconnected');
+          statusText.textContent = 'Disconnected';
+          qrLoader.style.display = 'block';
+          break;
+        case 'CONNECTING':
+          statusBadge.classList.add('status-connecting');
+          statusText.textContent = 'Connecting...';
+          qrLoader.style.display = 'block';
+          break;
+        case 'QR_READY':
+          statusBadge.classList.add('status-qr');
+          statusText.textContent = 'Scan QR Code';
+          instructions.style.display = 'block';
+          if (qrDataUrl) {
+            qrImage.src = qrDataUrl;
+            qrImage.style.display = 'block';
+          } else {
+            qrLoader.style.display = 'block';
+          }
+          break;
+        case 'CONNECTED':
+          statusBadge.classList.add('status-connected');
+          statusText.textContent = 'Connected & Active';
+          successIcon.style.display = 'block';
+          successPanel.style.display = 'flex';
+          break;
+      }
+    }
+
+    // Poll the status API every 2 seconds
+    function pollStatus() {
+      fetch('/api/whatsapp/status')
+        .then(response => {
+          if (!response.ok) throw new Error('API Error');
+          return response.json();
+        })
+        .then(data => {
+          updateUI(data);
+        })
+        .catch(err => {
+          console.error('Error polling status:', err);
+          updateUI({ status: 'DISCONNECTED', qrDataUrl: null });
+        });
+    }
+
+    // Start polling
+    setInterval(pollStatus, 2000);
+    pollStatus();
+  </script>
+</body>
+</html>

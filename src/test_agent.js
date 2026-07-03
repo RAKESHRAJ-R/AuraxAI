@@ -78,7 +78,7 @@ async function runMultiTurnFlow() {
     }
     
     // Pause to avoid triggering Gemini API rate limits (RPM) during test runs
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 15000));
   }
   
   // Clean up
@@ -100,7 +100,7 @@ async function main() {
     console.log('📦 Running Baseline Single-Turn Q&A Tests...');
     for (const query of SINGLE_TURN_TESTS) {
       await runSingleTurnTest(query);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 15000));
     }
 
     // Run the multi-turn flow simulation
