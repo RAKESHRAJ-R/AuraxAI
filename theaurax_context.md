@@ -132,19 +132,21 @@ Customer Message
 ---
 
 ## Current Status
-- WooCommerce product catalog synchronized (successfully mapped and cached over 200 items from the live `theaurax.in` WordPress database).
-- Smart token-boundary FAQ & product classifier successfully implemented (verified to separate customer sizing, prices, and customized printing from bulk wholesale orders).
-- Express Webhook server (`src/index.js`) and Instagram client wrapper (`src/services/instagram.js`) implemented and tested. GET/POST handshakes validated locally.
-- ngrok installed, updated to `v3.39.7` (minimum required version), and configured with the client authtoken.
-- **NEXT STEP**: Start the ngrok tunnel, get the public HTTPS URL, and link it to the Meta Developer Console to begin live testing.
+- WhatsApp Web Linked Device integration implemented, with QR-code generation and headless puppeteer.
+- **Message Queue / Concurrency Management** implemented using `async` library to handle massive traffic spikes and protect the Groq API from rate limits.
+- **Google Sheets Integration** completed. The bot automatically extracts the customer's real phone number (bypassing the internal Meta @lid ID) and logs first-time inquiries to the Google Sheet.
+- **Memory Token Optimization**: Chat history memory sliced from 15 down to 10 messages to dramatically reduce token consumption while maintaining enough context for checkout.
+- AI system prompt completely revamped with **Dynamic Language Mirroring**. It will aggressively hype products in natural Tanglish if the user speaks Tanglish, but will switch to professional English if the user speaks English.
+- AI model upgraded from `llama-3.1-8b-instant` to `llama-3.3-70b-versatile` for enhanced tool calling stability.
+- **NEXT STEP**: Implement Few-Shot Prompting inside the `ai.js` system instructions to completely eliminate JSON tool-calling syntax errors (e.g., `<function>` leaks) that occur when Groq's parser clashes with the Tanglish persona.
 
 ---
 
 ## Key Decisions Made
-1. **Instagram DM First**: Prioritized Instagram DM as the primary sales acquisition channel.
-2. **Meta Cloud API for WhatsApp**: Dropped WATI.io. We will use Meta's official WhatsApp Cloud API directly. This unifies both messaging systems under a single Meta App and saves subscription fees.
-3. **Smart Token-Overlap Matching**: Upgraded the local keyword classifier to perform word tokenization, avoiding substring collisions (e.g. preventing `"rs"` inside `"jerseys"` from triggering price overrides).
-4. **Owner Escalation Alerts**: Leads ordering 20+ pieces trigger a dedicated `requiresEscalation` alarm block on the backend to alert the owner's WhatsApp/mobile.
+1. **WhatsApp Web Override**: We temporarily bypassed Meta Cloud API to use a linked-device WhatsApp Web approach for faster testing without Meta app approvals.
+2. **Dynamic Language Mirroring**: The bot is no longer restricted to English. It acts as a local sales expert using common Tanglish slang ("Bro", "Kandippa") to boost conversion rates.
+3. **Keep Groq (No Gemini Yet)**: We decided to stick with the Groq API and optimize memory rather than switching back to Gemini, due to Groq's speed and strict adherence to the OpenAI tool calling format.
+4. **Model Upgrade**: Using `llama-3.3-70b-versatile` to handle complex multi-lingual tool logic, as the 8B model was too small and routinely leaked `<function>` tags into the WhatsApp chat.
 
 ---
 

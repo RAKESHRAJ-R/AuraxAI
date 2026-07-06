@@ -1,6 +1,7 @@
 import express from 'express';
 import config, { validateConfig } from './config/config.js';
 import whatsappWebBot from './services/whatsapp-web-bot.js';
+import followUpService from './services/followup.js';
 
 const app = express();
 app.use(express.json());
@@ -30,4 +31,7 @@ app.listen(PORT, () => {
   if (config.whatsappWeb && config.whatsappWeb.enabled) {
     whatsappWebBot.initialize();
   }
+
+  // Start cold lead follow-up scheduler
+  followUpService.start();
 });

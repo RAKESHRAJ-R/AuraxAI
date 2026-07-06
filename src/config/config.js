@@ -11,9 +11,13 @@ dotenv.config({ path: path.join(__dirname, '../../.env') });
 const config = {
   port: process.env.PORT || 3000,
   woocommerce: {
-    url: process.env.WOOCOMMERCE_URL || 'https://theaurax.in',
-    consumerKey: process.env.WOOCOMMERCE_CONSUMER_KEY || '',
-    consumerSecret: process.env.WOOCOMMERCE_CONSUMER_SECRET || '',
+    url: (process.env.WOOCOMMERCE_URL || 'https://theaurax.in').trim(),
+    consumerKey: (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim(),
+    consumerSecret: (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim(),
+  },
+  groq: {
+    apiKey: process.env.GROQ_API_KEY || '',
+    model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
@@ -57,9 +61,7 @@ export const validateConfig = () => {
   const missing = [];
   if (!config.woocommerce.consumerKey) missing.push('WOOCOMMERCE_CONSUMER_KEY');
   if (!config.woocommerce.consumerSecret) missing.push('WOOCOMMERCE_CONSUMER_SECRET');
-  if (!config.openai.apiKey && !config.gemini.apiKey) {
-    missing.push('OPENAI_API_KEY (or GEMINI_API_KEY)');
-  }
+  if (!config.groq.apiKey) missing.push('GROQ_API_KEY');
 
   if (missing.length > 0) {
     console.warn(`[WARNING] Missing environment variables: ${missing.join(', ')}`);

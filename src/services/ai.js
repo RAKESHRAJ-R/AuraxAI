@@ -10,7 +10,7 @@ import sheetsService from './sheets.js';
 
 class AIService {
   constructor() {
-    const groqKey = process.env.GROQ_API_KEY || config.groq?.apiKey || '';
+    const groqKey = config.groq?.apiKey || '';
     if (groqKey && !groqKey.includes('your_groq')) {
       this.openai = new OpenAI({
         apiKey: groqKey,
@@ -24,15 +24,21 @@ class AIService {
   }
 
   generateSystemPrompt(session) {
+    const faqs = faqService.getFAQs();
+    const faqSection = faqs.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
+
     return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
 Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
 
-Language & Tone Rule (CRITICAL):
+---
+COMMON FAQs — Answer these DIRECTLY from this section. Do NOT call any tool for these topics:
+${faqSection}
+---
+
+Tone & Style:
 - MIRROR THE CUSTOMER'S LANGUAGE. 
-- If the customer speaks purely in English, you MUST reply entirely in fluent, professional English. Do NOT use Tanglish.
-- If the customer uses Tanglish or Tamil, you MUST switch to natural "Tanglish" (Tamil words written in English letters). 
-- Tanglish Persona: Use words like "Bro", "Machan", "Kandippa", "Indha jersey ungaluku pakka va irukum!", "Unga full address anupunga machan, order podalam."
-- English Persona: Be warm and highly professional. "Here are our best options for you!", "Could you please provide your full shipping address so we can confirm the order?"
+- If the customer speaks English, reply in English.
+- If the customer uses Tanglish or Tamil, switch to natural Tanglish (e.g., "Bro", "Machan", "Kandippa").
 - Never sound like a robot. Be local, friendly, and hype up the products.
 - If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
 
@@ -49,7 +55,49 @@ Instructions:
 6. If the tool says "Address saved", display an order summary and ask them to reply YES to confirm. Once confirmed, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
 7. Use emojis naturally to make it engaging.
 8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
-9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.`;
+9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.
+10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Share it clearly with the customer as their checkout link.
+
+---
+LANGUAGE RULE (CRITICAL):
+- Detect language from the VERY FIRST message. If ANY Tamil or Tanglish words appear (e.g. "bro", "machan", "iruka", "vennum", "poda", "illa", "enna", "soldra"), switch to FULL Tanglish mode and STAY in it.
+- English customers get professional, friendly English. No mixing.
+- Never revert language mid-conversation.
+
+TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
+- When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
+- NEVER output XML-style tags like <function=name>...</function>. That is a bug. Never do it.
+- After the tool returns a result, write your reply naturally based on the result.
+
+WORKED EXAMPLES — Follow these exactly:
+
+[English] Product search:
+  Customer: "Do you have Chelsea jersey?"
+  → CALL search_products("Chelsea jersey")  [ONLY this, no text]
+  Tool returns products.
+  → Reply: "Yes! We have the *Chelsea Home 25/26 Jersey* at ₹849 🔵 Available in S/M/L/XL. Tap the link to see it: [url]. Which size would you like?"
+
+[Tanglish] Product search + order:
+  Customer: "bro chelsea jersey iruka?"
+  → CALL search_products("chelsea jersey")
+  Tool returns products.
+  → Reply: "Bro kandippa iruku! 🔥 *Chelsea Home 25/26 Jersey* — ₹849 la kedaikuthu! S, M, L, XL size la iruku. Enna size venum?"
+  Customer: "L bro 1 venum"
+  → CALL update_cart(productId:45, name:"Chelsea Home 25/26 Jersey", price:849, size:"L", qty:1)
+  Tool returns success.
+  → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Peyar, Address, Pincode, Mobile number."
+
+[English] FAQ query — COD:
+  Customer: "Do you support cash on delivery?"
+  → Reply directly from COMMON FAQs section above (NO tool call needed): "Yes, we support Cash on Delivery (COD)! 🚚 There's a flat ₹50 COD fee from the courier. You can also pay online via UPI or cards at no extra charge."
+
+[English] FAQ query — shipping:
+  Customer: "How long does delivery take?"
+  → Reply directly: "We ship all across India! 🚚 Metro cities: 3-5 business days. Other areas: 5-7 business days. Tracking link sent to your WhatsApp once shipped!"`;
+
+
+
+
   }
 
   getTools() {
@@ -63,18 +111,6 @@ Instructions:
             type: "object",
             properties: { query: { type: "string", description: "The search keyword." } },
             required: ["query"]
-          }
-        }
-      },
-      {
-        type: "function",
-        function: {
-          name: "get_faqs",
-          description: "Get answers to frequently asked questions about shipping, COD, sizing, delivery time, etc.",
-          parameters: {
-            type: "object",
-            properties: { topic: { type: "string", description: "The FAQ topic to search for." } },
-            required: ["topic"]
           }
         }
       },
@@ -100,11 +136,16 @@ Instructions:
         type: "function",
         function: {
           name: "set_shipping_address",
-          description: "Save the user's shipping address after they provide Name, Pincode, and Mobile.",
+          description: "Save the user's shipping address. Collect Name, Phone/Mobile, full Address, and Pincode before calling this.",
           parameters: {
             type: "object",
-            properties: { address: { type: "string", description: "The full shipping address." } },
-            required: ["address"]
+            properties: {
+              name: { type: "string", description: "Customer's full name." },
+              phone: { type: "string", description: "Customer's 10-digit mobile number." },
+              address: { type: "string", description: "Street/flat/area address." },
+              pincode: { type: "string", description: "6-digit postal/PIN code." }
+            },
+            required: ["name", "phone", "address", "pincode"]
           }
         }
       },
@@ -170,28 +211,119 @@ Instructions:
     }
   }
 
+  parseGroqWaitMs(message) {
+    const match = (message || '').match(/try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s/i);
+    if (!match) return 5 * 60 * 1000; // default 5 min if we can't parse it
+    const minutes = parseInt(match[1] || '0', 10);
+    const seconds = parseFloat(match[2] || '0');
+    return Math.ceil((minutes * 60 + seconds) * 1000);
+  }
+
+  trimMessagesToTokenBudget(messages, budgetChars = 8000) {
+    // Keep system prompt always; drop oldest context messages if over budget
+    const systemMsg = messages[0];
+    const rest = messages.slice(1);
+    let totalChars = JSON.stringify(systemMsg).length;
+    const kept = [];
+
+    for (let i = rest.length - 1; i >= 0; i--) {
+      const msgChars = JSON.stringify(rest[i]).length;
+      if (totalChars + msgChars > budgetChars) break;
+      totalChars += msgChars;
+      kept.unshift(rest[i]);
+    }
+    return [systemMsg, ...kept];
+  }
+
+  async callGroqWithRetry(messages) {
+    const trimmed = this.trimMessagesToTokenBudget(messages);
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.openai.chat.completions.create({
+          model: config.groq?.model || "llama-3.3-70b-versatile",
+          messages: trimmed,
+          tools: this.getTools(),
+          tool_choice: "auto",
+          max_tokens: 800,
+          temperature: attempt <= 2 ? 0.7 : 0.2 // lower temp on later attempts for more deterministic output
+        });
+      } catch (err) {
+        // Daily token quota (TPD) exhaustion is not recoverable by retrying with backoff -
+        // Groq itself reports the reset is minutes away, so fail fast instead of wasting attempts.
+        const isDailyQuota = err?.error?.code === 'rate_limit_exceeded' && /per day|TPD/i.test(err?.error?.message || '');
+        if (isDailyQuota) {
+          const quotaErr = new Error('Groq daily token quota exhausted');
+          quotaErr.isQuotaExhausted = true;
+          quotaErr.waitMs = this.parseGroqWaitMs(err?.error?.message);
+          throw quotaErr;
+        }
+
+        const isRateLimit = err.status === 429 || err?.error?.type === 'rate_limit_exceeded' || err?.error?.code === 'rate_limit_exceeded';
+        const isServerErr = err.status === 503 || err.status === 500;
+        const isToolLeak = err?.error?.code === 'tool_use_failed';
+        if ((isRateLimit || isServerErr || isToolLeak) && attempt < MAX_ATTEMPTS) {
+          const errLabel = isRateLimit ? 'rate limited' : isToolLeak ? 'tool_use_failed' : 'server error';
+          const delay = isRateLimit ? attempt * 4000 : attempt * 3000;
+          console.warn(`[AI Service] Groq ${errLabel} (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in ${delay / 1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, waitMs) {
+    const delay = waitMs + 20000; // 20s buffer past Groq's stated reset time
+    console.log(`[AI Service] Scheduling quota retry for ${senderId} in ${Math.round(delay / 1000)}s`);
+    setTimeout(async () => {
+      try {
+        const retryResponse = await this.answerQuery(senderId, userQuery, customerName, customerPhone);
+        if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+          await whatsappWebBot.client.sendMessage(senderId, retryResponse.replyText);
+          console.log(`[AI Service] Sent delayed quota-retry reply to ${senderId}`);
+        }
+      } catch (err) {
+        console.error('[AI Service] Quota retry failed:', err.message);
+      }
+    }, delay);
+  }
+
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null) {
     const session = await dbService.getSession(senderId);
     if (customerName && customerName !== 'Customer') session.customerName = customerName;
+    if (customerPhone) session.customerPhone = customerPhone;
 
     session.history = session.history || [];
 
-    // Log to Google Sheets if this is a first-time inquiry
-    if (session.history.length === 0) {
+    // Log to Google Sheets and save customer record on first contact
+    // (tracked via an explicit flag, not history.length, since the quota-exhausted
+    // path below intentionally skips appending to history on retry)
+    if (!session.firstContactLogged) {
+      session.firstContactLogged = true;
+      const phone = customerPhone || senderId.replace(/[^0-9]/g, '');
       sheetsService.appendRow([
-        new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), 
-        customerPhone || senderId.replace(/[^0-9]/g, ''), 
-        customerName || 'Customer', 
+        new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        phone,
+        customerName || 'Customer',
         userQuery
       ]).catch(e => console.error(e));
+
+      dbService.saveCustomer(senderId, customerName, phone).catch(() => {});
+    } else if (customerName && customerName !== 'Customer') {
+      // Keep customer record updated with latest name
+      dbService.saveCustomer(senderId, customerName, customerPhone || session.customerPhone).catch(() => {});
     }
 
     const validHistory = session.history.filter(m => m.role === 'user' || m.role === 'assistant');
-    session.history = validHistory.slice(-10);
-    
+    session.history = validHistory.slice(-4);
+
     let resultText = "";
     let isConfirmed = false;
     let requiresEscalation = false;
+    let checkoutUrl = null;
+    let quotaExhaustedWaitMs = null;
 
     if (!this.openai) {
       resultText = "I'm currently undergoing maintenance. Please reach out to our support number directly on WhatsApp.";
@@ -213,12 +345,7 @@ Instructions:
     while (keepLooping && loops < 5) {
       loops++;
       try {
-        const completion = await this.openai.chat.completions.create({
-          model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-          messages: messages,
-          tools: this.getTools(),
-          tool_choice: "auto"
-        });
+        const completion = await this.callGroqWithRetry(messages);
 
         const responseMessage = completion.choices[0].message;
         
@@ -233,9 +360,6 @@ Instructions:
             if (fnName === "search_products") {
               const products = woocommerceService.searchProducts(args.query || "");
               toolResultObj = { products: products.length > 0 ? products : null, message: products.length > 0 ? "Found products" : "No matching products found. Advise user to search website: https://theaurax.in/?s=" + encodeURIComponent(args.query || "") };
-            } else if (fnName === "get_faqs") {
-              const faqs = faqService.searchFAQs(args.topic || "");
-              toolResultObj = { faqs: faqs.length > 0 ? faqs : null, message: faqs.length > 0 ? "Found FAQs" : "No specific FAQ found." };
             } else if (fnName === "update_cart") {
               session.cart = [{
                 productId: args.productId,
@@ -247,25 +371,30 @@ Instructions:
               session.state = 'COLLECTING_ADDRESS';
               toolResultObj = { status: "success", message: "Cart updated successfully. Ask user for their shipping address next." };
             } else if (fnName === "set_shipping_address") {
-              session.address = args.address;
-              
+              session.addressDetails = { name: args.name, phone: args.phone, address: args.address, pincode: args.pincode };
+              session.address = `${args.name}, ${args.address}, ${args.pincode} | Ph: ${args.phone}`;
+              session.customerPhone = args.phone;
+              if (args.name && args.name !== 'Customer') session.customerName = args.name;
+              // Update customer registry with confirmed phone number
+              dbService.saveCustomer(senderId, args.name, args.phone).catch(() => {});
+
               const totalQty = session.cart.reduce((sum, item) => sum + parseInt(item.qty || 0), 0);
               const bulkThreshold = config.owner?.bulkThreshold || 10;
-              
+
               if (totalQty >= bulkThreshold) {
                 requiresEscalation = true;
                 session.requiresEscalation = true;
                 session.state = 'IDLE';
                 session.escalationDetails = {
                   reason: `Bulk Order (${totalQty} items)`,
-                  name: session.customerName,
-                  phone: senderId.replace(/[^0-9]/g, ''),
-                  address: args.address
+                  name: args.name || session.customerName,
+                  phone: args.phone || senderId.replace(/[^0-9]/g, ''),
+                  address: session.address
                 };
                 toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
               } else {
                 session.state = 'CONFIRMING_ORDER';
-                toolResultObj = { status: "success", message: "Address saved. Summarize the order and ask them to reply YES to confirm." };
+                toolResultObj = { status: "success", message: "Address saved. Show the full order summary (items, sizes, quantities, total price) and ask them to reply YES to confirm." };
               }
             } else if (fnName === "escalate_to_human") {
               requiresEscalation = true;
@@ -279,9 +408,39 @@ Instructions:
               };
               toolResultObj = { status: "success", message: "Escalated. Tell the user our wholesale/support team will reach out to them shortly." };
             } else if (fnName === "confirm_order") {
+              if (!session.cart || session.cart.length === 0) {
+                toolResultObj = { status: "error", message: "Cart is empty. Do NOT create an order. Ask the customer which jersey, size, and quantity they want first." };
+                messages.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  name: fnName,
+                  content: JSON.stringify(toolResultObj)
+                });
+                continue;
+              }
+
               isConfirmed = true;
               session.state = 'IDLE';
-              toolResultObj = { status: "success", message: "Order is confirmed. End the conversation politely." };
+
+              const addrDetails = session.addressDetails || {
+                name: session.customerName || 'Customer',
+                phone: session.customerPhone || senderId.replace(/\D/g, ''),
+                address: session.address || '',
+                pincode: ''
+              };
+              const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
+
+              if (orderResult.success) {
+                checkoutUrl = orderResult.paymentUrl;
+                toolResultObj = {
+                  status: "success",
+                  orderId: orderResult.orderId,
+                  paymentUrl: checkoutUrl,
+                  message: `Order #${orderResult.orderId} created! Share this payment link with the customer so they can complete checkout: ${checkoutUrl}. Tell them to tap the link, choose UPI or COD, and confirm. Be warm and enthusiastic!`
+                };
+              } else {
+                toolResultObj = { status: "success", message: "Order noted manually. Tell the customer our team will reach out shortly to confirm payment. Be warm and end on a positive note." };
+              }
             }
 
             messages.push({
@@ -293,39 +452,64 @@ Instructions:
           }
         } else {
           resultText = responseMessage.content || "Sorry, I couldn't process that.";
-          // Groq Bug Fix: Clean any leaked XML or malformed tool tags from the final text
+          // Groq Bug Fix: strip all known leaked tool-call formats
           resultText = resultText.replace(/<?\/?function=.*?>.*?<\/function>/gs, '').trim();
           resultText = resultText.replace(/[a-zA-Z_]+>\s*\{.*?\}/gs, '').trim();
-          if (!resultText) resultText = "Oops, let me try that again! What exactly were you looking for?";
+          // JSON-style leak — handles one level of nested braces e.g. {"type":"function","parameters":{"topic":"..."}}
+          resultText = resultText.replace(/\{"type"\s*:\s*"function"(?:[^{}]|\{[^{}]*\})*\}/g, '').trim();
+          // Bare "toolName{...}" or "toolName(...)" leak — no wrapper tags at all, just the raw call
+          resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
+          // Catch any remaining garbage (orphaned braces/punctuation from partial strip)
+          if (!resultText || /^[\s{}\[\],"':]+$/.test(resultText)) {
+            resultText = "Sorry about that! 🙏 Could you tell me again what you're looking for? I'll sort you out right away.";
+          }
           keepLooping = false;
         }
       } catch (err) {
-        console.error('[AI Service] Groq API error:', err.error ? JSON.stringify(err.error) : err.message || err);
-        resultText = "Oops! Something went wrong on my end. Please give me a second and try again!";
+        if (err.isQuotaExhausted) {
+          console.warn(`[AI Service] Groq daily token quota exhausted. Will retry this message in ${Math.round(err.waitMs / 1000)}s.`);
+          quotaExhaustedWaitMs = err.waitMs;
+          resultText = "Hey! 🙏 We're getting a lot of messages right now - give me just a few minutes and I'll personally get back to you with an answer. Thanks for your patience!";
+        } else {
+          console.error('[AI Service] Groq API error:', err.error ? JSON.stringify(err.error) : err.message || err);
+          resultText = "Sorry about that! 🙏 I had a little trouble just now - could you tell me again which jersey, size, and quantity you're looking for? I'll get you sorted right away.";
+        }
         keepLooping = false;
       }
+    }
+
+    if (quotaExhaustedWaitMs !== null) {
+      // Don't persist this placeholder into conversation history - schedule a real
+      // re-run of the original query once the daily quota window resets instead.
+      await dbService.saveSession(senderId, session);
+      this.scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, quotaExhaustedWaitMs);
+      return { replyText: resultText, intent: 'quota_exhausted', requiresEscalation: false, suggestedProductIds: [] };
     }
 
     session.history.push({ role: 'user', content: userQuery });
     session.history.push({ role: 'assistant', content: resultText });
 
-    if (isConfirmed && session.cart && session.cart.length > 0) {
-      try {
-        const orderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
-        const invoicePath = await generateInvoicePDF(orderId, {
-          userId: senderId,
-          customerName: session.customerName || `Customer (${senderId})`,
-          cart: session.cart,
-          address: session.address
-        });
-        console.log(`[AI Service] Dynamic PDF proforma invoice created at: ${invoicePath}`);
-        const baseUrl = config.baseUrl || 'http://localhost:3000';
-        resultText += `\n\n📄 *Proforma Invoice Generated*:\nDownload here: ${baseUrl}/invoices/invoice_${orderId}.pdf`;
-      } catch (invoiceErr) {
-        console.error('[AI Service] Proforma invoice PDF generation failed:', invoiceErr.message);
+    if (isConfirmed) {
+      if (!checkoutUrl && session.cart && session.cart.length > 0) {
+        // Fallback: WooCommerce order creation failed — generate PDF invoice instead
+        try {
+          const fallbackOrderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
+          await generateInvoicePDF(fallbackOrderId, {
+            userId: senderId,
+            customerName: session.customerName || `Customer (${senderId})`,
+            cart: session.cart,
+            address: session.address
+          });
+          const baseUrl = config.baseUrl || 'http://localhost:3000';
+          resultText += `\n\n📄 *Proforma Invoice*: ${baseUrl}/invoices/invoice_${fallbackOrderId}.pdf`;
+          console.log(`[AI Service] Fallback PDF invoice created for ${fallbackOrderId}`);
+        } catch (invoiceErr) {
+          console.error('[AI Service] Fallback PDF invoice failed:', invoiceErr.message);
+        }
       }
-      session.cart = []; 
+      session.cart = [];
       session.address = null;
+      session.addressDetails = null;
       session.history = [];
     }
 

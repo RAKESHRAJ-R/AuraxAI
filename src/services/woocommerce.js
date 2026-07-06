@@ -294,6 +294,56 @@ class WooCommerceService {
 
     return finalMatches.slice(0, 10);
   }
+
+  parseAddressDetails(addressDetails) {
+    const nameParts = (addressDetails.name || 'Customer').trim().split(/\s+/);
+    return {
+      first_name: nameParts[0] || 'Customer',
+      last_name: nameParts.slice(1).join(' ') || '',
+      phone: (addressDetails.phone || '').replace(/\D/g, '').slice(-10),
+      address_1: addressDetails.address || '',
+      postcode: (addressDetails.pincode || '').replace(/\D/g, ''),
+      country: 'IN',
+    };
+  }
+
+  async createOrder(cart, addressDetails, customerName) {
+    const billing = this.parseAddressDetails(addressDetails);
+
+    // Fill last name from customerName if not in addressDetails
+    if (customerName && !billing.last_name) {
+      const parts = customerName.trim().split(/\s+/);
+      if (parts.length > 1) billing.last_name = parts.slice(1).join(' ');
+    }
+
+    const lineItems = cart.map(item => ({
+      product_id: item.productId,
+      quantity: item.qty,
+      meta_data: item.size ? [{ key: 'Size', value: item.size }] : []
+    }));
+
+    const sizeNote = cart.map(i => `${i.name} – Size: ${i.size || 'N/A'}`).join('; ');
+
+    try {
+      const response = await this.client.post('/orders', {
+        status: 'pending',
+        billing,
+        shipping: billing,
+        line_items: lineItems,
+        customer_note: `WhatsApp Bot Order | ${sizeNote}`
+      });
+
+      const order = response.data;
+      const baseUrl = config.woocommerce.url.replace(/\/$/, '');
+      const paymentUrl = `${baseUrl}/checkout/order-pay/${order.id}/?pay_for_order=true&key=${order.order_key}`;
+
+      console.log(`[WooCommerce] Order #${order.id} created. Payment URL: ${paymentUrl}`);
+      return { success: true, orderId: order.id, paymentUrl };
+    } catch (err) {
+      console.error('[WooCommerce] createOrder failed:', err.response?.data || err.message);
+      return { success: false, error: err.message };
+    }
+  }
 }
 
 const woocommerceService = new WooCommerceService();

@@ -8,6 +8,7 @@ const DATA_DIR = path.join(__dirname, '../data');
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.json');
+const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -37,6 +38,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(LEADS_FILE)) {
       fs.writeFileSync(LEADS_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(CUSTOMERS_FILE)) {
+      fs.writeFileSync(CUSTOMERS_FILE, JSON.stringify([]), 'utf-8');
     }
 
     this.initMongo();
@@ -220,6 +224,86 @@ class DatabaseService {
     } catch (err) {
       console.error('[Database Service] Local JSON getActiveLeads error:', err.message);
       return [];
+    }
+  }
+
+  // --- Customer Registry (for marketing campaigns) ---
+
+  async saveCustomer(userId, name, phone, channel = 'whatsapp') {
+    if (!userId) return;
+    const record = {
+      userId,
+      name: name || 'Customer',
+      phone: (phone || userId.replace(/\D/g, '')).slice(-10),
+      channel,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (this.useMongo) {
+      try {
+        await this.db.collection('customers').updateOne(
+          { userId },
+          { $set: record, $setOnInsert: { createdAt: new Date().toISOString() } },
+          { upsert: true }
+        );
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB saveCustomer error:', err.message);
+      }
+    }
+
+    try {
+      const customers = JSON.parse(fs.readFileSync(CUSTOMERS_FILE, 'utf-8'));
+      const idx = customers.findIndex(c => c.userId === userId);
+      if (idx >= 0) {
+        customers[idx] = { ...customers[idx], ...record };
+      } else {
+        customers.push({ ...record, createdAt: new Date().toISOString() });
+      }
+      fs.writeFileSync(CUSTOMERS_FILE, JSON.stringify(customers, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[Database Service] Local JSON saveCustomer error:', err.message);
+    }
+  }
+
+  async getAllCustomers() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('customers').find({}).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllCustomers error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(CUSTOMERS_FILE, 'utf-8'));
+    } catch (err) {
+      return [];
+    }
+  }
+
+  async updateLeadFollowUp(userId) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('leads').updateOne(
+          { userId },
+          { $inc: { followUpCount: 1 }, $set: { lastFollowUp: new Date().toISOString() } }
+        );
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB updateLeadFollowUp error:', err.message);
+      }
+    }
+    try {
+      const leads = JSON.parse(fs.readFileSync(LEADS_FILE, 'utf-8'));
+      const idx = leads.findIndex(l => l.userId === userId);
+      if (idx >= 0) {
+        leads[idx].followUpCount = (leads[idx].followUpCount || 0) + 1;
+        leads[idx].lastFollowUp = new Date().toISOString();
+        fs.writeFileSync(LEADS_FILE, JSON.stringify(leads, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Database Service] Local JSON updateLeadFollowUp error:', err.message);
     }
   }
 }
