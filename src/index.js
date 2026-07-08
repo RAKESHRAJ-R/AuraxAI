@@ -2,6 +2,8 @@ import express from 'express';
 import config, { validateConfig } from './config/config.js';
 import whatsappWebBot from './services/whatsapp-web-bot.js';
 import followUpService from './services/followup.js';
+import aiService from './services/ai.js';
+import dbService from './services/db.js';
 
 const app = express();
 app.use(express.json());
@@ -21,6 +23,42 @@ app.get('/api/whatsapp/status', (req, res) => {
   res.json(whatsappWebBot.getStatus());
 });
 
+/**
+ * Retry Queue Stats Route
+ * Shows pending LLM retries (survives restarts via DB persistence).
+ * Useful for monitoring quota-exhausted queries waiting to be reprocessed.
+ */
+app.get('/api/retry-stats', async (req, res) => {
+  try {
+    const allRetries = await dbService.getAllPendingRetries();
+    const now = Date.now();
+
+    const stats = {
+      total: allRetries.length,
+      due: allRetries.filter(r => r.retryAt <= now).length,
+      providers: {
+        groq: !!config.groq?.apiKey,
+        openai: !!config.openai?.apiKey,
+        gemini: !!config.gemini?.apiKey,
+        activeProvider: aiService.activeProvider || 'none',
+      },
+      retries: allRetries.map(r => ({
+        senderId: r.senderId?.toString().slice(0, 20),
+        query: r.userQuery?.toString().slice(0, 60),
+        customerName: r.customerName || null,
+        retryAt: new Date(r.retryAt).toISOString(),
+        isDue: r.retryAt <= now,
+        createdAt: r.createdAt || null,
+      })),
+    };
+
+    res.json(stats);
+  } catch (err) {
+    console.error('[Server] /api/retry-stats error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch retry stats' });
+  }
+});
+
 // Start Server
 const PORT = config.port;
 app.listen(PORT, () => {
@@ -34,4 +72,19 @@ app.listen(PORT, () => {
 
   // Start cold lead follow-up scheduler
   followUpService.start();
+
+  // Process any pending retries from previous server sessions (quota-exhausted queries)
+  // This runs after a brief delay to ensure WhatsApp is connected and DB is initialized.
+  setTimeout(() => {
+    aiService.processPendingRetries().catch(err => {
+      console.error('[Server] Error processing pending retries:', err.message);
+    });
+  }, 15000);
+
+  // Periodic check for pending retries (every 60 seconds)
+  setInterval(() => {
+    aiService.processPendingRetries().catch(err => {
+      console.error('[Server] Periodic retry check error:', err.message);
+    });
+  }, 60000);
 });

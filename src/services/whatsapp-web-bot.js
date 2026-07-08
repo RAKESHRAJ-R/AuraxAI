@@ -46,7 +46,8 @@ class WhatsAppWebBot {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--disable-features=NetworkService'
           ]
         }
       });
@@ -104,7 +105,15 @@ class WhatsAppWebBot {
         this.messageQueue.push(msg);
       });
 
-      this.client.initialize();
+      this.client.initialize().catch((error) => {
+        console.error('[WhatsApp Web Bot] Failed to initialize client asynchronously:', error.message);
+        this.status = 'DISCONNECTED';
+        this.client = null;
+        // Auto-reinitialize after 10 seconds on failure
+        setTimeout(() => {
+          this.initialize();
+        }, 10000);
+      });
     } catch (error) {
       console.error('[WhatsApp Web Bot] Failed to initialize client:', error.message);
       this.status = 'DISCONNECTED';

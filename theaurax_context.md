@@ -1,7 +1,7 @@
 # Theaurax AI Sales Assistant — Project Context
 
 ## Last Updated
-2026-06-14
+2026-07-07
 
 ---
 
@@ -28,28 +28,33 @@ AI Sales Assistant that:
 ```
 Customer Message
        ↓
-   Webhook receives instantly
+   WhatsApp Web receives instantly (concurrency 5 queue)
        ↓
-   Classify:
-   - Simple query (price/size/COD/delivery) → Fetch from FAQ/website → Reply directly (NO AI)
-   - General/browsing (what jerseys?) → AI suggests products from WooCommerce catalog
-   - Bulk order (50+ pieces, wholesale) → Alert owner on WhatsApp instantly
-   - Ready to buy (order intent) → Send product link + guide to TheAurax.in checkout
+   Pre-AI FAQ Matcher (IDLE sessions only):
+   - COD, shipping, sizing, returns, bulk, customization → Reply from local faq.json instantly (NO AI)
+       ↓ (if not FAQ)
+   Classify via LLM (Groq → OpenAI → Gemini fallback chain):
+   - General/browsing (what jerseys?) → AI searches WooCommerce product cache & suggests
+   - Order intent (size/qty/address) → AI guides through order flow
+   - Bulk order (≥ threshold) → Escalate to owner via WhatsApp + Telegram
+   - Ready to confirm → Create WooCommerce order / PDF invoice
 ```
 
 ---
 
-## Tech Stack (Decided)
+## Tech Stack (Current)
 | Component | Tool | Notes |
 |---|---|---|
-| WhatsApp API | WATI.io | Fastest setup, no Meta approval wait |
-| Instagram DM | Meta Graph API | Needs Meta app review (2-4 weeks) — Phase 2 |
-| Backend | Node.js on VPS | Hetzner CX22 (~₹700/month) |
-| Database | MongoDB | Store chats, leads, orders |
-| AI Engine | Claude API (claude-sonnet-4-6) or OpenAI GPT | For general/product queries |
-| Product Catalog | WooCommerce REST API | Pull products, prices, stock, images |
-| Invoice | PDF generation (pdfkit) | Auto-send via WhatsApp |
-| Server | Hetzner or DigitalOcean VPS | 24/7 uptime |
+| WhatsApp | WhatsApp Web (whatsapp-web.js + Puppeteer) | Linked device, QR auth, auto-reconnect |
+| Instagram DM | Meta Graph API | Phase 2 — Instagram service exists but not active |
+| Backend | Node.js (Express) | Runs on port 3000 |
+| Database | JSON files (src/data/) | MongoDB optional via MONGODB_URI |
+| AI Engine | Groq (LLaMA 3.3-70B) → OpenAI (GPT-4o-mini) → Gemini (2.0 Flash) | Triple fallback chain |
+| Product Catalog | WooCommerce REST API | Products cached locally in products_cache.json |
+| Invoice | PDFKit | Branded proforma invoice served at /invoices/ |
+| Lead Logging | Google Sheets | First-contact only, via service account |
+| Owner Alerts | WhatsApp + Telegram | Bulk order / wholesale escalations |
+| Cold Follow-up | Built-in scheduler | Every 30 min, up to 2 follow-ups per lead |
 
 ---
 
@@ -78,75 +83,103 @@ Customer Message
 
 ---
 
-## Pre-Requirements Checklist (Get From Client)
+## Setup Status (Completed ✅ / Pending ⬜)
 
 ### From TheAurax.in
-- [ ] WooCommerce Consumer Key + Consumer Secret
-- [ ] WordPress admin access
-- [ ] All products listed with prices, sizes, stock, images in WooCommerce
+- [✅] WooCommerce Consumer Key + Consumer Secret — configured in .env
+- [✅] WordPress admin access — available
+- [✅] All products listed with prices, sizes, stock, images — 100+ products in cache
 
 ### From Their Accounts
-- [ ] Dedicated WhatsApp Business number (NOT personal number)
-- [ ] Facebook Business Manager account (verified)
-- [ ] Instagram Business Account linked to Facebook Page
-- [ ] Meta Developer Account access
+- [⬜] Dedicated WhatsApp Business number — using WhatsApp Web linked device instead
+- [⬜] Facebook Business Manager account — needed for Instagram DM (Phase 2)
+- [⬜] Instagram Business Account linked to Facebook Page — needed for Phase 2
+- [⬜] Meta Developer Account access — needed for Phase 2
 
 ### Business Information
-- [ ] FAQ list (common Q&A: price range, sizes, COD, delivery time, return policy)
-- [ ] Shipping charges (flat rate or state-wise)
-- [ ] Delivery timeline (local vs outstation)
-- [ ] COD availability + minimum order value
-- [ ] Courier partner (Shiprocket / Delhivery / manual?)
-- [ ] Owner's WhatsApp number (for bulk order alerts)
-- [ ] Brand logo + colors (for invoices)
-- [ ] Bulk order threshold (at what quantity it becomes "bulk"?)
+- [✅] FAQ list — 7 FAQs in src/data/faq.json (COD, shipping, sizing, returns, customization, quality, bulk)
+- [✅] Shipping charges — FREE prepaid, ₹50 COD fee
+- [✅] Delivery timeline — 3-5 days metro, 5-7 days other
+- [✅] COD availability — Yes, with ₹50 fee
+- [⬜] Courier partner — not configured yet
+- [✅] Owner's WhatsApp number — configured in .env (OWNER_WHATSAPP_NUMBER)
+- [✅] Brand info — "Theaurax" branding on invoices
+- [✅] Bulk order threshold — set to 10 (BULK_ORDER_THRESHOLD)
 
 ---
 
-## Build Phases
+## Build Phases (Progress)
 
-### Phase 1 — WhatsApp Bot Core (Week 1-2)
-- Set up WATI.io account with client's WhatsApp number
-- Set up VPS (Hetzner CX22)
-- Build Node.js webhook handler
-- Build message classifier (keyword-based)
-- FAQ engine with predefined answers
-- WooCommerce product fetch + cache
-- Bulk alert to owner
+### ✅ Phase 1 — WhatsApp Bot Core (Complete)
+- Set up WhatsApp Web linked device (whatsapp-web.js + Puppeteer) — replacing WATI.io
+- Node.js Express server with message queue (concurrency 5)
+- Pre-AI FAQ matcher (answers instantly without LLM)
+- WooCommerce product cache + token-scored local search (739KB, 100+ products)
+- Bulk order escalation to owner (WhatsApp + Telegram)
+- Google Sheets lead logging
 
-### Phase 2 — Order Flow + Invoice (Week 3)
-- Conversation flow to collect order details (product, size, qty, address)
-- Auto PDF invoice generation
-- Send invoice via WhatsApp
+### ✅ Phase 2 — Order Flow + Invoice (Complete)
+- Multi-turn AI agentic loop with 5 tools (search, cart, address, confirm, escalate)
+- PDF invoice generation via PDFKit (branded, includes UPI/COD instructions)
+- Real WooCommerce order creation via REST API (falls back to PDF if website is down)
 
-### Phase 3 — Follow-up + Lead Tracking (Week 4)
-- MongoDB lead storage
-- Scheduled follow-up if customer goes cold
-- Thank-you + feedback after delivery
+### ✅ Phase 3 — Follow-up + Lead Tracking (Complete)
+- Persistent storage via JSON files (MongoDB optional)
+- Customer registry (48 contacts)
+- Cold lead follow-up scheduler (every 30 min, 3hr inactive threshold, max 2 follow-ups)
+- Session state machine (IDLE → COLLECTING_ADDRESS → CONFIRMING_ORDER)
 
-### Phase 4 — Instagram DM (Week 5-6)
-- Meta app review submission (start early)
-- Same classifier logic, different API
-- Handle 24h window restriction with templates
+### ⬜ Phase 4 — Instagram DM (Not started)
+- Meta app review submission needed
+- Instagram service exists but in mock mode (no active integration)
+
+### 🆕 Recent Enhancements (July 2026)
+- **Triple LLM fallback chain**: Groq → OpenAI → Gemini
+- **Pre-AI FAQ matcher**: Zero LLM calls for common questions
+- **Rate-limit throttling**: 600ms min gap between API calls
+- **Two-pass tool call stripping**: Eliminates leaked tool syntax from responses
+- **Persistent retry queue**: Survives server restarts (DB-backed)
+- **Monitoring endpoint**: GET /api/retry-stats
 
 ---
 
 ## Current Status
-- WhatsApp Web Linked Device integration implemented, with QR-code generation and headless puppeteer.
-- **Message Queue / Concurrency Management** implemented using `async` library to handle massive traffic spikes and protect the Groq API from rate limits.
-- **Google Sheets Integration** completed. The bot automatically extracts the customer's real phone number (bypassing the internal Meta @lid ID) and logs first-time inquiries to the Google Sheet.
-- **Memory Token Optimization**: Chat history memory sliced from 15 down to 10 messages to dramatically reduce token consumption while maintaining enough context for checkout.
-- AI system prompt completely revamped with **Dynamic Language Mirroring**. It will aggressively hype products in natural Tanglish if the user speaks Tanglish, but will switch to professional English if the user speaks English.
-- AI model upgraded from `llama-3.1-8b-instant` to `llama-3.3-70b-versatile` for enhanced tool calling stability.
-- **NEXT STEP**: Implement Few-Shot Prompting inside the `ai.js` system instructions to completely eliminate JSON tool-calling syntax errors (e.g., `<function>` leaks) that occur when Groq's parser clashes with the Tanglish persona.
+
+### ✅ Completed & Working
+- **Pre-AI FAQ Matcher** (`ai.js`): FAQ queries (COD, shipping, sizing, returns, etc.) are answered **instantly without any LLM call** — zero token cost, zero leak risk. Gated on session state `IDLE` so it won't intercept order messages.
+- **Two-Pass Tool Call Stripping** (`ai.js`): When Groq returns leaked text alongside a tool call, the text is discarded immediately — only the tool call is processed.
+- **Rate-Limit Throttling** (`ai.js`): Global 600ms minimum gap between all LLM API calls (static `lastApiCallTime` + `callWithThrottle()`).
+- **Multi-LLM Fallback Chain** (`ai.js`): Groq (LLaMA 3.3-70B) → OpenAI (GPT-4o-mini) → Gemini (2.0 Flash). When one provider fails, the next is tried automatically.
+- **Gemini Integration** (`ai.js`): Full message format conversion (OpenAI ↔ Gemini) via `_buildGeminiConversation()`. Supports all roles: system, user, assistant with tool_calls, tool with functionResponse. Includes 2-attempt retry loop.
+- **Persistent Retry Queue** (`db.js` + `ai.js` + `index.js`): Quota-exhausted queries are saved to DB (MongoDB or JSON) and retried automatically. Survives server restarts. Runs 15s after startup + every 60s.
+- **Retry Stats Endpoint** (`index.js`): `GET /api/retry-stats` shows pending retries, due count, provider config status, and active provider.
+- **Active Provider Tracking** (`ai.js`): `aiService.activeProvider` reports which LLM is currently handling requests.
+
+### Previous Milestones
+- WhatsApp Web Linked Device integration (QR-code, headless puppeteer, auto-reconnect)
+- Message queue with concurrency 5 via `async` library
+- Google Sheets lead logging (first-contact only)
+- Dynamic language mirroring (English ↔ Tanglish)
+- PDF invoice generation via PDFKit
+- Cold lead follow-up scheduler (every 30 min, max 2 follow-ups)
+- WooCommerce product cache + token-scored local search
+- Bulk order escalation to owner (WhatsApp + Telegram)
+
+### 🟡 Known Limitations
+- **Groq & OpenAI quotas currently exhausted** — API keys are valid but daily quota used up. Refill or wait for reset.
+- **WooCommerce website in maintenance mode** — order creation (`createOrder`) and product sync (`npm run sync`) unavailable until site is live.
+- **Gemini key is valid but rate-limited** — returns 429 when called too frequently. The 600ms throttle + 2-attempt retry loop handles this. Gemini is the **active fallback** when Groq/OpenAI are exhausted.
+- **Instagram DM not active** — Meta app review required before Instagram integration works.
 
 ---
 
 ## Key Decisions Made
-1. **WhatsApp Web Override**: We temporarily bypassed Meta Cloud API to use a linked-device WhatsApp Web approach for faster testing without Meta app approvals.
-2. **Dynamic Language Mirroring**: The bot is no longer restricted to English. It acts as a local sales expert using common Tanglish slang ("Bro", "Kandippa") to boost conversion rates.
-3. **Keep Groq (No Gemini Yet)**: We decided to stick with the Groq API and optimize memory rather than switching back to Gemini, due to Groq's speed and strict adherence to the OpenAI tool calling format.
-4. **Model Upgrade**: Using `llama-3.3-70b-versatile` to handle complex multi-lingual tool logic, as the 8B model was too small and routinely leaked `<function>` tags into the WhatsApp chat.
+1. **WhatsApp Web Override**: Bypassed Meta Cloud API to use a linked-device WhatsApp Web approach for faster testing without Meta app approvals.
+2. **Dynamic Language Mirroring**: The bot acts as a local sales expert using Tanglish slang ("Bro", "Kandippa") to boost conversion rates.
+3. **Model Upgrade**: Using `llama-3.3-70b-versatile` for complex multi-lingual tool logic.
+4. **FAQ-First Architecture**: FAQs are answered pre-LLM to save tokens and eliminate leak risk.
+5. **Triple Fallback Chain**: Groq → OpenAI → Gemini ensures no single provider outage stops the bot.
+6. **Persistent Retry Queue**: setTimeout + DB persistence ensures retries survive server restarts.
 
 ---
 

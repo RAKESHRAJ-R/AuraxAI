@@ -9,6 +9,7 @@ const DATA_DIR = path.join(__dirname, '../data');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.json');
 const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
+const RETRY_QUEUE_FILE = path.join(DATA_DIR, 'retry_queue.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -41,6 +42,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(CUSTOMERS_FILE)) {
       fs.writeFileSync(CUSTOMERS_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(RETRY_QUEUE_FILE)) {
+      fs.writeFileSync(RETRY_QUEUE_FILE, JSON.stringify([]), 'utf-8');
     }
 
     this.initMongo();
@@ -304,6 +308,99 @@ class DatabaseService {
       }
     } catch (err) {
       console.error('[Database Service] Local JSON updateLeadFollowUp error:', err.message);
+    }
+  }
+
+  // --- Persistent Retry Queue (survives server restarts) ---
+
+  async savePendingRetry(senderId, userQuery, customerName, customerPhone, retryAt) {
+    const entry = { senderId, userQuery, customerName, customerPhone, retryAt, createdAt: new Date().toISOString() };
+
+    if (this.useMongo) {
+      try {
+        await this.db.collection('retry_queue').updateOne(
+          { senderId, userQuery },
+          { $set: entry },
+          { upsert: true }
+        );
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB savePendingRetry error:', err.message);
+      }
+    }
+
+    // JSON Fallback
+    try {
+      const queue = JSON.parse(fs.readFileSync(RETRY_QUEUE_FILE, 'utf-8'));
+      const idx = queue.findIndex(e => e.senderId === senderId && e.userQuery === userQuery);
+      if (idx >= 0) {
+        queue[idx] = entry;
+      } else {
+        queue.push(entry);
+      }
+      fs.writeFileSync(RETRY_QUEUE_FILE, JSON.stringify(queue, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[Database Service] Local JSON savePendingRetry error:', err.message);
+    }
+  }
+
+  async getDueRetries() {
+    const now = Date.now();
+
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('retry_queue').find({
+          retryAt: { $lte: now }
+        }).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getDueRetries error:', err.message);
+        return [];
+      }
+    }
+
+    // JSON Fallback
+    try {
+      const queue = JSON.parse(fs.readFileSync(RETRY_QUEUE_FILE, 'utf-8'));
+      return queue.filter(e => e.retryAt <= now);
+    } catch (err) {
+      console.error('[Database Service] Local JSON getDueRetries error:', err.message);
+      return [];
+    }
+  }
+
+  async deletePendingRetry(senderId, userQuery) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('retry_queue').deleteOne({ senderId, userQuery });
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deletePendingRetry error:', err.message);
+      }
+    }
+
+    // JSON Fallback
+    try {
+      const queue = JSON.parse(fs.readFileSync(RETRY_QUEUE_FILE, 'utf-8'));
+      const filtered = queue.filter(e => !(e.senderId === senderId && e.userQuery === userQuery));
+      fs.writeFileSync(RETRY_QUEUE_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[Database Service] Local JSON deletePendingRetry error:', err.message);
+    }
+  }
+
+  async getAllPendingRetries() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('retry_queue').find({}).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllPendingRetries error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(RETRY_QUEUE_FILE, 'utf-8'));
+    } catch (err) {
+      return [];
     }
   }
 }

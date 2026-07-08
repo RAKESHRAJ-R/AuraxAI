@@ -68,7 +68,7 @@
     "name": "RAKESH",
     "phone": "7228615734",
     "channel": "whatsapp",
-    "updatedAt": "2026-07-04T18:01:29.439Z",
+    "updatedAt": "2026-07-07T18:24:41.742Z",
     "createdAt": "2026-07-04T16:44:19.580Z"
   },
   {
@@ -113,10 +113,10 @@
   },
   {
     "userId": "customer_sim_99",
-    "name": "Customer",
-    "phone": "99",
+    "name": "Alice Smith",
+    "phone": "9819928374",
     "channel": "whatsapp",
-    "updatedAt": "2026-07-05T17:12:18.898Z",
+    "updatedAt": "2026-07-07T16:56:16.647Z",
     "createdAt": "2026-07-05T16:39:50.784Z"
   },
   {
@@ -190,5 +190,197 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-05T17:08:09.710Z",
     "createdAt": "2026-07-05T17:08:09.711Z"
+  },
+  {
+    "userId": "test_user_single_430",
+    "name": "Customer",
+    "phone": "430",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:22:55.711Z",
+    "createdAt": "2026-07-07T16:22:55.714Z"
+  },
+  {
+    "userId": "test_user_single_429",
+    "name": "Customer",
+    "phone": "429",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:23:12.777Z",
+    "createdAt": "2026-07-07T16:23:12.779Z"
+  },
+  {
+    "userId": "test_user_single_385",
+    "name": "Customer",
+    "phone": "385",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:23:28.437Z",
+    "createdAt": "2026-07-07T16:23:28.439Z"
+  },
+  {
+    "userId": "test_user_single_787",
+    "name": "Customer",
+    "phone": "787",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:24:54.787Z",
+    "createdAt": "2026-07-07T16:24:54.789Z"
+  },
+  {
+    "userId": "test_user_single_374",
+    "name": "Customer",
+    "phone": "374",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:25:11.015Z",
+    "createdAt": "2026-07-07T16:25:11.017Z"
+  },
+  {
+    "userId": "test_user_single_702",
+    "name": "Customer",
+    "phone": "702",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:25:27.061Z",
+    "createdAt": "2026-07-07T16:25:27.063Z"
+  },
+  {
+    "userId": "test_user_single_600",
+    "name": "Customer",
+    "phone": "600",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:54:21.897Z",
+    "createdAt": "2026-07-07T16:54:21.901Z"
+  },
+  {
+    "userId": "test_user_single_67",
+    "name": "Customer",
+    "phone": "67",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:54:38.162Z",
+    "createdAt": "2026-07-07T16:54:38.162Z"
+  },
+  {
+    "userId": "test_user_single_857",
+    "name": "Customer",
+    "phone": "857",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:54:53.169Z",
+    "createdAt": "2026-07-07T16:54:53.171Z"
+  },
+  {
+    "userId": "test_faq_1783443493514",
+    "name": "Customer",
+    "phone": "3443493514",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:13.536Z",
+    "createdAt": "2026-07-07T16:58:13.537Z"
+  },
+  {
+    "userId": "faq_test_1783443522572_e7um",
+    "name": "Customer",
+    "phone": "4435225727",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:42.600Z",
+    "createdAt": "2026-07-07T16:58:42.601Z"
+  },
+  {
+    "userId": "faq_test_1783443522606_7qg2",
+    "name": "Customer",
+    "phone": "4352260672",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:42.608Z",
+    "createdAt": "2026-07-07T16:58:42.608Z"
+  },
+  {
+    "userId": "faq_test_1783443522612_p9me",
+    "name": "Customer",
+    "phone": "4435226129",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:42.613Z",
+    "createdAt": "2026-07-07T16:58:42.614Z"
+  },
+  {
+    "userId": "faq_test_1783443522617_q3v9",
+    "name": "Customer",
+    "phone": "4352261739",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:42.618Z",
+    "createdAt": "2026-07-07T16:58:42.619Z"
+  },
+  {
+    "userId": "search_test_1783443527629_xame",
+    "name": "Customer",
+    "phone": "3443527629",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:47.632Z",
+    "createdAt": "2026-07-07T16:58:47.634Z"
+  },
+  {
+    "userId": "search_test_1783443533391_55kw",
+    "name": "Customer",
+    "phone": "4353339155",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:58:53.394Z",
+    "createdAt": "2026-07-07T16:58:53.395Z"
+  },
+  {
+    "userId": "search_test_1783443569330_v60s",
+    "name": "Customer",
+    "phone": "4356933060",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T16:59:29.331Z",
+    "createdAt": "2026-07-07T16:59:29.331Z"
+  },
+  {
+    "userId": "flow_test_1783443700140",
+    "name": "Customer",
+    "phone": "3443700140",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:01:40.144Z",
+    "createdAt": "2026-07-07T17:01:40.145Z"
+  },
+  {
+    "userId": "t1_1783443734823",
+    "name": "Customer",
+    "phone": "3443734823",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:14.854Z",
+    "createdAt": "2026-07-07T17:02:14.855Z"
+  },
+  {
+    "userId": "t1_1783443734861",
+    "name": "Customer",
+    "phone": "3443734861",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:14.863Z",
+    "createdAt": "2026-07-07T17:02:14.864Z"
+  },
+  {
+    "userId": "t1_1783443734868",
+    "name": "Customer",
+    "phone": "3443734868",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:14.870Z",
+    "createdAt": "2026-07-07T17:02:14.871Z"
+  },
+  {
+    "userId": "t1_1783443734875",
+    "name": "Customer",
+    "phone": "3443734875",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:14.876Z",
+    "createdAt": "2026-07-07T17:02:14.877Z"
+  },
+  {
+    "userId": "t2_1783443734880_1yre",
+    "name": "Customer",
+    "phone": "4437348801",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:14.882Z",
+    "createdAt": "2026-07-07T17:02:14.883Z"
+  },
+  {
+    "userId": "t2_1783443768668_dhop",
+    "name": "Customer",
+    "phone": "3443768668",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-07T17:02:48.670Z",
+    "createdAt": "2026-07-07T17:02:48.670Z"
   }
 ]

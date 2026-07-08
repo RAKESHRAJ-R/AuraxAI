@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import config from '../config/config.js';
 import faqService from './faq.js';
 import woocommerceService from './woocommerce.js';
@@ -9,18 +10,52 @@ import telegramService from './telegram.js';
 import sheetsService from './sheets.js';
 
 class AIService {
-  constructor() {
-    const groqKey = config.groq?.apiKey || '';
-    if (groqKey && !groqKey.includes('your_groq')) {
-      this.openai = new OpenAI({
-        apiKey: groqKey,
-        baseURL: "https://api.groq.com/openai/v1"
-      });
-      console.log(`[AI Service] Loaded Groq API Key for Agent.`);
-    } else {
-      console.warn(`[AI Service] No GROQ_API_KEY found!`);
-      this.openai = null;
+  // --- Rate-limit throttling ---
+  // Global minimum gap between LLM API calls to reduce 429 errors.
+  static lastApiCallTime = 0;
+  static minApiGapMs = 600; // ~100 RPM max (Groq free tier allows 30 RPM, this is conservative)
+
+  async callWithThrottle(fn) {
+    const now = Date.now();
+    const elapsed = now - AIService.lastApiCallTime;
+    if (elapsed < AIService.minApiGapMs) {
+      await new Promise(r => setTimeout(r, AIService.minApiGapMs - elapsed));
     }
+    AIService.lastApiCallTime = Date.now();
+    return fn();
+  }
+
+  constructor() {
+    // --- Primary LLM Provider (Groq) — supports multiple API keys for rotation ---
+    this.groqClients = (config.groq.apiKeys || []).map(key => new OpenAI({
+      apiKey: key,
+      baseURL: 'https://api.groq.com/openai/v1'
+    }));
+    if (this.groqClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.groqClients.length} Groq API key(s) for rotation.`);
+    } else {
+      console.warn('[AI Service] No GROQ_API_KEY found!');
+    }
+
+    // --- Secondary LLM Provider (OpenAI fallback) — supports multiple API keys ---
+    this.openaiClients = (config.openai.apiKeys || []).map(key => new OpenAI({ apiKey: key }));
+    if (this.openaiClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.openaiClients.length} OpenAI API key(s) as fallback.`);
+    } else {
+      this.openaiClients = [];
+    }
+
+    // --- Tertiary LLM Provider (Gemini fallback) — supports multiple API keys ---
+    this.geminiClients = (config.gemini.apiKeys || []).map(key => new GoogleGenerativeAI(key));
+    if (this.geminiClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.geminiClients.length} Gemini API key(s) as fallback.`);
+    } else {
+      this.geminiClients = [];
+    }
+
+    // Track which provider + key index we're currently using
+    this.activeProvider = this.groqClients.length > 0 ? 'groq' : (this.openaiClients.length > 0 ? 'openai' : 'gemini');
+    this.activeKeyIndex = 0;
   }
 
   generateSystemPrompt(session) {
@@ -73,17 +108,17 @@ WORKED EXAMPLES — Follow these exactly:
 
 [English] Product search:
   Customer: "Do you have Chelsea jersey?"
-  → CALL search_products("Chelsea jersey")  [ONLY this, no text]
+  → [Use the search_products tool with query "Chelsea jersey"]  [ONLY use the tool, no text]
   Tool returns products.
   → Reply: "Yes! We have the *Chelsea Home 25/26 Jersey* at ₹849 🔵 Available in S/M/L/XL. Tap the link to see it: [url]. Which size would you like?"
 
 [Tanglish] Product search + order:
   Customer: "bro chelsea jersey iruka?"
-  → CALL search_products("chelsea jersey")
+  → [Use the search_products tool with query "chelsea jersey"]
   Tool returns products.
   → Reply: "Bro kandippa iruku! 🔥 *Chelsea Home 25/26 Jersey* — ₹849 la kedaikuthu! S, M, L, XL size la iruku. Enna size venum?"
   Customer: "L bro 1 venum"
-  → CALL update_cart(productId:45, name:"Chelsea Home 25/26 Jersey", price:849, size:"L", qty:1)
+  → [Use the update_cart tool with productId:45, name:"Chelsea Home 25/26 Jersey", price:849, size:"L", qty:1]
   Tool returns success.
   → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Peyar, Address, Pincode, Mobile number."
 
@@ -235,28 +270,42 @@ WORKED EXAMPLES — Follow these exactly:
     return [systemMsg, ...kept];
   }
 
-  async callGroqWithRetry(messages) {
+  async callLLMWithRetry(messages, client, provider = 'groq') {
     const trimmed = this.trimMessagesToTokenBudget(messages);
     const MAX_ATTEMPTS = 4;
+
+    const model = provider === 'openai'
+      ? (config.openai?.model || 'gpt-4o-mini')
+      : (config.groq?.model || 'llama-3.3-70b-versatile');
+
+    if (!client) {
+      const err = new Error(`${provider} client not initialized`);
+      err.providerUnavailable = true;
+      throw err;
+    }
+
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        return await this.openai.chat.completions.create({
-          model: config.groq?.model || "llama-3.3-70b-versatile",
+        // Apply rate-limit throttle before making the API call
+        return await this.callWithThrottle(() => client.chat.completions.create({
+          model,
           messages: trimmed,
           tools: this.getTools(),
-          tool_choice: "auto",
+          tool_choice: 'auto',
           max_tokens: 800,
-          temperature: attempt <= 2 ? 0.7 : 0.2 // lower temp on later attempts for more deterministic output
-        });
+          temperature: attempt <= 2 ? 0.7 : 0.2
+        }));
       } catch (err) {
-        // Daily token quota (TPD) exhaustion is not recoverable by retrying with backoff -
-        // Groq itself reports the reset is minutes away, so fail fast instead of wasting attempts.
-        const isDailyQuota = err?.error?.code === 'rate_limit_exceeded' && /per day|TPD/i.test(err?.error?.message || '');
-        if (isDailyQuota) {
-          const quotaErr = new Error('Groq daily token quota exhausted');
-          quotaErr.isQuotaExhausted = true;
-          quotaErr.waitMs = this.parseGroqWaitMs(err?.error?.message);
-          throw quotaErr;
+        // Daily token quota (TPD) exhaustion — not recoverable by retrying with backoff.
+        // Groq reports the reset is minutes away, so signal the caller to schedule a retry.
+        if (provider === 'groq') {
+          const isDailyQuota = err?.error?.code === 'rate_limit_exceeded' && /per day|TPD/i.test(err?.error?.message || '');
+          if (isDailyQuota) {
+            const quotaErr = new Error('Groq daily token quota exhausted');
+            quotaErr.isQuotaExhausted = true;
+            quotaErr.waitMs = this.parseGroqWaitMs(err?.error?.message);
+            throw quotaErr;
+          }
         }
 
         const isRateLimit = err.status === 429 || err?.error?.type === 'rate_limit_exceeded' || err?.error?.code === 'rate_limit_exceeded';
@@ -265,7 +314,7 @@ WORKED EXAMPLES — Follow these exactly:
         if ((isRateLimit || isServerErr || isToolLeak) && attempt < MAX_ATTEMPTS) {
           const errLabel = isRateLimit ? 'rate limited' : isToolLeak ? 'tool_use_failed' : 'server error';
           const delay = isRateLimit ? attempt * 4000 : attempt * 3000;
-          console.warn(`[AI Service] Groq ${errLabel} (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in ${delay / 1000}s...`);
+          console.warn(`[AI Service] ${provider} ${errLabel} (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in ${delay / 1000}s...`);
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
@@ -274,20 +323,285 @@ WORKED EXAMPLES — Follow these exactly:
     }
   }
 
+  /**
+   * Call Gemini (Google) LLM and convert response to OpenAI-compatible format.
+   * Gemini uses a different SDK & message format — this bridges the gap.
+   * Has a simple 2-attempt retry loop for transient errors.
+   */
+  async callGemini(messages, geminiClient) {
+    if (!geminiClient) {
+      const err = new Error('Gemini client not initialized');
+      err.providerUnavailable = true;
+      throw err;
+    }
+
+    const trimmed = this.trimMessagesToTokenBudget(messages);
+
+    // Build Gemini-format conversation ONCE (retries reuse the same built history)
+    const { systemMsg, geminiHistory, lastUserMsg, geminiTools } = this._buildGeminiConversation(trimmed);
+
+    const MAX_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const model = geminiClient.getGenerativeModel({
+          model: config.gemini?.model || 'gemini-2.0-flash',
+          systemInstruction: systemMsg || undefined,
+        });
+
+        const chat = model.startChat({
+          history: geminiHistory,
+          tools: geminiTools,
+        });
+
+        const userText = lastUserMsg?.content || '';
+        const result = await chat.sendMessage([{ text: userText }]);
+        const response = result.response;
+        const candidate = response.candidates?.[0];
+
+        if (!candidate) {
+          return { choices: [{ message: { content: "Sorry, I couldn't process that.", role: 'assistant' } }] };
+        }
+
+        const parts = candidate.content?.parts || [];
+
+        // Check for function calls in the response
+        const functionCalls = parts.filter(p => p.functionCall);
+        if (functionCalls.length > 0) {
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: functionCalls.map((fc, i) => ({
+                  id: `gemini_${fc.functionCall.name}_${i}`,
+                  type: 'function',
+                  function: {
+                    name: fc.functionCall.name,
+                    arguments: JSON.stringify(fc.functionCall.args || {})
+                  }
+                }))
+              }
+            }]
+          };
+        }
+
+        // Text response
+        const text = parts.map(p => p.text || '').join('').trim();
+        return {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: text || "Sorry, I couldn't process that."
+            }
+          }]
+        };
+      } catch (err) {
+        const isRetryable = err.status === 429 || err.status === 500 || err.status === 503 || err?.message?.includes('RATE_LIMIT');
+        if (isRetryable && attempt < MAX_ATTEMPTS) {
+          console.warn(`[AI Service] Gemini rate limited/error (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in 3s...`);
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Convert OpenAI-format messages to Gemini-format conversation history.
+   * Extracted so both callGemini and potential future callers can reuse it.
+   */
+  _buildGeminiConversation(trimmed) {
+    // Extract system instruction from the first message (Gemini passes it separately)
+    const systemMsg = trimmed[0]?.role === 'system' ? trimmed[0].content : '';
+    const chatMessages = trimmed.slice(systemMsg ? 1 : 0);
+
+    // Last message is the current user query — it goes to sendMessage(), not history
+    const lastUserMsg = chatMessages.length > 0 ? chatMessages[chatMessages.length - 1] : null;
+    const history = chatMessages.length > 1 ? chatMessages.slice(0, -1) : [];
+
+    // Convert OpenAI-format history to Gemini-format contents
+    const geminiHistory = [];
+    for (const msg of history) {
+      if (msg.role === 'user') {
+        geminiHistory.push({ role: 'user', parts: [{ text: msg.content || '' }] });
+      } else if (msg.role === 'assistant') {
+        const parts = [];
+        if (msg.content) parts.push({ text: msg.content });
+        if (msg.tool_calls) {
+          for (const tc of msg.tool_calls) {
+            try {
+              parts.push({
+                functionCall: {
+                  name: tc.function.name,
+                  args: JSON.parse(tc.function.arguments)
+                }
+              });
+            } catch (e) {
+              // skip malformed tool calls
+            }
+          }
+        }
+        geminiHistory.push({ role: 'model', parts });
+      } else if (msg.role === 'tool') {
+        try {
+          geminiHistory.push({
+            role: 'user',
+            parts: [{
+              functionResponse: {
+                name: msg.name,
+                response: typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content
+              }
+            }]
+          });
+        } catch (e) {
+          geminiHistory.push({ role: 'user', parts: [{ text: `Result for ${msg.name}: ${msg.content}` }] });
+        }
+      }
+    }
+
+    // Convert OpenAI-style tools to Gemini function_declarations
+    const openaiTools = this.getTools();
+    const geminiTools = openaiTools.length > 0 ? [{
+      functionDeclarations: openaiTools.map(t => ({
+        name: t.function.name,
+        description: t.function.description,
+        parameters: {
+          type: t.function.parameters.type?.toUpperCase() || 'OBJECT',
+          properties: t.function.parameters.properties || {},
+          required: t.function.parameters.required || []
+        }
+      }))
+    }] : undefined;
+
+    return { systemMsg, geminiHistory, lastUserMsg, geminiTools };
+  }
+
+  /**
+   * Call LLM with automatic fallback chain: Groq → OpenAI → Gemini.
+   * If a provider is rate-limited or unavailable, transparently switches to the next.
+   */
+  async callLLMWithFallback(messages) {
+    // Build a flat list of all API clients across all providers for key rotation.
+    // Order: Groq key1 → Groq key2 → ... → OpenAI key1 → OpenAI key2 → ... → Gemini key1 → ...
+    const entries = [];
+    for (let i = 0; i < this.groqClients.length; i++) {
+      entries.push({ name: 'groq', client: this.groqClients[i], type: 'openai', keyIndex: i });
+    }
+    for (let i = 0; i < this.openaiClients.length; i++) {
+      entries.push({ name: 'openai', client: this.openaiClients[i], type: 'openai', keyIndex: i });
+    }
+    for (let i = 0; i < this.geminiClients.length; i++) {
+      entries.push({ name: 'gemini', client: this.geminiClients[i], type: 'gemini', keyIndex: i });
+    }
+
+    if (entries.length === 0) {
+      throw new Error('All LLM providers failed — no API keys configured');
+    }
+
+    let lastError = null;
+    let groqQuotaError = null;
+
+    for (const entry of entries) {
+      try {
+        let result;
+        if (entry.type === 'gemini') {
+          result = await this.callWithThrottle(() => this.callGemini(messages, entry.client));
+        } else {
+          result = await this.callLLMWithRetry(messages, entry.client, entry.name);
+        }
+
+        // Update active provider tracking
+        const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
+        if (this.activeProvider !== entry.name || this.activeKeyIndex !== entry.keyIndex) {
+          console.log(`[AI Service] Switched LLM provider: ${this.activeProvider}[${this.activeKeyIndex}] → ${entry.name}${keySuffix}`);
+          this.activeProvider = entry.name;
+          this.activeKeyIndex = entry.keyIndex;
+        }
+        return result;
+      } catch (err) {
+        // Track Groq quota exhaustion separately so we can schedule a retry
+        // if ALL providers AND all keys fail.
+        if (entry.name === 'groq' && err.isQuotaExhausted) {
+          groqQuotaError = err;
+          const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
+          console.warn(`[AI Service] Groq${keySuffix} quota exhausted, trying next key/provider...`);
+          continue;
+        }
+        lastError = err;
+        const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
+        console.warn(`[AI Service] ${entry.name}${keySuffix} failed, trying next... Error: ${err.message}`);
+      }
+    }
+
+    // All providers AND all keys failed.
+    if (groqQuotaError) {
+      console.warn('[AI Service] All providers/keys failed — scheduling retry from Groq quota-exhaustion error.');
+      throw groqQuotaError;
+    }
+
+    throw lastError || new Error('All LLM providers failed');
+  }
+
   scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, waitMs) {
     const delay = waitMs + 20000; // 20s buffer past Groq's stated reset time
-    console.log(`[AI Service] Scheduling quota retry for ${senderId} in ${Math.round(delay / 1000)}s`);
+    const retryAt = Date.now() + delay;
+
+    // Persist to database so the retry survives server restarts
+    dbService.savePendingRetry(senderId, userQuery, customerName, customerPhone, retryAt).catch(() => {});
+
+    console.log(`[AI Service] Scheduling persistent quota retry for ${senderId} in ${Math.round(delay / 1000)}s (retryAt: ${new Date(retryAt).toISOString()})`);
+
+    // Also schedule an in-memory setTimeout for immediate execution when the time comes
     setTimeout(async () => {
       try {
         const retryResponse = await this.answerQuery(senderId, userQuery, customerName, customerPhone);
+        // Only send the reply if WhatsApp is still connected
         if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
           await whatsappWebBot.client.sendMessage(senderId, retryResponse.replyText);
           console.log(`[AI Service] Sent delayed quota-retry reply to ${senderId}`);
         }
+        // Clean up the persisted retry regardless
+        dbService.deletePendingRetry(senderId, userQuery).catch(() => {});
       } catch (err) {
         console.error('[AI Service] Quota retry failed:', err.message);
       }
     }, delay);
+  }
+
+  /**
+   * Process any pending retries that are due (called on startup + periodically).
+   * This ensures quota-exhausted queries are retried even after a server restart.
+   */
+  async processPendingRetries() {
+    try {
+      const dueRetries = await dbService.getDueRetries();
+      if (dueRetries.length === 0) return;
+
+      console.log(`[AI Service] Processing ${dueRetries.length} pending retries from persistent queue...`);
+
+      for (const entry of dueRetries) {
+        try {
+          const retryResponse = await this.answerQuery(
+            entry.senderId,
+            entry.userQuery,
+            entry.customerName,
+            entry.customerPhone
+          );
+          if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+            await whatsappWebBot.client.sendMessage(entry.senderId, retryResponse.replyText);
+            console.log(`[AI Service] Persistent retry reply sent to ${entry.senderId}`);
+          }
+          await dbService.deletePendingRetry(entry.senderId, entry.userQuery);
+          // Stagger retries to avoid flooding the API
+          await new Promise(r => setTimeout(r, 1000));
+        } catch (err) {
+          console.error(`[AI Service] Persistent retry failed for ${entry.senderId}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error('[AI Service] processPendingRetries error:', err.message);
+    }
   }
 
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null) {
@@ -325,9 +639,25 @@ WORKED EXAMPLES — Follow these exactly:
     let checkoutUrl = null;
     let quotaExhaustedWaitMs = null;
 
-    if (!this.openai) {
+    if (this.groqClients.length === 0 && this.openaiClients.length === 0 && this.geminiClients.length === 0) {
       resultText = "I'm currently undergoing maintenance. Please reach out to our support number directly on WhatsApp.";
       return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
+    }
+
+    // --- Pre-AI FAQ Matcher ---
+    // Answer common FAQ queries directly WITHOUT using any LLM tokens (faster, zero leak risk).
+    // CRITICAL: Only run when session is IDLE — NOT during an active order flow where
+    // the user might be specifying a size ("M"), address, or confirming an order.
+    const isIdle = !session.state || session.state === 'IDLE';
+    if (isIdle && session.cart.length === 0 && userQuery) {
+      const faqMatches = faqService.searchFAQs(userQuery);
+      if (faqMatches.length > 0) {
+        const answer = faqMatches[0].answer;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: answer });
+        await dbService.saveSession(senderId, session);
+        return { replyText: answer, intent: 'faq', requiresEscalation: false, suggestedProductIds: [] };
+      }
     }
 
     let messages = [
@@ -345,11 +675,18 @@ WORKED EXAMPLES — Follow these exactly:
     while (keepLooping && loops < 5) {
       loops++;
       try {
-        const completion = await this.callGroqWithRetry(messages);
+        const completion = await this.callLLMWithFallback(messages);
 
         const responseMessage = completion.choices[0].message;
         
         if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+          // Two-pass stripping: when the model outputs BOTH a tool call and conversational text
+          // in the same turn, the text is a leaked artifact that must be discarded.
+          // Only the tool call should be processed — the natural reply comes in the next loop iteration.
+          if (responseMessage.content) {
+            console.warn('[AI Service] Groq leaked text alongside tool call — stripping content:', responseMessage.content.slice(0, 80));
+            responseMessage.content = "";
+          }
           messages.push(responseMessage);
           
           for (const toolCall of responseMessage.tool_calls) {

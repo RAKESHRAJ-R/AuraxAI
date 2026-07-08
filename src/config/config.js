@@ -17,13 +17,22 @@ const config = {
   },
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',
+    apiKeys: (process.env.GROQ_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !k.includes('your_groq')),
     model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
+    apiKeys: (process.env.OPENAI_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !k.includes('your_openai')),
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
+    apiKeys: (process.env.GEMINI_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !k.includes('your_gemini')),
   },
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',

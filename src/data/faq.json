@@ -1,5 +1,11 @@
 [
   {
+    "category": "Greetings",
+    "keywords": ["hi", "hello", "hey", "good morning", "good evening", "good afternoon", "hii", "hlo", "helo"],
+    "question": "Hello! How can I help you?",
+    "answer": "Hey there! 👋 Welcome to Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥"
+  },
+  {
     "category": "COD & Payment",
     "keywords": ["cod", "cash on delivery", "payment methods", "pay", "gpay", "phonepe", "upi"],
     "question": "Do you support Cash on Delivery (COD) or online payments?",
