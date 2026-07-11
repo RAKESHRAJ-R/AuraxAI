@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "senderId": "153308975087656@lid",
+    "userQuery": "Mapla jersey Evalo",
+    "customerName": "Indhu",
+    "customerPhone": "919487321984",
+    "retryAt": 1783779581996,
+    "createdAt": "2026-07-11T13:36:41.964Z"
+  },
+  {
+    "senderId": "153308975087656@lid",
+    "userQuery": "Hi8ii",
+    "customerName": "Indhu",
+    "customerPhone": "919487321984",
+    "retryAt": 1783779620989,
+    "createdAt": "2026-07-11T13:45:42.941Z"
+  }
+]

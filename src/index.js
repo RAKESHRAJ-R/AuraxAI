@@ -1,3 +1,4 @@
+import { serverLogs } from './services/logger.js';
 import express from 'express';
 import config, { validateConfig } from './config/config.js';
 import whatsappWebBot from './services/whatsapp-web-bot.js';
@@ -110,6 +111,18 @@ app.get('/api/sessions', async (req, res) => {
   } catch (err) {
     console.error('[Server] /api/sessions error:', err.message);
     res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+/**
+ * Server Logs Route
+ * Serves the rolling console output history for diagnostics.
+ */
+app.get('/api/logs', (req, res) => {
+  try {
+    res.json(serverLogs || []);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch server logs' });
   }
 });
 

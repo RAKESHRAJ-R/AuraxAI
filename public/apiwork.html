@@ -452,6 +452,84 @@
       from { box-shadow: 0 0 4px rgba(239, 68, 68, 0.2); }
       to { box-shadow: 0 0 12px rgba(239, 68, 68, 0.5); }
     }
+
+    /* Terminal Console Style */
+    .terminal-panel {
+      background: #020617;
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.6);
+      margin-top: 1rem;
+    }
+
+    .terminal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+    }
+
+    .terminal-controls {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .terminal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot.red { background: #ef4444; }
+    .terminal-dot.yellow { background: #f59e0b; }
+    .terminal-dot.green { background: #10b981; }
+
+    .terminal-body {
+      height: 250px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      font-size: 0.85rem;
+      padding-right: 0.5rem;
+      text-align: left;
+    }
+
+    /* Scrollbar for terminal body */
+    .terminal-body::-webkit-scrollbar {
+      width: 6px;
+    }
+    .terminal-body::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.01);
+    }
+    .terminal-body::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 99px;
+    }
+    .terminal-body::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .log-line {
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .log-line.info { color: #f8fafc; }
+    .log-line.warn { color: #f59e0b; }
+    .log-line.error { color: #ef4444; font-weight: 700; }
+    .log-line.system { color: #64748b; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -599,6 +677,27 @@
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Terminal Console Section -->
+    <div class="panel terminal-panel">
+      <div class="terminal-header">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <div class="terminal-controls">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <span>Server Console Output & Diagnostics</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-muted);">
+          <i class="fa-solid fa-terminal" style="font-size: 0.8rem;"></i>
+          <span>Rolling buffer (250 lines)</span>
+        </div>
+      </div>
+      <div class="terminal-body" id="terminal-output-body">
+        <div class="log-line info"><span class="log-line system">[SYSTEM]</span> Terminal connected. Awaiting server console stream...</div>
       </div>
     </div>
 
@@ -872,9 +971,57 @@
       }
     }
 
-    // Refresh every 5 seconds
+    let lastLogHash = '';
+
+    async function refreshTerminalLogs() {
+      try {
+        const res = await fetch('/api/logs');
+        const logs = await res.json();
+        
+        const currentHash = JSON.stringify(logs);
+        if (currentHash === lastLogHash) return;
+        lastLogHash = currentHash;
+
+        const terminalBody = document.getElementById('terminal-output-body');
+        const wasScrolledToBottom = terminalBody.scrollHeight - terminalBody.clientHeight <= terminalBody.scrollTop + 20;
+
+        terminalBody.innerHTML = '';
+        if (logs.length === 0) {
+          terminalBody.innerHTML = '<div class="log-line info"><span class="log-line system">[SYSTEM]</span> No console logs captured yet. Send a message to populate.</div>';
+        } else {
+          logs.forEach(log => {
+            const timeStr = new Date(log.timestamp).toLocaleTimeString([], { hour12: false });
+            const lineClass = log.type === 'error' ? 'error' : log.type === 'warn' ? 'warn' : 'info';
+            const prefix = `[${timeStr}] [${log.type.toUpperCase()}]`;
+
+            const lineHtml = `<div class="log-line ${lineClass}"><span class="log-line system">${prefix}</span> ${escapeHtml(log.message)}</div>`;
+            terminalBody.insertAdjacentHTML('beforeend', lineHtml);
+          });
+        }
+
+        if (wasScrolledToBottom) {
+          terminalBody.scrollTop = terminalBody.scrollHeight;
+        }
+      } catch (err) {
+        console.error('Failed to retrieve terminal logs:', err.message);
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     refreshDashboard();
+    refreshTerminalLogs();
+
     setInterval(refreshDashboard, 5000);
+    setInterval(refreshTerminalLogs, 2000);
   </script>
 </body>
 </html>
