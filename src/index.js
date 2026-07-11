@@ -28,6 +28,34 @@ app.get('/api/whatsapp/status', (req, res) => {
  * Shows pending LLM retries (survives restarts via DB persistence).
  * Useful for monitoring quota-exhausted queries waiting to be reprocessed.
  */
+/**
+ * Provider Analytics Stats Route
+ * Shows per-provider usage counters, error rates, quota exhaustion, and active provider.
+ * Useful for monitoring which LLM providers are handling the load and detecting issues.
+ */
+app.get('/api/provider-stats', (req, res) => {
+  try {
+    const stats = aiService.getProviderStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('[Server] /api/provider-stats error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch provider stats' });
+  }
+});
+
+/**
+ * Reset Provider Analytics Stats Route
+ */
+app.post('/api/provider-stats/reset', (req, res) => {
+  try {
+    aiService.resetProviderStats();
+    res.json({ status: 'ok', message: 'Provider analytics stats reset.' });
+  } catch (err) {
+    console.error('[Server] /api/provider-stats/reset error:', err.message);
+    res.status(500).json({ error: 'Failed to reset provider stats' });
+  }
+});
+
 app.get('/api/retry-stats', async (req, res) => {
   try {
     const allRetries = await dbService.getAllPendingRetries();

@@ -3,8 +3,6 @@ import qrcode from 'qrcode';
 import config from '../config/config.js';
 import aiService from './ai.js';
 
-import async from 'async';
-
 const { Client, LocalAuth } = pkg;
 
 class WhatsAppWebBot {
@@ -12,10 +10,28 @@ class WhatsAppWebBot {
     this.status = 'DISCONNECTED'; // DISCONNECTED, CONNECTING, QR_READY, CONNECTED
     this.qrDataUrl = null;
     this.client = null;
-    this.messageQueue = async.queue(async (msg) => {
-      console.log(`[Queue] Processing message... (Waiting in line: ${this.messageQueue.length()})`);
-      await this.handleIncomingMessage(msg);
-    }, 5);
+    // Per-sender processing chains: a global concurrency-N pool (the old approach)
+    // can dequeue two messages from the SAME customer onto different workers at once,
+    // and since answerQuery does a read-modify-write on that customer's session, the
+    // two calls race and one update silently disappears (e.g. "size M" then "qty 3"
+    // sent seconds apart — one of them gets lost). Chaining per senderId guarantees
+    // strict in-order processing for a given customer while different customers still
+    // run fully in parallel.
+    this.senderChains = new Map();
+  }
+
+  enqueueMessage(msg) {
+    const senderId = msg.from;
+    const previous = this.senderChains.get(senderId) || Promise.resolve();
+    const chain = previous
+      .then(() => this.handleIncomingMessage(msg))
+      .catch(err => console.error(`[Queue] Unhandled error processing message from ${senderId}:`, err.message))
+      .finally(() => {
+        if (this.senderChains.get(senderId) === chain) {
+          this.senderChains.delete(senderId);
+        }
+      });
+    this.senderChains.set(senderId, chain);
   }
 
   initialize() {
@@ -102,7 +118,7 @@ class WhatsAppWebBot {
       });
 
       this.client.on('message', async (msg) => {
-        this.messageQueue.push(msg);
+        this.enqueueMessage(msg);
       });
 
       this.client.initialize().catch((error) => {

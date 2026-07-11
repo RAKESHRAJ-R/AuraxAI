@@ -9,7 +9,10 @@
     "sync": "node src/services/woocommerce.js --sync",
     "test-agent": "node src/test_agent.js",
     "test-whatsapp": "node src/test_whatsapp.js",
-    "test-telegram": "node src/test_telegram.js"
+    "test-telegram": "node src/test_telegram.js",
+    "test-search": "node test_product_search.js",
+    "test-ai-e2e": "node test_ai_e2e.js",
+    "review": "node src/review_conversations.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

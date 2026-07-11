@@ -10,18 +10,36 @@ import telegramService from './telegram.js';
 import sheetsService from './sheets.js';
 
 class AIService {
-  // --- Rate-limit throttling ---
-  // Global minimum gap between LLM API calls to reduce 429 errors.
-  static lastApiCallTime = 0;
-  static minApiGapMs = 600; // ~100 RPM max (Groq free tier allows 30 RPM, this is conservative)
+  // --- Per-(provider, key) rate-limit throttling ---
+  // Groq/Gemini/etc RPM limits are granted PER API KEY, not per provider. Throttling
+  // by provider name alone (the old behavior) forced every key of a provider to share
+  // one timer, so 5 Groq keys gave zero extra throughput over 1 key — they only ever
+  // helped as error-triggered failover, never as parallel capacity. Keying the timer by
+  // "provider#keyIndex" lets each key run on its own clock, so N keys really do give
+  // up to N× the throughput under concurrent load.
+  // Groq free tier: 30 RPM/key → 2s gap. Gemini free: 60 RPM/key → ~1.5s gap.
+  // OpenAI: 500 RPM → ~666ms gap. OpenRouter: varies, ~1s conservative.
+  static lastApiCallTimes = {};
+  static minApiGapMs = {
+    groq: 2000,
+    openai: 666,
+    openrouter: 1000,
+    gemini: 1500,
+  };
+  // Round-robin cursor per provider so consecutive requests spread across keys instead
+  // of every request piling onto key[0] first (which is what starves the other keys).
+  static roundRobinIndex = {};
 
-  async callWithThrottle(fn) {
+  async callWithThrottle(fn, provider = 'groq', keyIndex = 0) {
     const now = Date.now();
-    const elapsed = now - AIService.lastApiCallTime;
-    if (elapsed < AIService.minApiGapMs) {
-      await new Promise(r => setTimeout(r, AIService.minApiGapMs - elapsed));
+    const minGap = AIService.minApiGapMs[provider] || 1000;
+    const timerKey = `${provider}#${keyIndex}`;
+    const lastCall = AIService.lastApiCallTimes[timerKey] || 0;
+    const elapsed = now - lastCall;
+    if (elapsed < minGap) {
+      await new Promise(r => setTimeout(r, minGap - elapsed));
     }
-    AIService.lastApiCallTime = Date.now();
+    AIService.lastApiCallTimes[timerKey] = Date.now();
     return fn();
   }
 
@@ -45,6 +63,21 @@ class AIService {
       this.openaiClients = [];
     }
 
+    // --- OpenRouter Provider (Fallback) ---
+    this.openrouterClients = (config.openrouter?.apiKeys || []).map(key => new OpenAI({
+      apiKey: key,
+      baseURL: 'https://openrouter.ai/api/v1',
+      defaultHeaders: {
+        'HTTP-Referer': config.baseUrl,
+        'X-Title': 'Theaurax AI',
+      }
+    }));
+    if (this.openrouterClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.openrouterClients.length} OpenRouter API key(s) as fallback.`);
+    } else {
+      this.openrouterClients = [];
+    }
+
     // --- Tertiary LLM Provider (Gemini fallback) — supports multiple API keys ---
     this.geminiClients = (config.gemini.apiKeys || []).map(key => new GoogleGenerativeAI(key));
     if (this.geminiClients.length > 0) {
@@ -56,24 +89,49 @@ class AIService {
     // Track which provider + key index we're currently using
     this.activeProvider = this.groqClients.length > 0 ? 'groq' : (this.openaiClients.length > 0 ? 'openai' : 'gemini');
     this.activeKeyIndex = 0;
+
+    // --- Provider Analytics (counters for monitoring usage & quota issues) ---
+    this.providerStats = {
+      groq: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
+      openai: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
+      openrouter: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
+      gemini: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
+    };
+    this.totalCalls = 0;
+    this.totalErrors = 0;
+    this.appStartTime = Date.now();
+
+    // Per-key (not per-provider) quota exhaustion timestamps — keyed by "provider#keyIndex".
+    // Lets one exhausted Groq key cool down without benching its sibling keys.
+    this.keyExhaustedUntil = {};
+  }
+
+  /**
+   * Deterministic Tanglish/Tamil detector — runs before any LLM call, zero cost.
+   * Checks for Tamil Unicode script or common Tanglish/Tamil-in-Roman-script words.
+   * The LLM is unreliable at both detecting this itself AND staying consistent
+   * turn-to-turn, so the decision is made once in code and locked into the session.
+   */
+  detectLanguage(text) {
+    if (!text) return null;
+    if (/[஀-௿]/.test(text)) return 'tanglish'; // Tamil script present
+    const tanglishWords = /\b(bro|machan|machi|da|di|anna|akka|thala|mapla|iruka|irukka|irukku|iruku|vennum|venum|vendum|poda|podi|illa|ila|enna|soldra|solra|sollunga|epdi|eppadi|saptiya|vanga|vanakkam|seri|aiyo|ayyo|kandippa|semma|super|nalla|romba|konjam|please pannunga|thanks bro)\b/i;
+    return tanglishWords.test(text) ? 'tanglish' : 'english';
   }
 
   generateSystemPrompt(session) {
-    const faqs = faqService.getFAQs();
-    const faqSection = faqs.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
-
     return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
 Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
 
 ---
-COMMON FAQs — Answer these DIRECTLY from this section. Do NOT call any tool for these topics:
-${faqSection}
+COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
+whenever the customer is idle with an empty cart (shipping, COD/payment, sizing, returns,
+customization, bulk orders). If one of these topics comes up mid-flow (cart non-empty or
+collecting address) and you need to answer it yourself, keep it brief and accurate — don't
+invent policy details you're not sure of.
 ---
 
 Tone & Style:
-- MIRROR THE CUSTOMER'S LANGUAGE. 
-- If the customer speaks English, reply in English.
-- If the customer uses Tanglish or Tamil, switch to natural Tanglish (e.g., "Bro", "Machan", "Kandippa").
 - Never sound like a robot. Be local, friendly, and hype up the products.
 - If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
 
@@ -94,10 +152,12 @@ Instructions:
 10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Share it clearly with the customer as their checkout link.
 
 ---
-LANGUAGE RULE (CRITICAL):
-- Detect language from the VERY FIRST message. If ANY Tamil or Tanglish words appear (e.g. "bro", "machan", "iruka", "vennum", "poda", "illa", "enna", "soldra"), switch to FULL Tanglish mode and STAY in it.
-- English customers get professional, friendly English. No mixing.
-- Never revert language mid-conversation.
+LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
+- This customer's language has been detected as: ${session.language === 'tanglish' ? 'TANGLISH' : 'ENGLISH'}.
+${session.language === 'tanglish'
+  ? '- Respond ONLY in natural Tanglish (Tamil-English code-mixed, Roman script) for this ENTIRE conversation — e.g. "Bro, indha jersey vera level!", "Kandippa iruku!", "Enna size venum?". Never switch to pure English.'
+  : '- Respond in professional, friendly English for this ENTIRE conversation. No Tamil/Tanglish words.'}
+- This was decided from the customer\'s own words, not your guess — never override it mid-conversation.
 
 TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
 - When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
@@ -176,6 +236,13 @@ WORKED EXAMPLES — Follow these exactly:
             type: "object",
             properties: {
               name: { type: "string", description: "Customer's full name." },
+              // Plain "string" only — a JSON Schema type array like ["string","number"]
+              // was tried to tolerate Qwen emitting bare numeric phone/pincode values,
+              // but it broke Gemini's proto-based schema outright and is suspected of
+              // degrading Groq's tool-call decoding reliability generally (a plain
+              // Llama-3.3 query hit tool_use_failed on every one of 5 keys right after
+              // this was introduced). Qwen is off by default now anyway, so the coercion
+              // in the tool handler below (String(args.phone ?? '')) is enough on its own.
               phone: { type: "string", description: "Customer's 10-digit mobile number." },
               address: { type: "string", description: "Street/flat/area address." },
               pincode: { type: "string", description: "6-digit postal/PIN code." }
@@ -254,29 +321,71 @@ WORKED EXAMPLES — Follow these exactly:
     return Math.ceil((minutes * 60 + seconds) * 1000);
   }
 
-  trimMessagesToTokenBudget(messages, budgetChars = 8000) {
+  trimMessagesToTokenBudget(messages, budgetChars = 20000) {
     // Keep system prompt always; drop oldest context messages if over budget
     const systemMsg = messages[0];
     const rest = messages.slice(1);
     let totalChars = JSON.stringify(systemMsg).length;
     const kept = [];
 
-    for (let i = rest.length - 1; i >= 0; i--) {
-      const msgChars = JSON.stringify(rest[i]).length;
-      if (totalChars + msgChars > budgetChars) break;
-      totalChars += msgChars;
-      kept.unshift(rest[i]);
+    let i = rest.length - 1;
+    while (i >= 0) {
+      // A 'tool' result message is only valid immediately after the assistant message
+      // that issued its tool_calls — dropping one while keeping the other produces an
+      // invalid sequence the API rejects outright. Walk back over the whole consecutive
+      // run of 'tool' messages plus their originating assistant turn and treat it as one
+      // atomic, all-or-nothing group.
+      let groupStart = i;
+      if (rest[i].role === 'tool') {
+        while (groupStart > 0 && rest[groupStart - 1].role === 'tool') groupStart--;
+        if (groupStart > 0 && rest[groupStart - 1].role === 'assistant' && rest[groupStart - 1].tool_calls) {
+          groupStart--;
+        }
+      }
+      const group = rest.slice(groupStart, i + 1);
+      const groupChars = group.reduce((sum, m) => sum + JSON.stringify(m).length, 0);
+
+      // Always keep at least the most recent group. A single search_products tool
+      // result (full product JSON — descriptions, images) can easily run 3-5K chars on
+      // its own; breaking on the very first oversized message dropped it AND every older
+      // message including the user's actual question, leaving only the bare system
+      // prompt. Some models (Qwen) correctly reject that outright ("no user query found");
+      // others (Llama) silently improvised a generic answer with zero real context.
+      if (totalChars + groupChars > budgetChars && kept.length > 0) break;
+      totalChars += groupChars;
+      kept.unshift(...group);
+      i = groupStart - 1;
     }
     return [systemMsg, ...kept];
   }
 
-  async callLLMWithRetry(messages, client, provider = 'groq') {
-    const trimmed = this.trimMessagesToTokenBudget(messages);
+  async callLLMWithRetry(messages, client, provider = 'groq', keyIndex = 0, language = 'english') {
     const MAX_ATTEMPTS = 4;
 
     const model = provider === 'openai'
       ? (config.openai?.model || 'gpt-4o-mini')
+      : provider === 'openrouter'
+      ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+      : provider === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
+      ? config.groq.tanglishModel
       : (config.groq?.model || 'llama-3.3-70b-versatile');
+
+    // Qwen3 is a reasoning model — without this it leaks its full <think>...</think>
+    // chain-of-thought into the reply content instead of just the final answer.
+    const isQwenReasoning = provider === 'groq' && model.includes('qwen');
+
+    // Qwen's free tier caps at 8000 TPM/key for prompt+max_tokens COMBINED — much
+    // tighter than Llama's. A multi-turn conversation's accumulated history can alone
+    // approach that ceiling, so give it a much smaller trim budget than other providers.
+    const trimmed = this.trimMessagesToTokenBudget(messages, isQwenReasoning ? 9000 : 20000);
+
+    // Dynamically size max_tokens to what's actually left under the 8000 TPM ceiling,
+    // rather than a fixed guess — a fixed 2000 still overflowed once real conversation
+    // history pushed the prompt itself past ~6000 tokens. ~3.5 chars/token is a
+    // deliberately conservative (over-)estimate so we undershoot the cap, not hit it.
+    const qwenMaxTokens = isQwenReasoning
+      ? Math.max(600, Math.min(2000, 7500 - Math.ceil((JSON.stringify(trimmed).length + JSON.stringify(this.getTools()).length) / 3.5)))
+      : 800;
 
     if (!client) {
       const err = new Error(`${provider} client not initialized`);
@@ -292,9 +401,15 @@ WORKED EXAMPLES — Follow these exactly:
           messages: trimmed,
           tools: this.getTools(),
           tool_choice: 'auto',
-          max_tokens: 800,
-          temperature: attempt <= 2 ? 0.7 : 0.2
-        }));
+          // Qwen's hidden <think> reasoning draws from the same max_tokens budget as the
+          // visible answer — 800 was tuned for non-reasoning Llama and left zero room for
+          // an actual reply once reasoning ran long, silently truncating to empty content.
+          // qwenMaxTokens is sized dynamically against the actual prompt for this call
+          // (see above) so it can't itself tip the request over the 8000 TPM ceiling.
+          max_tokens: isQwenReasoning ? qwenMaxTokens : 800,
+          temperature: attempt <= 2 ? 0.7 : 0.2,
+          ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {})
+        }), provider, keyIndex);
       } catch (err) {
         // Daily token quota (TPD) exhaustion — not recoverable by retrying with backoff.
         // Groq reports the reset is minutes away, so signal the caller to schedule a retry.
@@ -310,10 +425,14 @@ WORKED EXAMPLES — Follow these exactly:
 
         const isRateLimit = err.status === 429 || err?.error?.type === 'rate_limit_exceeded' || err?.error?.code === 'rate_limit_exceeded';
         const isServerErr = err.status === 503 || err.status === 500;
+        // Groq's constrained tool-calling decoder occasionally emits invalid function-call
+        // JSON and rejects its own generation with a 400. This is a transient generation
+        // glitch, not a real failure — retrying the SAME key/turn usually succeeds, whereas
+        // failing over to a different provider/key wastes the accumulated conversation context.
         const isToolLeak = err?.error?.code === 'tool_use_failed';
         if ((isRateLimit || isServerErr || isToolLeak) && attempt < MAX_ATTEMPTS) {
           const errLabel = isRateLimit ? 'rate limited' : isToolLeak ? 'tool_use_failed' : 'server error';
-          const delay = isRateLimit ? attempt * 4000 : attempt * 3000;
+          const delay = isRateLimit ? attempt * 4000 : isToolLeak ? attempt * 1000 : attempt * 3000;
           console.warn(`[AI Service] ${provider} ${errLabel} (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in ${delay / 1000}s...`);
           await new Promise(r => setTimeout(r, delay));
           continue;
@@ -340,7 +459,7 @@ WORKED EXAMPLES — Follow these exactly:
     // Build Gemini-format conversation ONCE (retries reuse the same built history)
     const { systemMsg, geminiHistory, lastUserMsg, geminiTools } = this._buildGeminiConversation(trimmed);
 
-    const MAX_ATTEMPTS = 2;
+    const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         const model = geminiClient.getGenerativeModel({
@@ -396,9 +515,23 @@ WORKED EXAMPLES — Follow these exactly:
           }]
         };
       } catch (err) {
-        const isRetryable = err.status === 429 || err.status === 500 || err.status === 503 || err?.message?.includes('RATE_LIMIT');
+        // A quota/429 error means this key's daily or per-minute allowance is spent —
+        // retrying it 3x with a 3s backoff cannot succeed and just burns latency on
+        // every message. Fail immediately and let the caller bench this key instead.
+        const isQuota = err.status === 429 || err?.message?.includes('RATE_LIMIT') || /quota/i.test(err?.message || '');
+        if (isQuota) {
+          err.isQuotaExhausted = true;
+          const retryMatch = (err.message || '').match(/"retryDelay":"(\d+(?:\.\d+)?)s"/);
+          // Google's returned retryDelay reflects the per-minute window, not the daily
+          // quota reset — a free-tier key stuck at limit:0 will 429 again immediately
+          // after it. Bench for a longer fixed window so we stop hammering it.
+          err.waitMs = retryMatch ? Math.max(15 * 60 * 1000, Math.ceil(parseFloat(retryMatch[1]) * 1000)) : 15 * 60 * 1000;
+          throw err;
+        }
+
+        const isRetryable = err.status === 500 || err.status === 503;
         if (isRetryable && attempt < MAX_ATTEMPTS) {
-          console.warn(`[AI Service] Gemini rate limited/error (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in 3s...`);
+          console.warn(`[AI Service] Gemini error (attempt ${attempt}/${MAX_ATTEMPTS}). Retrying in 3s...`);
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
@@ -460,39 +593,81 @@ WORKED EXAMPLES — Follow these exactly:
       }
     }
 
-    // Convert OpenAI-style tools to Gemini function_declarations
+    // Convert OpenAI-style tools to Gemini function_declarations.
+    // Gemini's proto-based schema only accepts a single string per "type" — a JSON
+    // Schema array like ["string", "number"] (used elsewhere to tolerate Qwen emitting
+    // unquoted numeric phone/pincode values) makes Gemini reject the whole request
+    // ("Proto field is not repeating, cannot start list"). Collapse to the first type.
     const openaiTools = this.getTools();
+    const normalizePropsForGemini = (properties) => {
+      const out = {};
+      for (const [key, val] of Object.entries(properties || {})) {
+        const rawType = Array.isArray(val.type) ? val.type[0] : val.type;
+        out[key] = { ...val, type: (rawType || 'string').toUpperCase() };
+      }
+      return out;
+    };
     const geminiTools = openaiTools.length > 0 ? [{
       functionDeclarations: openaiTools.map(t => ({
         name: t.function.name,
         description: t.function.description,
         parameters: {
           type: t.function.parameters.type?.toUpperCase() || 'OBJECT',
-          properties: t.function.parameters.properties || {},
+          properties: normalizePropsForGemini(t.function.parameters.properties),
           required: t.function.parameters.required || []
         }
       }))
     }] : undefined;
 
+    // Gemini requires the first turn in history to be role 'user'. Char-budget trimming
+    // can leave a lone assistant/tool turn at the front if it cuts between a user message
+    // and its reply — drop leading non-user turns so the history always starts clean.
+    while (geminiHistory.length > 0 && geminiHistory[0].role !== 'user') {
+      geminiHistory.shift();
+    }
+
     return { systemMsg, geminiHistory, lastUserMsg, geminiTools };
   }
 
   /**
-   * Call LLM with automatic fallback chain: Groq → OpenAI → Gemini.
+   * Call LLM with automatic fallback chain.
+   * Default order: Groq → OpenAI → OpenRouter → Gemini (cheapest/fastest first).
+   * For Tanglish/Tamil conversations, Gemini goes first instead — Llama-3.3 (Groq's
+   * model) is noticeably weaker at natural Tamil-English code-mixing than Gemini,
+   * and reliable Tanglish is a hard client requirement, worth the extra latency/cost.
    * If a provider is rate-limited or unavailable, transparently switches to the next.
    */
-  async callLLMWithFallback(messages) {
+  /**
+   * Build the ordered key list for one provider, rotated by a round-robin cursor.
+   * Without this, every request tries keyIndex 0 first and only reaches the other
+   * keys on an actual error — under concurrent load that means all traffic piles
+   * onto key 0 (starving it fast) instead of spreading across the available keys.
+   */
+  rotateEntries(name, clients, type) {
+    const entries = clients.map((client, i) => ({ name, client, type, keyIndex: i }));
+    if (entries.length <= 1) return entries;
+    const cursor = AIService.roundRobinIndex[name] || 0;
+    AIService.roundRobinIndex[name] = (cursor + 1) % entries.length;
+    return [...entries.slice(cursor), ...entries.slice(0, cursor)];
+  }
+
+  async callLLMWithFallback(messages, language = 'english') {
     // Build a flat list of all API clients across all providers for key rotation.
-    // Order: Groq key1 → Groq key2 → ... → OpenAI key1 → OpenAI key2 → ... → Gemini key1 → ...
     const entries = [];
-    for (let i = 0; i < this.groqClients.length; i++) {
-      entries.push({ name: 'groq', client: this.groqClients[i], type: 'openai', keyIndex: i });
+    const groqEntries = this.rotateEntries('groq', this.groqClients, 'openai');
+    const geminiEntries = this.rotateEntries('gemini', this.geminiClients, 'gemini');
+    const openrouterEntries = this.rotateEntries('openrouter', this.openrouterClients, 'openai');
+
+    if (language === 'tanglish') {
+      entries.push(...geminiEntries, ...groqEntries);
+    } else {
+      entries.push(...groqEntries);
     }
-    for (let i = 0; i < this.openaiClients.length; i++) {
-      entries.push({ name: 'openai', client: this.openaiClients[i], type: 'openai', keyIndex: i });
-    }
-    for (let i = 0; i < this.geminiClients.length; i++) {
-      entries.push({ name: 'gemini', client: this.geminiClients[i], type: 'gemini', keyIndex: i });
+
+    entries.push(...this.rotateEntries('openai', this.openaiClients, 'openai'));
+    entries.push(...openrouterEntries);
+    if (language !== 'tanglish') {
+      entries.push(...geminiEntries);
     }
 
     if (entries.length === 0) {
@@ -503,33 +678,77 @@ WORKED EXAMPLES — Follow these exactly:
     let groqQuotaError = null;
 
     for (const entry of entries) {
+      const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
+
+      // --- Proactive quota skipping ---
+      // If a provider was recently exhausted and hasn't had time to reset, skip it
+      // to avoid wasting time on calls that will surely fail.
+      const providerName = entry.name;
+      const stats = this.providerStats[providerName];
+      // Daily quota (TPD) is granted per API key, not per provider — a key-scoped map
+      // (keyExhaustedUntil) ensures one exhausted key only benches itself, not its
+      // siblings. Without this, one key running out blacked out ALL keys of that
+      // provider for the whole reset window, wasting the other keys' untouched quota.
+      const exhaustKey = `${providerName}#${entry.keyIndex}`;
+      const exhaustedUntil = this.keyExhaustedUntil[exhaustKey];
+      if (exhaustedUntil && Date.now() < exhaustedUntil) {
+        const remaining = Math.round((exhaustedUntil - Date.now()) / 1000);
+        console.log(`[AI Service] Skipping ${providerName}${keySuffix} — quota exhausted, waiting ~${remaining}s for reset`);
+        continue;
+      }
+
+      console.log(`[AI Service] Trying ${entry.name}${keySuffix}...`);
       try {
         let result;
         if (entry.type === 'gemini') {
-          result = await this.callWithThrottle(() => this.callGemini(messages, entry.client));
+          result = await this.callWithThrottle(() => this.callGemini(messages, entry.client), entry.name, entry.keyIndex);
         } else {
-          result = await this.callLLMWithRetry(messages, entry.client, entry.name);
+          result = await this.callLLMWithRetry(messages, entry.client, entry.name, entry.keyIndex, language);
         }
 
         // Update active provider tracking
-        const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
         if (this.activeProvider !== entry.name || this.activeKeyIndex !== entry.keyIndex) {
           console.log(`[AI Service] Switched LLM provider: ${this.activeProvider}[${this.activeKeyIndex}] → ${entry.name}${keySuffix}`);
           this.activeProvider = entry.name;
           this.activeKeyIndex = entry.keyIndex;
         }
+
+        // --- Success analytics ---
+        if (this.providerStats[providerName]) {
+          this.providerStats[providerName].success++;
+        }
+        this.totalCalls++;
+
         return result;
       } catch (err) {
+        // --- Error analytics ---
+        if (this.providerStats[providerName]) {
+          this.providerStats[providerName].errors++;
+          this.providerStats[providerName].lastErrorAt = Date.now();
+          this.providerStats[providerName].lastErrorMsg = err.message?.slice(0, 200) || 'Unknown error';
+        }
+        this.totalErrors++;
+
         // Track Groq quota exhaustion separately so we can schedule a retry
         // if ALL providers AND all keys fail.
         if (entry.name === 'groq' && err.isQuotaExhausted) {
           groqQuotaError = err;
-          const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
+          // Bench only THIS key until its own reset time — siblings stay available.
+          this.keyExhaustedUntil[exhaustKey] = Date.now() + (err.waitMs || 5 * 60 * 1000);
+          this.providerStats.groq.quotaExhausted++;
           console.warn(`[AI Service] Groq${keySuffix} quota exhausted, trying next key/provider...`);
           continue;
         }
+        // Same proactive-skip mechanism as Groq, but for Gemini: a free-tier key stuck
+        // at limit:0 will 429 on every call, so bench it instead of retrying it fresh
+        // on every single message (previously wasted ~6-9s of latency per message).
+        if (entry.name === 'gemini' && err.isQuotaExhausted) {
+          this.keyExhaustedUntil[exhaustKey] = Date.now() + (err.waitMs || 15 * 60 * 1000);
+          if (this.providerStats.gemini) this.providerStats.gemini.quotaExhausted++;
+          console.warn(`[AI Service] Gemini${keySuffix} quota exhausted, benching for ~${Math.round((err.waitMs || 900000) / 60000)}m, trying next provider...`);
+          continue;
+        }
         lastError = err;
-        const keySuffix = entry.keyIndex > 0 ? `[${entry.keyIndex}]` : '';
         console.warn(`[AI Service] ${entry.name}${keySuffix} failed, trying next... Error: ${err.message}`);
       }
     }
@@ -543,6 +762,47 @@ WORKED EXAMPLES — Follow these exactly:
     throw lastError || new Error('All LLM providers failed');
   }
 
+  /**
+   * Get provider analytics stats (usage counters, error tracking, quota status).
+   * Returns a snapshot of all provider activity since app start or last reset.
+   */
+  getProviderStats() {
+    return {
+      providers: { ...this.providerStats },
+      totals: {
+        calls: this.totalCalls,
+        errors: this.totalErrors,
+        uptimeMs: Date.now() - this.appStartTime,
+      },
+      active: {
+        provider: this.activeProvider,
+        keyIndex: this.activeKeyIndex,
+      },
+      apiKeys: {
+        groq: this.groqClients.length,
+        openai: this.openaiClients.length,
+        openrouter: this.openrouterClients.length,
+        gemini: this.geminiClients.length,
+        total: this.groqClients.length + this.openaiClients.length + this.openrouterClients.length + this.geminiClients.length,
+      },
+      keyExhaustedUntil: { ...this.keyExhaustedUntil },
+    };
+  }
+
+  /**
+   * Reset all provider analytics counters to zero.
+   */
+  resetProviderStats() {
+    for (const key of Object.keys(this.providerStats)) {
+      this.providerStats[key] = { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null };
+    }
+    this.totalCalls = 0;
+    this.totalErrors = 0;
+    this.appStartTime = Date.now();
+    this.keyExhaustedUntil = {};
+    console.log('[AI Service] Provider analytics stats reset.');
+  }
+
   scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, waitMs) {
     const delay = waitMs + 20000; // 20s buffer past Groq's stated reset time
     const retryAt = Date.now() + delay;
@@ -554,17 +814,29 @@ WORKED EXAMPLES — Follow these exactly:
 
     // Also schedule an in-memory setTimeout for immediate execution when the time comes
     setTimeout(async () => {
+      // Only skip cleanup when answerQuery itself re-scheduled this same entry
+      // (fresh retryAt already persisted) — every other outcome must clear it,
+      // otherwise a broken/stale entry replays forever on each restart.
+      let shouldDelete = true;
       try {
         const retryResponse = await this.answerQuery(senderId, userQuery, customerName, customerPhone);
-        // Only send the reply if WhatsApp is still connected
-        if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
-          await whatsappWebBot.client.sendMessage(senderId, retryResponse.replyText);
-          console.log(`[AI Service] Sent delayed quota-retry reply to ${senderId}`);
+
+        if (retryResponse.intent === 'quota_exhausted') {
+          shouldDelete = false;
+        } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+          try {
+            await whatsappWebBot.client.sendMessage(senderId, retryResponse.replyText);
+            console.log(`[AI Service] Sent delayed quota-retry reply to ${senderId}`);
+          } catch (sendErr) {
+            console.error(`[AI Service] Failed to send delayed quota-retry reply to ${senderId}:`, sendErr.message);
+          }
         }
-        // Clean up the persisted retry regardless
-        dbService.deletePendingRetry(senderId, userQuery).catch(() => {});
       } catch (err) {
         console.error('[AI Service] Quota retry failed:', err.message);
+      } finally {
+        if (shouldDelete) {
+          dbService.deletePendingRetry(senderId, userQuery).catch(() => {});
+        }
       }
     }, delay);
   }
@@ -581,6 +853,10 @@ WORKED EXAMPLES — Follow these exactly:
       console.log(`[AI Service] Processing ${dueRetries.length} pending retries from persistent queue...`);
 
       for (const entry of dueRetries) {
+        // Only skip cleanup when answerQuery itself re-scheduled this same entry
+        // (fresh retryAt already persisted) — every other outcome must clear it,
+        // otherwise a broken/stale entry replays forever on each restart.
+        let shouldDelete = true;
         try {
           const retryResponse = await this.answerQuery(
             entry.senderId,
@@ -588,26 +864,147 @@ WORKED EXAMPLES — Follow these exactly:
             entry.customerName,
             entry.customerPhone
           );
-          if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
-            await whatsappWebBot.client.sendMessage(entry.senderId, retryResponse.replyText);
-            console.log(`[AI Service] Persistent retry reply sent to ${entry.senderId}`);
+
+          if (retryResponse.intent === 'quota_exhausted') {
+            shouldDelete = false;
+          } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+            try {
+              await whatsappWebBot.client.sendMessage(entry.senderId, retryResponse.replyText);
+              console.log(`[AI Service] Persistent retry reply sent to ${entry.senderId}`);
+            } catch (sendErr) {
+              console.error(`[AI Service] Failed to send retry reply to ${entry.senderId}:`, sendErr.message);
+            }
           }
-          await dbService.deletePendingRetry(entry.senderId, entry.userQuery);
-          // Stagger retries to avoid flooding the API
-          await new Promise(r => setTimeout(r, 1000));
         } catch (err) {
           console.error(`[AI Service] Persistent retry failed for ${entry.senderId}:`, err.message);
+        } finally {
+          if (shouldDelete) {
+            await dbService.deletePendingRetry(entry.senderId, entry.userQuery).catch(() => {});
+          }
         }
+        // Stagger retries to avoid flooding the API
+        await new Promise(r => setTimeout(r, 1000));
       }
     } catch (err) {
       console.error('[AI Service] processPendingRetries error:', err.message);
     }
   }
 
+  /**
+   * No-LLM Fallback: when all LLM providers are exhausted, search the local product cache
+   * and return a helpful response with relevant products. Zero API calls, zero cost.
+   * Falls back to a generic "busy" message if no products match.
+   */
+  _buildNoLLMFallback(userQuery, language = 'english') {
+    const isTanglish = language === 'tanglish';
+    try {
+      const products = woocommerceService.searchProducts(userQuery || '');
+      if (products && products.length > 0) {
+        const topProducts = products.slice(0, 3);
+        const productList = topProducts.map(p =>
+          `\u2022 *${p.name}* \u2014 \u20B9${p.price}${p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
+        ).join('\n');
+        return isTanglish
+          ? `Bro! 🙏 Romba messages varudhu ippo \u2014 but ungalukku idhu kandupudichen, wait pannunga:\n\n${productList}\n\nSize & quantity sollunga, naan vandhudhan sort pannuren! 🚀`
+          : `Hey! 🙏 We're getting tons of messages right now \u2014 but I found these for you while you wait:\n\n${productList}\n\nJust reply with what you'd like (size & quantity) and I'll process it as soon as I'm back! 🚀`;
+      }
+    } catch (err) {
+      console.warn('[AI Service] No-LLM fallback search failed:', err.message);
+    }
+    return isTanglish
+      ? "Bro! 🙏 Romba messages varudhu ippo - konjam neram kudunga, naan personal ah reply pannuren. Thanks for the patience!"
+      : "Hey! 🙏 We're getting a lot of messages right now - give me just a few minutes and I'll personally get back to you with an answer. Thanks for your patience!";
+  }
+
+  /**
+   * Deterministically parse a "pick size + quantity" reply (e.g. "M size 2",
+   * "1st one, L 3", "XL") against the products shown in the last search, with zero
+   * LLM call. Returns null on anything not confidently parseable — callers must fall
+   * through to the LLM in that case. Never guesses a size the product doesn't actually
+   * sell, and bails on long/sentence-like input to avoid misfiring on an unrelated
+   * message that happens to contain a size letter.
+   */
+  parseSizeQtyReply(userQuery, lastShownProducts) {
+    const q = (userQuery || '').toLowerCase().trim();
+    if (!q || q.length > 60) return null;
+
+    const sizeMatch = q.match(/\b(xxxl|xxl|xl|s|m|l)\b/i);
+    if (!sizeMatch) return null;
+    const size = sizeMatch[1].toUpperCase();
+
+    const ordinalMap = [
+      ['1st', 0], ['first', 0], ['2nd', 1], ['second', 1],
+      ['3rd', 2], ['third', 2], ['4th', 3], ['fourth', 3]
+    ];
+    let productIndex = 0;
+    for (const [word, idx] of ordinalMap) {
+      if (new RegExp(`\\b${word}\\b`).test(q)) { productIndex = idx; break; }
+    }
+    const product = lastShownProducts[productIndex];
+    if (!product) return null;
+
+    // Only trust a size the product actually lists — guards against a coincidental
+    // letter match landing on a size that isn't even sold for this item.
+    if (product.sizes && product.sizes.length > 0) {
+      const sizeAvailable = product.sizes.some(s => s.toUpperCase().startsWith(size));
+      if (!sizeAvailable) return null;
+    }
+
+    // Strip the ordinal + size tokens first so "1st" doesn't get misread as qty 1;
+    // whatever standalone number remains is the quantity (default 1 if none given).
+    const stripped = q
+      .replace(/\b(1st|first|2nd|second|3rd|third|4th|fourth)\b/g, '')
+      .replace(new RegExp(`\\b${size.toLowerCase()}\\b`, 'i'), '');
+    const qtyMatch = stripped.match(/\b(\d{1,2})\b/);
+    const qty = qtyMatch ? parseInt(qtyMatch[1], 10) : 1;
+    if (qty < 1 || qty > 50) return null;
+
+    return { productId: product.productId, name: product.name, price: product.price, size, qty };
+  }
+
+  /**
+   * Shared order-creation logic used by both the deterministic confirmation bypass and
+   * the confirm_order tool handler in the main LLM loop, so there's one place that
+   * decides what counts as a valid, orderable cart.
+   */
+  async _confirmOrderNow(session, senderId) {
+    if (!session.cart || session.cart.length === 0) return { ok: false };
+    const invalidItem = session.cart.find(item =>
+      !item.name || !item.price || isNaN(parseFloat(item.price)) || parseFloat(item.price) <= 0
+    );
+    if (invalidItem) return { ok: false };
+
+    const addrDetails = session.addressDetails || {
+      name: session.customerName || 'Customer',
+      phone: session.customerPhone || senderId.replace(/\D/g, ''),
+      address: session.address || '',
+      pincode: ''
+    };
+    const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
+    return {
+      ok: true,
+      orderId: orderResult.success ? orderResult.orderId : null,
+      checkoutUrl: orderResult.success ? orderResult.paymentUrl : null
+    };
+  }
+
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null) {
     const session = await dbService.getSession(senderId);
     if (customerName && customerName !== 'Customer') session.customerName = customerName;
     if (customerPhone) session.customerPhone = customerPhone;
+
+    // Detect language every turn, but only ever move TOWARD Tanglish, never away from
+    // it. A neutral opener like "hi" carries no signal and used to lock the whole
+    // conversation into English permanently before a real Tanglish word ever showed up
+    // (e.g. "iruka bro" on message 2) — now a Tanglish word on ANY turn switches the
+    // session over and stays there; plain-English replies afterward (numbers, product
+    // names) no longer flip it back.
+    const detected = this.detectLanguage(userQuery);
+    if (detected === 'tanglish') {
+      session.language = 'tanglish';
+    } else if (!session.language) {
+      session.language = 'english';
+    }
 
     session.history = session.history || [];
 
@@ -638,8 +1035,9 @@ WORKED EXAMPLES — Follow these exactly:
     let requiresEscalation = false;
     let checkoutUrl = null;
     let quotaExhaustedWaitMs = null;
+    let matchedProductIds = [];
 
-    if (this.groqClients.length === 0 && this.openaiClients.length === 0 && this.geminiClients.length === 0) {
+    if (this.groqClients.length === 0 && this.openaiClients.length === 0 && this.openrouterClients.length === 0 && this.geminiClients.length === 0) {
       resultText = "I'm currently undergoing maintenance. Please reach out to our support number directly on WhatsApp.";
       return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
     }
@@ -660,6 +1058,89 @@ WORKED EXAMPLES — Follow these exactly:
       }
     }
 
+    // --- Deterministic size+quantity parser ---
+    // The highest-frequency turn after a product search: customer just needs to pick
+    // size+qty. Parsing it in code is instant, free, and can't hallucinate a wrong
+    // product/size — parseSizeQtyReply returns null on anything not confidently
+    // parseable, which falls straight through to the LLM below as before.
+    if (isIdle && session.cart.length === 0 && session.lastShownProducts?.length > 0 && userQuery) {
+      const parsed = this.parseSizeQtyReply(userQuery, session.lastShownProducts);
+      if (parsed) {
+        session.cart = [{ productId: parsed.productId, name: parsed.name, price: parsed.price, size: parsed.size, qty: parsed.qty }];
+        session.state = 'COLLECTING_ADDRESS';
+        const isTanglish = session.language === 'tanglish';
+        const reply = isTanglish
+          ? `Done bro! 🛒 *${parsed.name}* — ${parsed.size} size, ${parsed.qty} qty cart la potten! Ippo shipping details sollunga — Peyar, Address, Pincode, Mobile number.`
+          : `Done! 🛒 Added *${parsed.name}* — Size ${parsed.size}, Qty ${parsed.qty} to your cart! Now share your shipping details — Name, Address, Pincode, Mobile number.`;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: reply });
+        await dbService.saveSession(senderId, session);
+        return { replyText: reply, intent: 'deterministic_cart', requiresEscalation: false, suggestedProductIds: [parsed.productId] };
+      }
+    }
+
+    // --- Deterministic order-confirmation bypass ---
+    // Only short-circuits on a message that IS ENTIRELY a confirmation word/phrase —
+    // anchored full-string match, not substring — so "yes but change the address"
+    // still goes to the LLM instead of confirming blindly.
+    if (session.state === 'CONFIRMING_ORDER' && userQuery) {
+      const isConfirmReply = /^\s*(yes+|yeah|yep|ye+p|confirm(ed)?|ok(ay)?|okey|sure|correct|right|seri|sari|proceed|go ahead|order pannunga|book pannunga|place (the )?order)\s*[!.]*\s*$/i.test(userQuery.trim());
+      if (isConfirmReply) {
+        const result = await this._confirmOrderNow(session, senderId);
+        if (result.ok) {
+          const isTanglish = session.language === 'tanglish';
+          let reply = result.checkoutUrl
+            ? (isTanglish
+                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}\nUPI or COD select pannunga. Thanks for shopping with Theaurax! ⚽🔥`
+                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}\nChoose UPI or COD. Thanks for shopping with Theaurax! ⚽🔥`)
+            : (isTanglish
+                ? `Semma bro! 🎉 Order confirm aayiduchi! Naanga team soon contact pannuvom payment confirm pannurathukku. Thanks! ⚽🔥`
+                : `Awesome! 🎉 Your order is confirmed! Our team will reach out shortly to confirm payment. Thanks for shopping with Theaurax! ⚽🔥`);
+
+          const cartSnapshot = session.cart;
+          if (!result.checkoutUrl && cartSnapshot.length > 0) {
+            try {
+              const fallbackOrderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
+              await generateInvoicePDF(fallbackOrderId, {
+                userId: senderId,
+                customerName: session.customerName || `Customer (${senderId})`,
+                cart: cartSnapshot,
+                address: session.address
+              });
+              const baseUrl = config.baseUrl || 'http://localhost:3000';
+              reply += `\n\n📄 *Proforma Invoice*: ${baseUrl}/invoices/invoice_${fallbackOrderId}.pdf`;
+            } catch (invoiceErr) {
+              console.error('[AI Service] Fallback PDF invoice failed (deterministic confirm):', invoiceErr.message);
+            }
+          }
+
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: reply });
+          session.state = 'IDLE';
+          session.cart = [];
+          session.address = null;
+          session.addressDetails = null;
+          session.history = [];
+
+          await dbService.saveSession(senderId, session);
+          await dbService.saveLead({
+            userId: senderId,
+            name: session.customerName || 'Customer',
+            phone: senderId.replace(/[^0-9]/g, ''),
+            channel: 'whatsapp',
+            cart: cartSnapshot,
+            address: null,
+            requiresEscalation: false,
+            status: 'completed',
+            conversation: []
+          });
+
+          return { replyText: reply, intent: 'deterministic_confirm', requiresEscalation: false, suggestedProductIds: [] };
+        }
+        // Cart failed validation (empty/corrupt) — fall through to the LLM to explain why.
+      }
+    }
+
     let messages = [
       { role: "system", content: this.generateSystemPrompt(session) }
     ];
@@ -671,11 +1152,13 @@ WORKED EXAMPLES — Follow these exactly:
 
     let keepLooping = true;
     let loops = 0;
+    let forcedSearchRetryDone = false;
+    let lastSearchResults = null;
 
     while (keepLooping && loops < 5) {
       loops++;
       try {
-        const completion = await this.callLLMWithFallback(messages);
+        const completion = await this.callLLMWithFallback(messages, session.language);
 
         const responseMessage = completion.choices[0].message;
         
@@ -696,6 +1179,39 @@ WORKED EXAMPLES — Follow these exactly:
 
             if (fnName === "search_products") {
               const products = woocommerceService.searchProducts(args.query || "");
+              matchedProductIds = products.map(p => p.id);
+              lastSearchResults = products;
+              // Persisted so a later turn (e.g. "1st one, M size 2") can resolve which
+              // product the customer means without an LLM call — see parseSizeQtyReply.
+              session.lastShownProducts = products.slice(0, 10).map(p => ({
+                productId: p.id, name: p.name, price: p.price, sizes: p.sizes || []
+              }));
+
+              // Skip the second "narration" LLM call for a single confident match —
+              // template it directly. Saves a full LLM turn on a very common case (trades
+              // a little narrative variety for zero extra cost/latency); with multiple
+              // options the model still narrates normally to help the customer choose.
+              if (products.length === 1 && responseMessage.tool_calls.length === 1) {
+                const p = products[0];
+                const isTanglish = session.language === 'tanglish';
+                const hypeOpeners = isTanglish
+                  ? ['Bro kandippa iruku! 🔥', 'Semma choice bro! 😍', 'Idhu vera level bro! 🏆']
+                  : ['Yes, we have it! 🔥', 'Great pick! 😍', 'This one\'s a favorite! 🏆'];
+                const opener = hypeOpeners[Math.floor(Math.random() * hypeOpeners.length)];
+                const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
+                resultText = isTanglish
+                  ? `${opener} *${p.name}* — ₹${p.price} la kedaikuthu!${sizeText}\n${p.permalink || ''}\n\nEnna size venum, enna quantity venum? 🛍️`
+                  : `${opener} *${p.name}* — ₹${p.price}${sizeText}\n${p.permalink || ''}\n\nWhich size and how many would you like? 🛍️`;
+                messages.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  name: fnName,
+                  content: JSON.stringify({ products, message: "Found products" })
+                });
+                keepLooping = false;
+                break;
+              }
+
               toolResultObj = { products: products.length > 0 ? products : null, message: products.length > 0 ? "Found products" : "No matching products found. Advise user to search website: https://theaurax.in/?s=" + encodeURIComponent(args.query || "") };
             } else if (fnName === "update_cart") {
               session.cart = [{
@@ -708,12 +1224,17 @@ WORKED EXAMPLES — Follow these exactly:
               session.state = 'COLLECTING_ADDRESS';
               toolResultObj = { status: "success", message: "Cart updated successfully. Ask user for their shipping address next." };
             } else if (fnName === "set_shipping_address") {
-              session.addressDetails = { name: args.name, phone: args.phone, address: args.address, pincode: args.pincode };
-              session.address = `${args.name}, ${args.address}, ${args.pincode} | Ph: ${args.phone}`;
-              session.customerPhone = args.phone;
+              // Some models emit phone/pincode as bare JSON numbers — normalize to
+              // strings here since downstream code (parseAddressDetails) calls .replace()
+              // on these and would throw on a raw number.
+              const phone = String(args.phone ?? '');
+              const pincode = String(args.pincode ?? '');
+              session.addressDetails = { name: args.name, phone, address: args.address, pincode };
+              session.address = `${args.name}, ${args.address}, ${pincode} | Ph: ${phone}`;
+              session.customerPhone = phone;
               if (args.name && args.name !== 'Customer') session.customerName = args.name;
               // Update customer registry with confirmed phone number
-              dbService.saveCustomer(senderId, args.name, args.phone).catch(() => {});
+              dbService.saveCustomer(senderId, args.name, phone).catch(() => {});
 
               const totalQty = session.cart.reduce((sum, item) => sum + parseInt(item.qty || 0), 0);
               const bulkThreshold = config.owner?.bulkThreshold || 10;
@@ -740,13 +1261,30 @@ WORKED EXAMPLES — Follow these exactly:
               session.escalationDetails = {
                 reason: args.reason,
                 name: args.customerName,
-                phone: args.customerPhone,
+                phone: String(args.customerPhone ?? ''),
                 address: args.customerAddress
               };
               toolResultObj = { status: "success", message: "Escalated. Tell the user our wholesale/support team will reach out to them shortly." };
             } else if (fnName === "confirm_order") {
               if (!session.cart || session.cart.length === 0) {
                 toolResultObj = { status: "error", message: "Cart is empty. Do NOT create an order. Ask the customer which jersey, size, and quantity they want first." };
+                messages.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  name: fnName,
+                  content: JSON.stringify(toolResultObj)
+                });
+                continue;
+              }
+
+              const invalidItem = session.cart.find(item =>
+                !item.name || !item.price || isNaN(parseFloat(item.price)) || parseFloat(item.price) <= 0
+              );
+              if (invalidItem) {
+                console.warn(`[AI Service] Rejected confirm_order for ${senderId} — corrupted cart item:`, JSON.stringify(invalidItem));
+                session.cart = [];
+                session.state = 'IDLE';
+                toolResultObj = { status: "error", message: "Cart data is incomplete (missing product name or price). Do NOT create an order. Ask the customer to tell you again which jersey, size, and quantity they want." };
                 messages.push({
                   role: "tool",
                   tool_call_id: toolCall.id,
@@ -789,6 +1327,11 @@ WORKED EXAMPLES — Follow these exactly:
           }
         } else {
           resultText = responseMessage.content || "Sorry, I couldn't process that.";
+          // Capture BEFORE stripping — a JSON-shaped tool-call leak is a sign of failure
+          // regardless of whether the regexes below manage to fully clean it out.
+          const rawContentLookedLikeJson = /^\s*\{[\s\S]*\}\s*$/.test(resultText)
+            && /"(function|name|type|parameters|query)"\s*:/i.test(resultText);
+
           // Groq Bug Fix: strip all known leaked tool-call formats
           resultText = resultText.replace(/<?\/?function=.*?>.*?<\/function>/gs, '').trim();
           resultText = resultText.replace(/[a-zA-Z_]+>\s*\{.*?\}/gs, '').trim();
@@ -797,19 +1340,65 @@ WORKED EXAMPLES — Follow these exactly:
           // Bare "toolName{...}" or "toolName(...)" leak — no wrapper tags at all, just the raw call
           resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
           // Catch any remaining garbage (orphaned braces/punctuation from partial strip)
-          if (!resultText || /^[\s{}\[\],"':]+$/.test(resultText)) {
+          const wasStrippedToGarbage = !resultText || /^[\s{}\[\],"':]+$/.test(resultText);
+          if (wasStrippedToGarbage) {
             resultText = "Sorry about that! 🙏 Could you tell me again what you're looking for? I'll sort you out right away.";
           }
+
+          // Guardrail: the model sometimes gives up on tool-calling (esp. after a Groq
+          // tool_use_failed glitch) and sends a non-answer instead of a real reply. Known
+          // shapes: (a) it recites the FAQ greeting boilerplate from the system prompt
+          // verbatim, ignoring the actual question; (b) it leaks a raw/malformed tool-call
+          // JSON as plain text (e.g. {"function":"search_products","query":"..."}), whether
+          // or not the stripping regexes above fully cleaned it; (c) stripping left nothing
+          // but the generic "could you repeat that" placeholder. By this point the pre-AI
+          // FAQ matcher has already ruled out a genuine greeting, so any of these is a leak —
+          // force one retry with search_products required before sending a non-answer.
+          const greetingFaq = faqService.getFAQs().find(f => f.category === 'Greetings');
+          const looksLikeGreetingLeak = /welcome to theaurax\.in/i.test(resultText)
+            || (greetingFaq && resultText.toLowerCase().includes(greetingFaq.question.toLowerCase()));
+          const looksLikeRawJsonLeak = rawContentLookedLikeJson || wasStrippedToGarbage;
+          if (looksLikeGreetingLeak || looksLikeRawJsonLeak) {
+            if (!forcedSearchRetryDone && loops < 5) {
+              forcedSearchRetryDone = true;
+              messages.push({
+                role: "system",
+                content: looksLikeRawJsonLeak
+                  ? `Your last reply was broken raw JSON, not a real answer or a proper tool call. The customer's last message was: "${userQuery}". Call the search_products tool NOW (as an actual tool call, not text) with that exact query to answer it.`
+                  : `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
+              });
+              continue;
+            }
+            // The model repeated the leak even after the nudge — stop trusting its free-text
+            // narration and build a deterministic reply directly from real search results
+            // instead of sending a non-answer to the customer.
+            const isTanglish = session.language === 'tanglish';
+            if (lastSearchResults && lastSearchResults.length > 0) {
+              const top = lastSearchResults.slice(0, 3);
+              const intro = isTanglish ? "Idhu iruku bro! 🔥" : "Here's what we have for you! 🔥";
+              const outro = isTanglish ? "Enna size venum, sollunga!" : "Which one would you like, and what size?";
+              resultText = intro + "\n\n" + top.map(p =>
+                `• *${p.name}* — ₹${p.price}${p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
+              ).join('\n') + "\n\n" + outro;
+            } else {
+              resultText = isTanglish
+                ? "Andha exact jersey kidaikala bro — team illa player name sollunga innoru thadava? Illa website la paarunga: https://theaurax.in"
+                : "Hmm, I couldn't find that exact jersey — could you tell me the team or player name again? Or browse the full range here: https://theaurax.in";
+            }
+          }
+
           keepLooping = false;
         }
       } catch (err) {
         if (err.isQuotaExhausted) {
           console.warn(`[AI Service] Groq daily token quota exhausted. Will retry this message in ${Math.round(err.waitMs / 1000)}s.`);
           quotaExhaustedWaitMs = err.waitMs;
-          resultText = "Hey! 🙏 We're getting a lot of messages right now - give me just a few minutes and I'll personally get back to you with an answer. Thanks for your patience!";
+          // --- No-LLM Fallback: when all providers are exhausted, try local product cache ---
+          resultText = this._buildNoLLMFallback(userQuery, session.language);
         } else {
           console.error('[AI Service] Groq API error:', err.error ? JSON.stringify(err.error) : err.message || err);
-          resultText = "Sorry about that! 🙏 I had a little trouble just now - could you tell me again which jersey, size, and quantity you're looking for? I'll get you sorted right away.";
+          // No-LLM fallback for non-quota errors too — show products from local cache
+          resultText = this._buildNoLLMFallback(userQuery, session.language);
         }
         keepLooping = false;
       }
@@ -878,7 +1467,7 @@ WORKED EXAMPLES — Follow these exactly:
       replyText: resultText,
       intent: 'agent_handled',
       requiresEscalation: requiresEscalation,
-      suggestedProductIds: []
+      suggestedProductIds: matchedProductIds
     };
   }
 }

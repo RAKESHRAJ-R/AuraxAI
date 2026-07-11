@@ -19,13 +19,13 @@
   },
   {
     "category": "Sizing & Fit",
-    "keywords": ["size chart", "sizes", "fit", "m", "l", "xl", "xxl", "jersey size", "dimensions"],
+    "keywords": ["size chart", "sizes", "fit", "jersey size", "dimensions"],
     "question": "What sizes do you have and is there a size chart?",
     "answer": "Our jerseys are available in sizes S, M, L, XL, and XXL. They are standard athletic/slim fit. We highly recommend checking our size chart on the website (https://theaurax.in/size-chart) to find your perfect fit. If you prefer a loose/relaxed fit, we suggest ordering one size up."
   },
   {
     "category": "Customization",
-    "keywords": ["custom", "customize", "name", "number", "print", "customised", "my name"],
+    "keywords": ["custom", "customize", "print", "customised", "customization", "name and number"],
     "question": "Can I customize the jersey with my own name and number?",
     "answer": "Yes! Customization (adding your name and favorite number on the back of the jersey) is available for an additional ₹100. During the checkout process on our website, you will see a text box to enter the Name and Number you want printed. Please note that customized jerseys cannot be returned or exchanged unless there is a manufacturing defect."
   },
@@ -46,5 +46,35 @@
     "keywords": ["bulk", "wholesale", "50 pieces", "many pieces", "wholesale price", "team kit", "discount"],
     "question": "Do you offer discounts for wholesale or bulk orders?",
     "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Please share the quantity you are looking for, and we will connect you directly with our wholesale team to provide the best quote."
+  },
+  {
+    "category": "Order Tracking",
+    "keywords": ["track", "tracking", "where is my order", "order status", "has it shipped", "order update"],
+    "question": "How can I track my order?",
+    "answer": "Once your order ships, you'll get an update here on WhatsApp. If you'd like a status check anytime before that, just message us your order number and our team will look it up and update you directly."
+  },
+  {
+    "category": "Shipping Coverage",
+    "keywords": ["international", "internationally", "outside india", "ship abroad", "usa", "uk", "other country", "worldwide"],
+    "question": "Do you ship outside India?",
+    "answer": "Right now we only ship within India. We don't currently support international orders, but keep an eye out — that may change in the future!"
+  },
+  {
+    "category": "Jersey Care",
+    "keywords": ["wash", "washing", "care instructions", "how to wash", "iron", "maintain"],
+    "question": "How should I wash and care for my jersey?",
+    "answer": "For best results: cold hand wash or gentle machine wash (inside-out), no bleach, no wringing, and air dry in shade rather than direct sunlight. Avoid ironing directly over any printed name/number or crest — iron inside-out on low heat if needed. This keeps the print and fabric looking fresh for way longer!"
+  },
+  {
+    "category": "Order Cancellation",
+    "keywords": ["cancel", "cancel order", "cancel my order"],
+    "question": "Can I cancel my order?",
+    "answer": "Message us as soon as possible with your order number! If it hasn't been packed/shipped yet, we'll do our best to cancel it for you. Once it's shipped, our standard 7-day exchange policy applies instead."
+  },
+  {
+    "category": "Kids Jerseys",
+    "keywords": ["kids", "kid", "children", "youth", "child size"],
+    "question": "Do you have jerseys for kids?",
+    "answer": "Yes! We carry kids/youth versions for a lot of our popular player jerseys. Just let us know the team or player you're looking for and we'll check what's available in kids sizing."
   }
 ]

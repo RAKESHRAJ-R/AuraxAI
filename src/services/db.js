@@ -231,6 +231,25 @@ class DatabaseService {
     }
   }
 
+  async getAllLeads() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('leads').find({}).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllLeads error:', err.message);
+        return [];
+      }
+    }
+
+    // JSON Fallback
+    try {
+      return JSON.parse(fs.readFileSync(LEADS_FILE, 'utf-8'));
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllLeads error:', err.message);
+      return [];
+    }
+  }
+
   // --- Customer Registry (for marketing campaigns) ---
 
   async saveCustomer(userId, name, phone, channel = 'whatsapp') {

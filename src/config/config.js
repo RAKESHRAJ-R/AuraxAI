@@ -6,7 +6,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load environment variables from .env file (if it exists)
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+// override: true ensures .env values take precedence over pre-existing shell env vars
+dotenv.config({ path: path.join(__dirname, '../../.env'), override: true });
 
 const config = {
   port: process.env.PORT || 3000,
@@ -21,6 +22,13 @@ const config = {
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_groq')),
     model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    // Qwen3 (free on Groq) handles Tamil-English code-mixing noticeably better than
+    // Llama-3.3, but its free tier caps at 8000 TPM/key — 5 keys = 40,000 TPM total for
+    // the WHOLE bot's Tanglish traffic combined. Verified live: a single solo test
+    // conversation exhausted 2 of 5 keys' entire daily quota and took 5-6 minutes on one
+    // turn. Not viable for concurrent real customers — off by default. Only set
+    // GROQ_TANGLISH_MODEL explicitly if you've upgraded to Groq's paid Dev Tier.
+    tanglishModel: process.env.GROQ_TANGLISH_MODEL || null,
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
@@ -33,6 +41,13 @@ const config = {
     apiKeys: (process.env.GEMINI_API_KEY || '').split(',')
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_gemini')),
+  },
+  openrouter: {
+    apiKey: process.env.OPENROUTER_API_KEY || '',
+    apiKeys: (process.env.OPENROUTER_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0),
+    model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
   },
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',

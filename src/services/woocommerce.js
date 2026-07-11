@@ -100,6 +100,7 @@ class WooCommerceService {
         categories: p.categories?.map((cat) => cat.name) || [],
         sizes,
         colors,
+        total_sales: parseInt(p.total_sales, 10) || 0,
       };
     });
   }
@@ -164,12 +165,84 @@ class WooCommerceService {
   }
 
   /**
-   * Search local products cache based on queries using token-matching for natural language compatibility
+   * Normalize product/category names using alias map for common misspellings and variations.
+   * Fixes: BARZIL→BRAZIL, NETHERLAND→NETHERLANDS, DARGON→DRAGON, etc.
+   */
+  normalizeName(name) {
+    const aliasMap = {
+      '\\bnetherland\\b': 'netherlands',
+      '\\bbarzil\\b': 'brazil',
+      '\\bbaryen\\b': 'bayern munich',
+      '\\bdargon\\b': 'dragon',
+      '\\btraning\\b': 'training',
+      '\\bmardona\\b': 'maradona',
+      '\\bmardon\\b': 'maradona',
+      '\\bfrans\\b': 'france',
+    };
+    let normalized = name.toLowerCase().trim();
+    for (const [pattern, replacement] of Object.entries(aliasMap)) {
+      normalized = normalized.replace(new RegExp(pattern, 'gi'), replacement);
+    }
+    return normalized;
+  }
+
+  /**
+   * Deduplicate products by normalized name, keeping the first occurrence.
+   * Fixes: Duplicate Arsenal Home 26/27 entries.
+   */
+  deduplicateProducts(products) {
+    const seen = new Set();
+    return products.filter(p => {
+      const key = p.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Check if a product is kids/youth category
+   */
+  isKidsProduct(p) {
+    const name = p.name.toLowerCase();
+    if (name.includes('kids') || name.includes('kid') || name.includes('youth') || name.includes('child')) return true;
+    return p.categories.some(cat => {
+      const c = cat.toLowerCase();
+      return c.includes('kids') || c.includes('kid') || c.includes('youth') || c.includes('child');
+    });
+  }
+
+  /**
+   * Get fallback products when search returns zero results.
+   * Returns cheapest in-stock items as suggestions.
+   */
+  getFallbackProducts(products, isAdultSearch) {
+    let candidates = [...products];
+    if (isAdultSearch) candidates = candidates.filter(p => !this.isKidsProduct(p));
+    return candidates
+      .filter(p => p.stock_status === 'instock' && p.price && !isNaN(parseFloat(p.price)))
+      .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+      .slice(0, 5);
+  }
+
+  /**
+   * Search local products cache based on queries using token-matching for natural language compatibility.
+   * Fixes implemented:
+   *   - Name aliases (BARZIL→BRAZIL, NETHERLAND→NETHERLANDS, DARGON→DRAGON)
+   *   - In-stock products ranked first, OOS penalized
+   *   - Plural/singular normalization (trailing 's' stripped for matching)
+   *   - Zero-result fallback showing cheapest in-stock items
+   *   - Deduplication of identical products
    */
   searchProducts(query) {
     if (!query) return [];
-    const products = this.getLocalProducts();
+    let products = this.getLocalProducts();
+
+    // Deduplicate products by normalized name (fixes: duplicate Arsenal 26/27 Home)
+    products = this.deduplicateProducts(products);
+
     const cleanQuery = query.toLowerCase().trim();
+    const normalizedQuery = this.normalizeName(cleanQuery);
 
     // Parse price budget limit
     const priceLimit = this.parsePriceLimit(cleanQuery);
@@ -177,6 +250,10 @@ class WooCommerceService {
     // Detect if looking for cheapest/budget items
     const cheapKeywords = ['cheap', 'cheapest', 'lowest price', 'lowest cost', 'least price', 'less price', 'low price', 'minimum price', 'affordable', 'best deals', 'budget', 'lowest'];
     const isCheapSearch = cheapKeywords.some(kw => cleanQuery.includes(kw));
+
+    // Detect if looking for popular/best-selling items (uses total_sales synced from WooCommerce)
+    const bestsellerKeywords = ['best selling', 'bestseller', 'best seller', 'top selling', 'top seller', 'most sold', 'popular', 'trending', 'hot selling', 'best products'];
+    const isBestsellerSearch = bestsellerKeywords.some(kw => cleanQuery.includes(kw));
 
     // Detect if they specifically want adult/grown items, or want to exclude kids items
     const adultKeywords = ['adult', 'adults', 'grown ones', 'grown', 'men', 'mens', 'man', 'women', 'womens', 'fv', 'pv', 'player version', 'fan version', 'retro'];
@@ -190,21 +267,42 @@ class WooCommerceService {
       'than', 'rs', 'rupees', '₹', 'give', 'suggest', 'underneath', 'within', 'budget', 
       'max', 'maximum', 'please', 'need', 'want', 'buy', 'order', 'purchase', 'i'
     ]);
-    const queryTokens = cleanQuery.split(/[\s/,\-_?!.]+/).filter(t => t.length > 2 && !stopWords.has(t) && isNaN(t));
+    const queryTokens = cleanQuery.split(/[\s/,\-_?!.]+/)
+      .filter(t => t.length > 2 && !stopWords.has(t) && isNaN(t));
+
+    // Generate normalized + singular variants of each token for fuzzy matching
+    const normalizedTokens = queryTokens.map(t => this.normalizeName(t));
+    // Strip trailing 's' for plural → singular matching (e.g. netherlands → netherland)
+    const singularTokens = queryTokens.map(t => t.endsWith('s') ? t.slice(0, -1) : t);
+    const allTokenVariants = [...new Set([...queryTokens, ...normalizedTokens, ...singularTokens])];
+
+    // Stock weight: +8 for in-stock, -5 for OOS, +2 for backorder
+    function stockWeight(status) {
+      if (status === 'instock') return 8;
+      if (status === 'outofstock') return -5;
+      if (status === 'onbackorder') return 2;
+      return 0;
+    }
+
+    // Sort helper: high score first, then in-stock first
+    function sortByScoreAndStock(a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      const aStock = a.product.stock_status === 'instock' ? 0 : 1;
+      const bStock = b.product.stock_status === 'instock' ? 0 : 1;
+      return aStock - bStock;
+    }
 
     // Handle pure budget queries (e.g. "jerseys under 700") with no specific keywords
     if (priceLimit !== null && queryTokens.length === 0) {
       let matches = products.filter(p => p.price && !isNaN(parseFloat(p.price)) && parseFloat(p.price) <= priceLimit);
-      if (isAdultSearch) {
-        matches = matches.filter(p => {
-          const productName = p.name.toLowerCase();
-          const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
-          const hasKidsCategory = p.categories.some(cat => cat.toLowerCase().includes('kid') || cat.toLowerCase().includes('youth'));
-          return !(hasKidsTerm || hasKidsCategory);
-        });
-      }
+      if (isAdultSearch) matches = matches.filter(p => !this.isKidsProduct(p));
       return matches
-        .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+        .sort((a, b) => {
+          const aS = a.stock_status === 'instock' ? 0 : 1;
+          const bS = b.stock_status === 'instock' ? 0 : 1;
+          if (aS !== bS) return aS - bS;
+          return parseFloat(a.price) - parseFloat(b.price);
+        })
         .slice(0, 10);
     }
 
@@ -212,53 +310,52 @@ class WooCommerceService {
 
     for (const p of products) {
       // If looking for adult/grown, filter out kids/youth products
-      if (isAdultSearch) {
-        const productName = p.name.toLowerCase();
-        const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
-        const hasKidsCategory = p.categories.some(cat => {
-          const catName = cat.toLowerCase();
-          return catName.includes('kids') || catName.includes('kid') || catName.includes('youth') || catName.includes('child');
-        });
-        if (hasKidsTerm || hasKidsCategory) {
-          continue;
-        }
-      }
+      if (isAdultSearch && this.isKidsProduct(p)) continue;
 
       let score = 0;
       const productNameLower = p.name.toLowerCase();
+      const normalizedProductName = this.normalizeName(productNameLower);
 
-      // 1. Direct name substring match (highest priority)
-      if (cleanQuery.length >= 3 && productNameLower.includes(cleanQuery)) {
-        score += 15;
+      // 1. Direct name substring match (highest priority) — check both raw and normalized
+      if (cleanQuery.length >= 3) {
+        if (productNameLower.includes(cleanQuery) || normalizedProductName.includes(normalizedQuery)) {
+          score += 15;
+        }
       }
 
-      // 2. Query token matching with relevance weighting
-      if (queryTokens.length > 0) {
+      // 2. Query token matching with all variants (raw, normalized, singular)
+      if (allTokenVariants.length > 0) {
         let matchedTokensCount = 0;
-        for (const token of queryTokens) {
-          if (productNameLower.includes(token)) {
+        for (const token of allTokenVariants) {
+          if (productNameLower.includes(token) || normalizedProductName.includes(token)) {
             score += 5;
             matchedTokensCount++;
-          } else if (p.categories.some(cat => cat.toLowerCase().includes(token))) {
+          } else if (p.categories.some(cat => cat.toLowerCase().includes(token) || this.normalizeName(cat).includes(token))) {
             score += 2;
             matchedTokensCount++;
           }
         }
-        // Bonus points if ALL significant query keywords matched
-        if (matchedTokensCount === queryTokens.length) {
+        // Bonus points if ALL original query tokens matched
+        if (matchedTokensCount >= queryTokens.length) {
           score += 5;
         }
       }
 
-      // 3. Category matching for clean query
+      // 3. Category matching for clean query (check both raw and normalized)
       if (cleanQuery.length >= 3) {
-        const categoryMatch = p.categories.some(cat => cleanQuery.includes(cat.toLowerCase()));
-        if (categoryMatch) {
-          score += 3;
-        }
+        const categoryMatch = p.categories.some(cat =>
+          cleanQuery.includes(cat.toLowerCase()) || normalizedQuery.includes(this.normalizeName(cat))
+        );
+        if (categoryMatch) score += 3;
       }
 
+      // Only a product with genuine keyword/category relevance counts as a match — stock
+      // status is a tiebreaker among relevant products, not a qualifier on its own. Without
+      // this guard, stockWeight's unconditional +8 for in-stock items made EVERY in-stock
+      // product (almost the whole catalog) "match" any query with zero real keyword overlap,
+      // returning arbitrary products instead of properly falling back to getFallbackProducts.
       if (score > 0) {
+        score += stockWeight(p.stock_status);
         scoredMatches.push({ product: p, score });
       }
     }
@@ -268,28 +365,38 @@ class WooCommerceService {
       scoredMatches = scoredMatches.filter(m => m.product.price && !isNaN(parseFloat(m.product.price)) && parseFloat(m.product.price) <= priceLimit);
     }
 
-    // Sort by relevance score in descending order
-    scoredMatches.sort((a, b) => b.score - a.score);
+    // Sort by score descending, then in-stock first
+    scoredMatches.sort(sortByScoreAndStock);
     let finalMatches = scoredMatches.map(m => m.product);
 
-    // If cheap search is requested:
+    // If cheap search is requested, sort by price (in-stock first)
     if (isCheapSearch) {
       let sourceList = finalMatches.length > 0 ? finalMatches : products;
-      if (isAdultSearch) {
-        sourceList = sourceList.filter(p => {
-          const productName = p.name.toLowerCase();
-          const hasKidsTerm = productName.includes('kids') || productName.includes('kid') || productName.includes('youth') || productName.includes('child');
-          const hasKidsCategory = p.categories.some(cat => {
-            const catName = cat.toLowerCase();
-            return catName.includes('kids') || catName.includes('kid') || catName.includes('youth') || catName.includes('child');
-          });
-          return !(hasKidsTerm || hasKidsCategory);
-        });
-      }
+      if (isAdultSearch) sourceList = sourceList.filter(p => !this.isKidsProduct(p));
       return sourceList
         .filter(p => p.price && !isNaN(parseFloat(p.price)))
-        .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+        .sort((a, b) => {
+          const aS = a.stock_status === 'instock' ? 0 : 1;
+          const bS = b.stock_status === 'instock' ? 0 : 1;
+          if (aS !== bS) return aS - bS;
+          return parseFloat(a.price) - parseFloat(b.price);
+        })
         .slice(0, 10);
+    }
+
+    // If asking for best-sellers/popular items, sort by total_sales (synced from WooCommerce)
+    if (isBestsellerSearch) {
+      let sourceList = finalMatches.length > 0 ? finalMatches : products;
+      if (isAdultSearch) sourceList = sourceList.filter(p => !this.isKidsProduct(p));
+      return sourceList
+        .filter(p => p.stock_status === 'instock')
+        .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
+        .slice(0, 10);
+    }
+
+    // Zero-result fallback: show cheapest in-stock products as suggestions
+    if (finalMatches.length === 0) {
+      return this.getFallbackProducts(products, isAdultSearch);
     }
 
     return finalMatches.slice(0, 10);
