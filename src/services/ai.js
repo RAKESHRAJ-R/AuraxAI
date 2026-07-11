@@ -92,13 +92,15 @@ class AIService {
 
     // --- Provider Analytics (counters for monitoring usage & quota issues) ---
     this.providerStats = {
-      groq: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
-      openai: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
-      openrouter: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
-      gemini: { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null },
+      groq: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
+      openai: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
+      openrouter: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
+      gemini: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
     };
     this.totalCalls = 0;
     this.totalErrors = 0;
+    this.totalTokensUsed = 0;
+    this.callRecords = [];
     this.appStartTime = Date.now();
 
     // Per-key (not per-provider) quota exhaustion timestamps — keyed by "provider#keyIndex".
@@ -500,7 +502,10 @@ WORKED EXAMPLES — Follow these exactly:
                   }
                 }))
               }
-            }]
+            }],
+            usage: {
+              total_tokens: response.usageMetadata?.totalTokenCount || 0
+            }
           };
         }
 
@@ -512,7 +517,10 @@ WORKED EXAMPLES — Follow these exactly:
               role: 'assistant',
               content: text || "Sorry, I couldn't process that."
             }
-          }]
+          }],
+          usage: {
+            total_tokens: response.usageMetadata?.totalTokenCount || 0
+          }
         };
       } catch (err) {
         // A quota/429 error means this key's daily or per-minute allowance is spent —
@@ -713,6 +721,36 @@ WORKED EXAMPLES — Follow these exactly:
           this.activeKeyIndex = entry.keyIndex;
         }
 
+        const tokensUsed = result.usage?.total_tokens || 0;
+        const modelUsed = entry.name === 'openai'
+          ? (config.openai?.model || 'gpt-4o-mini')
+          : entry.name === 'openrouter'
+          ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+          : entry.name === 'gemini'
+          ? (config.gemini?.model || 'gemini-2.0-flash')
+          : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
+          ? config.groq.tanglishModel
+          : (config.groq?.model || 'llama-3.3-70b-versatile');
+
+        // Update token statistics
+        if (this.providerStats[providerName]) {
+          this.providerStats[providerName].tokensUsed = (this.providerStats[providerName].tokensUsed || 0) + tokensUsed;
+        }
+        this.totalTokensUsed = (this.totalTokensUsed || 0) + tokensUsed;
+
+        // Push a call record
+        this.callRecords.push({
+          timestamp: Date.now(),
+          provider: entry.name,
+          keyIndex: entry.keyIndex,
+          success: true,
+          tokens: tokensUsed,
+          model: modelUsed
+        });
+        if (this.callRecords.length > 500) {
+          this.callRecords.shift();
+        }
+
         // --- Success analytics ---
         if (this.providerStats[providerName]) {
           this.providerStats[providerName].success++;
@@ -721,6 +759,29 @@ WORKED EXAMPLES — Follow these exactly:
 
         return result;
       } catch (err) {
+        const modelUsed = entry.name === 'openai'
+          ? (config.openai?.model || 'gpt-4o-mini')
+          : entry.name === 'openrouter'
+          ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+          : entry.name === 'gemini'
+          ? (config.gemini?.model || 'gemini-2.0-flash')
+          : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
+          ? config.groq.tanglishModel
+          : (config.groq?.model || 'llama-3.3-70b-versatile');
+
+        this.callRecords.push({
+          timestamp: Date.now(),
+          provider: entry.name,
+          keyIndex: entry.keyIndex,
+          success: false,
+          tokens: 0,
+          model: modelUsed,
+          error: err.message || 'Unknown error'
+        });
+        if (this.callRecords.length > 500) {
+          this.callRecords.shift();
+        }
+
         // --- Error analytics ---
         if (this.providerStats[providerName]) {
           this.providerStats[providerName].errors++;
@@ -772,6 +833,7 @@ WORKED EXAMPLES — Follow these exactly:
       totals: {
         calls: this.totalCalls,
         errors: this.totalErrors,
+        tokens: this.totalTokensUsed || 0,
         uptimeMs: Date.now() - this.appStartTime,
       },
       active: {
@@ -786,6 +848,7 @@ WORKED EXAMPLES — Follow these exactly:
         total: this.groqClients.length + this.openaiClients.length + this.openrouterClients.length + this.geminiClients.length,
       },
       keyExhaustedUntil: { ...this.keyExhaustedUntil },
+      recentCalls: (this.callRecords || []).slice(-50),
     };
   }
 
@@ -794,10 +857,12 @@ WORKED EXAMPLES — Follow these exactly:
    */
   resetProviderStats() {
     for (const key of Object.keys(this.providerStats)) {
-      this.providerStats[key] = { success: 0, errors: 0, quotaExhausted: 0, lastErrorAt: null, lastErrorMsg: null };
+      this.providerStats[key] = { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null };
     }
     this.totalCalls = 0;
     this.totalErrors = 0;
+    this.totalTokensUsed = 0;
+    this.callRecords = [];
     this.appStartTime = Date.now();
     this.keyExhaustedUntil = {};
     console.log('[AI Service] Provider analytics stats reset.');

@@ -30,5 +30,29 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-11T05:34:30.567Z",
     "createdAt": "2026-07-09T17:54:07.426Z"
+  },
+  {
+    "userId": "test_user_single_606",
+    "name": "Customer",
+    "phone": "606",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-11T10:23:33.005Z",
+    "createdAt": "2026-07-11T10:23:33.006Z"
+  },
+  {
+    "userId": "153308975087656@lid",
+    "name": "Indhu",
+    "phone": "9487321984",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-11T13:32:11.245Z",
+    "createdAt": "2026-07-11T13:09:22.893Z"
+  },
+  {
+    "userId": "test_user_single_857",
+    "name": "Customer",
+    "phone": "857",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-11T13:25:38.905Z",
+    "createdAt": "2026-07-11T13:25:38.906Z"
   }
 ]

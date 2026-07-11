@@ -110,7 +110,7 @@ class WhatsAppWebBot {
           // ignore
         }
         this.client = null;
-        
+
         // Auto-reinitialize after 10 seconds
         setTimeout(() => {
           this.initialize();
@@ -151,25 +151,46 @@ class WhatsAppWebBot {
       const normalizedSender = senderId.replace(/[^0-9]/g, '');
       console.log(`[DEBUG] Received raw message from: ${senderId} (Normalized: ${normalizedSender})`);
 
-      // Check allowed test numbers (Safe Mode filter)
-      if (config.wati.allowedTestNumbers && config.wati.allowedTestNumbers.length > 0) {
-        if (!config.wati.allowedTestNumbers.includes(normalizedSender)) {
-          return;
-        }
-      }
-
-      console.log(`📬 [WhatsApp] Message from ${normalizedSender}: "${msg.body}"`);
-
       // Retrieve customer contact details (name and real phone number)
       let customerName = 'Customer';
       let customerPhone = normalizedSender;
       try {
         const contact = await msg.getContact();
         customerName = contact.pushname || contact.name || 'Customer';
-        if (contact.number) customerPhone = contact.number;
+        if (contact.number) {
+          customerPhone = contact.number.replace(/[^0-9]/g, '');
+        }
+        console.log(`[DEBUG] Resolved contact details: name="${customerName}", phone="${customerPhone}", rawNumber="${contact.number || ''}"`);
       } catch (contactErr) {
-        // ignore
+        console.error(`[DEBUG] Failed to retrieve contact for ${senderId}:`, contactErr.message);
       }
+
+      // Try resolving LID using getContactLidAndPhone if it's a LID format
+      if (senderId.includes('@lid') && this.client && typeof this.client.getContactLidAndPhone === 'function') {
+        try {
+          console.log(`[DEBUG] Attempting getContactLidAndPhone for: ${senderId}`);
+          const res = await this.client.getContactLidAndPhone([senderId]);
+          console.log(`[DEBUG] getContactLidAndPhone response:`, JSON.stringify(res));
+          if (res && res.length > 0 && res[0].pn) {
+            customerPhone = res[0].pn.replace(/[^0-9]/g, '');
+            console.log(`[DEBUG] Successfully resolved LID ${senderId} to Phone: ${customerPhone}`);
+          }
+        } catch (lidErr) {
+          console.error(`[DEBUG] getContactLidAndPhone error:`, lidErr.message);
+        }
+      }
+
+      // Check allowed test numbers (Safe Mode filter)
+      if (config.wati.allowedTestNumbers && config.wati.allowedTestNumbers.length > 0) {
+        const isSenderAllowed = config.wati.allowedTestNumbers.includes(normalizedSender) || 
+                              config.wati.allowedTestNumbers.includes(customerPhone);
+        if (!isSenderAllowed) {
+          console.log(`[DEBUG] Blocked message from ${normalizedSender} (Resolved phone: ${customerPhone}) - not in ALLOWED_TEST_NUMBERS`);
+          return;
+        }
+      }
+
+      console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${msg.body}"`);
 
       // Answer using AI Service
       const agentResponse = await aiService.answerQuery(senderId, msg.body, customerName, customerPhone);

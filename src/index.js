@@ -87,6 +87,32 @@ app.get('/api/retry-stats', async (req, res) => {
   }
 });
 
+/**
+ * Active Sessions Route
+ * Returns a list of all active user sessions for monitoring.
+ */
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const sessions = await dbService.getAllSessions();
+    const mapped = sessions.map(s => ({
+      userId: s.userId,
+      state: s.state,
+      cart: s.cart || [],
+      address: s.address,
+      lastActive: s.lastActive,
+      requiresEscalation: s.requiresEscalation,
+      historyCount: s.history ? s.history.length : 0,
+      language: s.language || 'english',
+    }));
+    // Sort by last active desc
+    mapped.sort((a, b) => new Date(b.lastActive || 0) - new Date(a.lastActive || 0));
+    res.json(mapped);
+  } catch (err) {
+    console.error('[Server] /api/sessions error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
 // Start Server
 const PORT = config.port;
 app.listen(PORT, () => {

@@ -153,6 +153,26 @@ class DatabaseService {
     }
   }
 
+  async getAllSessions() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('sessions').find({}).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllSessions error:', err.message);
+        return [];
+      }
+    }
+
+    // JSON Fallback
+    try {
+      const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'));
+      return Object.values(data);
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllSessions error:', err.message);
+      return [];
+    }
+  }
+
   // --- Lead & Order Tracking Methods ---
 
   async saveLead(leadData) {
