@@ -18,6 +18,24 @@ class WhatsAppWebBot {
     // strict in-order processing for a given customer while different customers still
     // run fully in parallel.
     this.senderChains = new Map();
+    // whatsapp-web.js occasionally re-emits the same inbound message (reconnects,
+    // session resync) with no dedupe of its own — without this, a replayed 'message'
+    // event runs the full agent + LLM call twice and sends two near-identical replies
+    // for what the customer only sent once. Capped FIFO so it can't grow unbounded
+    // in a long-running process.
+    this.seenMessageIds = new Set();
+  }
+
+  isDuplicateMessage(msg) {
+    const msgId = msg.id?._serialized || msg.id?.id;
+    if (!msgId) return false;
+    if (this.seenMessageIds.has(msgId)) return true;
+    this.seenMessageIds.add(msgId);
+    if (this.seenMessageIds.size > 1000) {
+      const oldest = this.seenMessageIds.values().next().value;
+      this.seenMessageIds.delete(oldest);
+    }
+    return false;
   }
 
   enqueueMessage(msg) {
@@ -118,6 +136,10 @@ class WhatsAppWebBot {
       });
 
       this.client.on('message', async (msg) => {
+        if (this.isDuplicateMessage(msg)) {
+          console.log(`[WhatsApp] Duplicate 'message' event for id ${msg.id?._serialized || msg.id?.id} — skipping.`);
+          return;
+        }
         this.enqueueMessage(msg);
       });
 
@@ -138,6 +160,7 @@ class WhatsAppWebBot {
   }
 
   async handleIncomingMessage(msg) {
+    let typingInterval = null;
     try {
       // Ignore group chats, broadcast/status
       if (msg.isGroupMsg || msg.from.includes('@g.us') || msg.from === 'status@broadcast') {
@@ -192,6 +215,20 @@ class WhatsAppWebBot {
 
       console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${msg.body}"`);
 
+      // Show a "typing..." indicator while the agent works (product search + LLM
+      // call(s) can take several seconds) so the customer knows we've seen their
+      // message instead of wondering if it went through. WhatsApp auto-expires the
+      // typing indicator after ~25s if it isn't refreshed, so keep re-sending it.
+      try {
+        const chat = await msg.getChat();
+        await chat.sendStateTyping();
+        typingInterval = setInterval(() => {
+          chat.sendStateTyping().catch(() => {});
+        }, 20000);
+      } catch (typingErr) {
+        console.error(`[DEBUG] Failed to send typing indicator:`, typingErr.message);
+      }
+
       // Answer using AI Service
       const agentResponse = await aiService.answerQuery(senderId, msg.body, customerName, customerPhone);
 
@@ -202,6 +239,8 @@ class WhatsAppWebBot {
       console.log(`📤 [WhatsApp] Sent reply to ${normalizedSender}`);
     } catch (err) {
       console.error(`❌ [WhatsApp Bot Error]:`, err.message);
+    } finally {
+      if (typingInterval) clearInterval(typingInterval);
     }
   }
 

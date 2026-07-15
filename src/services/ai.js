@@ -146,12 +146,14 @@ Instructions:
 2. If products are found, provide exact name, price, sizes, and permalink. Hype it up! (e.g., "Bro, indha jersey vera level!" OR "This jersey is absolutely stunning!")
 3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
 4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
-5. Once the address is provided, use 'set_shipping_address'.
-6. If the tool says "Address saved", display an order summary and ask them to reply YES to confirm. Once confirmed, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
+5. Once the address is provided, use 'set_shipping_address'. The order summary and total are shown to the customer automatically right after — you do NOT need to (and must not try to) write your own summary or total for this step.
+6. Once the tool result confirms the cart is valid, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
 7. Use emojis naturally to make it engaging.
 8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
 9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.
-10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Share it clearly with the customer as their checkout link.
+10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Paste that EXACT URL string verbatim, character-for-character, on its own line in your reply — never paraphrase it, shorten it, describe it ("I've sent your link"), or omit it. If the URL is missing from your reply, the customer cannot pay.
+11. FORMATTING: When listing 2+ products, put each product on its own line (use a line break or bullet), never run them together in one sentence. Ask the size/quantity follow-up question ONCE, at the very end, after all products are listed — never repeat "which size?" after every single product. Keep replies in short, grammatically complete sentences — no sentence fragments or unrelated asides tacked onto the end of a reply.
+12. NEVER call 'confirm_order' unless the customer's last message is PURELY a plain confirmation (yes/ok/confirm/seri, nothing else added). If they mention any change, correction, different item, different quantity, or a negation ("illa", "no", "wait", "change it") — do NOT confirm. Instead use 'update_cart' to fix the item first, then show the corrected summary and ask them to confirm again.
 
 ---
 LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
@@ -182,7 +184,25 @@ WORKED EXAMPLES — Follow these exactly:
   Customer: "L bro 1 venum"
   → [Use the update_cart tool with productId:45, name:"Chelsea Home 25/26 Jersey", price:849, size:"L", qty:1]
   Tool returns success.
-  → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Peyar, Address, Pincode, Mobile number."
+  → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Name, Address, Pincode, Mobile number."
+
+[Tanglish] Product search — multiple matches (pick top 2-3, ONE question at the end, not after each):
+  Customer: "messi jersey iruka?"
+  → [Use the search_products tool with query "messi jersey"]
+  Tool returns 10 products.
+  → Reply: "Bro kandippa iruku! 🔥 Messi jersey la ivalo options iruku:
+• FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI — ₹470 [S, M, L, XL]
+• ARGENTINA 2006 HOME — MESSI — ₹430 [S, M, L, XL]
+• ARGENTINA 2026 WORLD CUP FULL SLEEVE EDITION — MESSI — ₹470 [S, M, L, XL]
+Idhu top matches bro, innum options website la irukku. Ethu venum, enna size? 🤔"
+  (WRONG — do NOT do this: repeating "Enna size venum?" after every single bullet. Ask it exactly once, at the very end.)
+
+[Tanglish] Order confirmed — paying the checkout link:
+  Tool (confirm_order) returns: { paymentUrl: "https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc" }
+  → Reply: "Order confirm aayiduchi bro! 🎉 Idhu unga payment link:
+https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
+Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum!"
+  (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
 
 [English] FAQ query — COD:
   Customer: "Do you support cash on delivery?"
@@ -989,7 +1009,7 @@ WORKED EXAMPLES — Follow these exactly:
    * sell, and bails on long/sentence-like input to avoid misfiring on an unrelated
    * message that happens to contain a size letter.
    */
-  parseSizeQtyReply(userQuery, lastShownProducts) {
+  parseSizeQtyReply(userQuery, lastShownProducts, pendingProductIndex = null) {
     const q = (userQuery || '').toLowerCase().trim();
     if (!q || q.length > 60) return null;
 
@@ -997,13 +1017,32 @@ WORKED EXAMPLES — Follow these exactly:
     if (!sizeMatch) return null;
     const size = sizeMatch[1].toUpperCase();
 
-    const ordinalMap = [
+    // Word-form ordinals ("1st", "first"...) always mean product selection.
+    // A bare digit ("3", "2") only counts as a selector when paired with an explicit
+    // selection word right next to it ("3 okey", "2 option") — a bare number on its own
+    // is ambiguous with the documented qty-only shorthand ("M size 2" = qty 2 for the
+    // default/pending product), so treating every bare digit as an ordinal would break
+    // that shorthand whenever 2+ products were shown. This distinction is what was
+    // silently corrupting both the product AND the quantity in "3 okey bro S size 4
+    // quantities" — the leading "3" (meant to pick product #3) was never recognized as
+    // an ordinal, so it defaulted to product #1 AND got eaten by the quantity regex
+    // instead of the real "4".
+    const wordOrdinals = [
       ['1st', 0], ['first', 0], ['2nd', 1], ['second', 1],
       ['3rd', 2], ['third', 2], ['4th', 3], ['fourth', 3]
     ];
-    let productIndex = 0;
-    for (const [word, idx] of ordinalMap) {
-      if (new RegExp(`\\b${word}\\b`).test(q)) { productIndex = idx; break; }
+    let productIndex = pendingProductIndex !== null ? pendingProductIndex : 0;
+    let consumedToken = null;
+    for (const [word, idx] of wordOrdinals) {
+      const m = q.match(new RegExp(`\\b${word}\\b`));
+      if (m) { productIndex = idx; consumedToken = m[0]; break; }
+    }
+    if (!consumedToken) {
+      const bareDigitMatch = q.match(/\b([1-4])\b\s*(?:st|nd|rd|th)?\s*(?:okey|okay|ok|option|opt|venum|vendum|select|number|no\.?)\b/i);
+      if (bareDigitMatch) {
+        productIndex = parseInt(bareDigitMatch[1], 10) - 1;
+        consumedToken = bareDigitMatch[1];
+      }
     }
     const product = lastShownProducts[productIndex];
     if (!product) return null;
@@ -1015,16 +1054,45 @@ WORKED EXAMPLES — Follow these exactly:
       if (!sizeAvailable) return null;
     }
 
-    // Strip the ordinal + size tokens first so "1st" doesn't get misread as qty 1;
-    // whatever standalone number remains is the quantity (default 1 if none given).
-    const stripped = q
-      .replace(/\b(1st|first|2nd|second|3rd|third|4th|fourth)\b/g, '')
-      .replace(new RegExp(`\\b${size.toLowerCase()}\\b`, 'i'), '');
-    const qtyMatch = stripped.match(/\b(\d{1,2})\b/);
+    // Strip the consumed ordinal token and the size token, then take the first
+    // remaining standalone number as quantity. The trailing boundary is intentionally
+    // NOT required, so a qty glued to its unit word with no space (e.g. "2quantites",
+    // a real typo seen in production) still parses instead of silently defaulting to 1.
+    let stripped = q;
+    if (consumedToken) stripped = stripped.replace(consumedToken, '');
+    stripped = stripped.replace(new RegExp(`\\b${size.toLowerCase()}\\b`, 'i'), '');
+    const qtyMatch = stripped.match(/(?<!\d)(\d{1,2})(?!\d)/);
     const qty = qtyMatch ? parseInt(qtyMatch[1], 10) : 1;
     if (qty < 1 || qty > 50) return null;
 
     return { productId: product.productId, name: product.name, price: product.price, size, qty };
+  }
+
+  /**
+   * Handles a bare product-selection reply with no size/qty yet (e.g. "2", "1st",
+   * "3rd one") — the exact reply the numbered search-result template invites
+   * ("Ethu venum bro — 1, 2 illa 3?"). Without this, a bare number falls through to the
+   * LLM, which has no tool for "remember this selection" and was observed re-running
+   * search_products instead, returning a different unrelated list each time.
+   */
+  parseProductSelectionOnly(userQuery, lastShownProducts) {
+    const q = (userQuery || '').toLowerCase().trim();
+    if (!q || q.length > 25) return null;
+    if (/\b(xxxl|xxl|xl|s|m|l)\b/i.test(q)) return null; // has a size — let parseSizeQtyReply handle it
+
+    const wordOrdinals = [
+      ['1st', 0], ['first', 0], ['2nd', 1], ['second', 1],
+      ['3rd', 2], ['third', 2], ['4th', 3], ['fourth', 3]
+    ];
+    for (const [word, idx] of wordOrdinals) {
+      if (new RegExp(`\\b${word}\\b`).test(q)) return lastShownProducts[idx] ? idx : null;
+    }
+    const bareMatch = q.match(/^([1-4])\s*(?:st|nd|rd|th)?\s*(?:okey|okay|ok|option|opt|venum|vendum|select|number|no\.?)?$/i);
+    if (bareMatch) {
+      const idx = parseInt(bareMatch[1], 10) - 1;
+      return lastShownProducts[idx] ? idx : null;
+    }
+    return null;
   }
 
   /**
@@ -1129,18 +1197,40 @@ WORKED EXAMPLES — Follow these exactly:
     // product/size — parseSizeQtyReply returns null on anything not confidently
     // parseable, which falls straight through to the LLM below as before.
     if (isIdle && session.cart.length === 0 && session.lastShownProducts?.length > 0 && userQuery) {
-      const parsed = this.parseSizeQtyReply(userQuery, session.lastShownProducts);
+      const parsed = this.parseSizeQtyReply(userQuery, session.lastShownProducts, session.pendingProductIndex ?? null);
       if (parsed) {
         session.cart = [{ productId: parsed.productId, name: parsed.name, price: parsed.price, size: parsed.size, qty: parsed.qty }];
         session.state = 'COLLECTING_ADDRESS';
+        session.pendingProductIndex = null;
         const isTanglish = session.language === 'tanglish';
         const reply = isTanglish
-          ? `Done bro! 🛒 *${parsed.name}* — ${parsed.size} size, ${parsed.qty} qty cart la potten! Ippo shipping details sollunga — Peyar, Address, Pincode, Mobile number.`
+          ? `Done bro! 🛒 *${parsed.name}* — ${parsed.size} size, ${parsed.qty} qty cart la potten! Ippo shipping details sollunga — Name, Address, Pincode, Mobile number.`
           : `Done! 🛒 Added *${parsed.name}* — Size ${parsed.size}, Qty ${parsed.qty} to your cart! Now share your shipping details — Name, Address, Pincode, Mobile number.`;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
         await dbService.saveSession(senderId, session);
         return { replyText: reply, intent: 'deterministic_cart', requiresEscalation: false, suggestedProductIds: [parsed.productId] };
+      }
+
+      // --- Bare product-selection reply (no size/qty yet) ---
+      // e.g. "2", "1st" — exactly what the numbered search-result template invites
+      // ("Ethu venum bro — 1, 2 illa 3?"). Remember the pick and ask for size/qty
+      // specifically for that product, instead of falling to the LLM (which has no tool
+      // for "remember this selection" and was observed re-running search_products,
+      // returning a different unrelated list each time the customer just replied "2").
+      const selectedIdx = this.parseProductSelectionOnly(userQuery, session.lastShownProducts);
+      if (selectedIdx !== null) {
+        session.pendingProductIndex = selectedIdx;
+        const p = session.lastShownProducts[selectedIdx];
+        const isTanglish = session.language === 'tanglish';
+        const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
+        const reply = isTanglish
+          ? `Semma bro! 🔥 *${p.name}*${sizeText} — enna size, evlo quantity venum? 🛍️`
+          : `Great pick! 🔥 *${p.name}*${sizeText} — what size, and how many would you like? 🛍️`;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: reply });
+        await dbService.saveSession(senderId, session);
+        return { replyText: reply, intent: 'deterministic_selection', requiresEscalation: false, suggestedProductIds: [p.productId] };
       }
     }
 
@@ -1251,22 +1341,41 @@ WORKED EXAMPLES — Follow these exactly:
               session.lastShownProducts = products.slice(0, 10).map(p => ({
                 productId: p.id, name: p.name, price: p.price, sizes: p.sizes || []
               }));
+              // A fresh search invalidates any earlier "customer picked #2" memory —
+              // that index referred to the OLD list.
+              session.pendingProductIndex = null;
 
-              // Skip the second "narration" LLM call for a single confident match —
-              // template it directly. Saves a full LLM turn on a very common case (trades
-              // a little narrative variety for zero extra cost/latency); with multiple
-              // options the model still narrates normally to help the customer choose.
-              if (products.length === 1 && responseMessage.tool_calls.length === 1) {
-                const p = products[0];
+              // Skip the second "narration" LLM call entirely — template it directly.
+              // Originally only did this for a single confident match; multi-match search
+              // results were left to the LLM to narrate, which proved unreliable (Llama-3.3
+              // on Groq would repeat the "which size?" question after every single product
+              // instead of asking once at the end, and vary the list format turn to turn).
+              // Templating deterministically for 1-3 matches guarantees correct formatting,
+              // a numbered list customers can reply to ("1st one"), and saves an LLM turn.
+              if (products.length >= 1 && responseMessage.tool_calls.length === 1) {
+                const top = products.slice(0, 3);
                 const isTanglish = session.language === 'tanglish';
                 const hypeOpeners = isTanglish
                   ? ['Bro kandippa iruku! 🔥', 'Semma choice bro! 😍', 'Idhu vera level bro! 🏆']
                   : ['Yes, we have it! 🔥', 'Great pick! 😍', 'This one\'s a favorite! 🏆'];
                 const opener = hypeOpeners[Math.floor(Math.random() * hypeOpeners.length)];
-                const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
-                resultText = isTanglish
-                  ? `${opener} *${p.name}* — ₹${p.price} la kedaikuthu!${sizeText}\n${p.permalink || ''}\n\nEnna size venum, enna quantity venum? 🛍️`
-                  : `${opener} *${p.name}* — ₹${p.price}${sizeText}\n${p.permalink || ''}\n\nWhich size and how many would you like? 🛍️`;
+
+                if (top.length === 1) {
+                  const p = top[0];
+                  const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
+                  resultText = isTanglish
+                    ? `${opener} *${p.name}* — ₹${p.price} la kedaikuthu!${sizeText}\n${p.permalink || ''}\n\nEnna size venum, enna quantity venum? 🛍️`
+                    : `${opener} *${p.name}* — ₹${p.price}${sizeText}\n${p.permalink || ''}\n\nWhich size and how many would you like? 🛍️`;
+                } else {
+                  const lines = top.map((p, i) => {
+                    const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
+                    return `${i + 1}. *${p.name}* — ₹${p.price}${sizeText}${p.permalink ? `\n${p.permalink}` : ''}`;
+                  }).join('\n');
+                  resultText = isTanglish
+                    ? `${opener}\n${lines}\n\nEthu venum bro — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
+                    : `${opener}\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
+                }
+
                 messages.push({
                   role: "tool",
                   tool_call_id: toolCall.id,
@@ -1317,7 +1426,28 @@ WORKED EXAMPLES — Follow these exactly:
                 toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
               } else {
                 session.state = 'CONFIRMING_ORDER';
-                toolResultObj = { status: "success", message: "Address saved. Show the full order summary (items, sizes, quantities, total price) and ask them to reply YES to confirm." };
+                // Template the order summary deterministically from session.cart instead
+                // of letting the LLM narrate it freely — narration was observed fabricating
+                // a second line item pulled from earlier conversation history that was
+                // never actually added to the cart (the cart is guaranteed single-item by
+                // design, replaced on each update_cart call). Money-facing totals shouldn't
+                // depend on the model reading its own context correctly.
+                const isTanglish = session.language === 'tanglish';
+                const total = session.cart.reduce((sum, item) => sum + (parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0), 0);
+                const itemLines = session.cart.map(item =>
+                  `• *${item.name}* — ${item.size} size, ${item.qty} qty — ₹${(parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0)}`
+                ).join('\n');
+                resultText = isTanglish
+                  ? `Bro, unga order summary:\n${itemLines}\nTotal: ₹${total}\n\nConfirm pannunga bro, reply "YES" 🎉`
+                  : `Here's your order summary:\n${itemLines}\nTotal: ₹${total}\n\nReply "YES" to confirm! 🎉`;
+                messages.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  name: fnName,
+                  content: JSON.stringify({ status: "success", message: "Address saved." })
+                });
+                keepLooping = false;
+                break;
               }
             } else if (fnName === "escalate_to_human") {
               requiresEscalation = true;
@@ -1404,8 +1534,12 @@ WORKED EXAMPLES — Follow these exactly:
           resultText = resultText.replace(/\{"type"\s*:\s*"function"(?:[^{}]|\{[^{}]*\})*\}/g, '').trim();
           // Bare "toolName{...}" or "toolName(...)" leak — no wrapper tags at all, just the raw call
           resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
-          // Catch any remaining garbage (orphaned braces/punctuation from partial strip)
-          const wasStrippedToGarbage = !resultText || /^[\s{}\[\],"':]+$/.test(resultText);
+          // Malformed/incomplete function-tag leak with no "=" or JSON body at all,
+          // e.g. a bare "<function(</function>" — seen in production when generation
+          // got cut off mid tool-call. Strip any stray <function...> / </function> fragment.
+          resultText = resultText.replace(/<\/?function\b[^>]*>?/gi, '').trim();
+          // Catch any remaining garbage (orphaned braces/punctuation/tag fragments from partial strip)
+          const wasStrippedToGarbage = !resultText || /^[\s{}\[\],"':<>\/()]+$/.test(resultText);
           if (wasStrippedToGarbage) {
             resultText = "Sorry about that! 🙏 Could you tell me again what you're looking for? I'll sort you out right away.";
           }

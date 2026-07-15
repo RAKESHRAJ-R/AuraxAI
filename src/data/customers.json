@@ -2,9 +2,9 @@
   {
     "userId": "199617228615734@lid",
     "name": "RAKESH",
-    "phone": "7228615734",
+    "phone": "7708435288",
     "channel": "whatsapp",
-    "updatedAt": "2026-07-11T07:54:26.145Z",
+    "updatedAt": "2026-07-12T11:56:31.203Z",
     "createdAt": "2026-07-04T16:44:19.580Z"
   },
   {
@@ -44,7 +44,7 @@
     "name": "Indhu",
     "phone": "9487321984",
     "channel": "whatsapp",
-    "updatedAt": "2026-07-11T13:50:14.719Z",
+    "updatedAt": "2026-07-11T16:49:52.206Z",
     "createdAt": "2026-07-11T13:09:22.893Z"
   },
   {
@@ -54,5 +54,13 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-11T13:25:38.905Z",
     "createdAt": "2026-07-11T13:25:38.906Z"
+  },
+  {
+    "userId": "35811487695005@lid",
+    "name": "abdullah",
+    "phone": "9499953785",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-12T12:00:51.045Z",
+    "createdAt": "2026-07-12T11:58:55.144Z"
   }
 ]
