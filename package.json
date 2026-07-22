@@ -12,7 +12,9 @@
     "test-telegram": "node src/test_telegram.js",
     "test-search": "node test_product_search.js",
     "test-ai-e2e": "node test_ai_e2e.js",
-    "review": "node src/review_conversations.js"
+    "review": "node src/review_conversations.js",
+    "migrate-mongo": "node src/migrate_to_mongo.js",
+    "build-admin": "npm --prefix admin install && npm --prefix admin run build"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -21,6 +23,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "googleapis": "^173.0.0",
+    "mongodb": "^7.5.0",
     "openai": "^4.82.0",
     "pdfkit": "^0.19.1",
     "qrcode": "^1.5.4",

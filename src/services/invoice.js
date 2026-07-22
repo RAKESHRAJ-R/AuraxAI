@@ -7,6 +7,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, '../../public');
 const INVOICES_DIR = path.join(PUBLIC_DIR, 'invoices');
+const FONTS_DIR = path.join(__dirname, '../assets/fonts');
+
+// PDFKit's built-in Helvetica has no glyph for the rupee sign (₹, U+20B9), so it
+// renders blank on every invoice. DejaVu Sans (bundled, freely redistributable)
+// includes it and works on any deploy platform (no reliance on OS-installed fonts).
+const FONT_REGULAR = 'Brand';
+const FONT_BOLD = 'Brand-Bold';
 
 /**
  * Generate a premium branded PDF invoice for an order.
@@ -26,20 +33,28 @@ export const generateInvoicePDF = async (orderId, orderDetails) => {
   
   doc.pipe(writeStream);
 
+  // Register the bundled Unicode font (has ₹) and make it the default for all text.
+  doc.registerFont(FONT_REGULAR, path.join(FONTS_DIR, 'DejaVuSans.ttf'));
+  doc.registerFont(FONT_BOLD, path.join(FONTS_DIR, 'DejaVuSans-Bold.ttf'));
+  doc.font(FONT_REGULAR);
+
   // --- BRAND HEADER ---
   // Large brand title in dark charcoal
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(22)
-     .text('THEAURAX', 50, 45, { bold: true });
-     
-  doc.fillColor('#6e6e73')
+     .text('THEAURAX', 50, 45);
+
+  doc.font(FONT_REGULAR)
+     .fillColor('#6e6e73')
      .fontSize(9)
      .text('Premium Football Jerseys & Team Kits', 50, 70);
 
   // Document title on top right
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(16)
-     .text('PROFORMA INVOICE', 350, 45, { align: 'right', bold: true });
+     .text('PROFORMA INVOICE', 350, 45, { align: 'right' });
 
   // Divider line
   doc.moveTo(50, 85)
@@ -49,32 +64,37 @@ export const generateInvoicePDF = async (orderId, orderDetails) => {
      .stroke();
 
   // --- INVOICE & CUSTOMER META ---
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(10)
-     .text('INVOICE TO:', 50, 105, { bold: true });
-  
-  doc.fillColor('#333333')
+     .text('INVOICE TO:', 50, 105);
+
+  doc.font(FONT_REGULAR)
+     .fillColor('#333333')
      .fontSize(10)
      .text(`Name/ID: ${orderDetails.customerName || 'Customer (' + orderDetails.userId + ')'}`, 50, 120)
      .text(`Address: ${orderDetails.address || 'Standard Shipping / Self-Checkout'}`, 50, 135, { width: 220 });
 
-  doc.fillColor('#1d1d1f')
-     .text('INVOICE DETAILS:', 350, 105, { bold: true });
-  
-  doc.fillColor('#333333')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
+     .text('INVOICE DETAILS:', 350, 105);
+
+  doc.font(FONT_REGULAR)
+     .fillColor('#333333')
      .text(`Invoice Number: TX-${orderId.substring(0, 8).toUpperCase()}`, 350, 120)
      .text(`Date: ${new Date().toLocaleDateString('en-IN')}`, 350, 135)
      .text(`Payment: PENDING (Prepaid/COD)`, 350, 150);
 
   // --- TABLE HEADER ---
   const tableTop = 200;
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(10)
-     .text('Item Description', 50, tableTop, { bold: true })
-     .text('Size', 270, tableTop, { bold: true })
-     .text('Qty', 340, tableTop, { bold: true })
-     .text('Price', 400, tableTop, { bold: true })
-     .text('Total', 480, tableTop, { bold: true });
+     .text('Item Description', 50, tableTop)
+     .text('Size', 270, tableTop)
+     .text('Qty', 340, tableTop)
+     .text('Price', 400, tableTop)
+     .text('Total', 480, tableTop);
 
   doc.moveTo(50, 215)
      .lineTo(550, 215)
@@ -87,6 +107,7 @@ export const generateInvoicePDF = async (orderId, orderDetails) => {
   let subtotal = 0;
   const items = orderDetails.cart || [];
 
+  doc.font(FONT_REGULAR);
   items.forEach((item) => {
     const itemTotal = item.price * item.qty;
     subtotal += itemTotal;
@@ -126,22 +147,27 @@ export const generateInvoicePDF = async (orderId, orderDetails) => {
 
   yPosition += 20;
   const grandTotal = subtotal + deliveryFee;
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(11)
-     .text('Grand Total:', 350, yPosition, { bold: true })
-     .text(`₹${grandTotal}`, 480, yPosition, { bold: true });
+     .text('Grand Total:', 350, yPosition)
+     .text(`₹${grandTotal}`, 480, yPosition);
 
   // --- PAYMENT DETAILS ---
   yPosition += 50;
-  doc.fillColor('#1d1d1f')
+  doc.font(FONT_BOLD)
+     .fillColor('#1d1d1f')
      .fontSize(10)
-     .text('HOW TO PAY:', 50, yPosition, { bold: true });
+     .text('HOW TO PAY:', 50, yPosition);
 
-  doc.fillColor('#333333')
+  doc.font(FONT_REGULAR)
+     .fillColor('#333333')
      .fontSize(9)
      .text('• UPI Option: Pay via GPAY, PhonePe, or Paytm to UPI ID: ', 50, yPosition + 15)
+     .font(FONT_BOLD)
      .fillColor('#1d1d1f')
-     .text('theaurax@upi', 285, yPosition + 15, { bold: true })
+     .text('theaurax@upi', 285, yPosition + 15)
+     .font(FONT_REGULAR)
      .fillColor('#333333')
      .text('  (Please send payment screenshot to this chat window after paying to verify instantly).', 50, yPosition + 27)
      .text('• Cash on Delivery (COD): Pay cash at the time of delivery (flat ₹50 fee charged by courier).', 50, yPosition + 42);

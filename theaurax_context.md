@@ -1,7 +1,33 @@
 # Theaurax AI Sales Assistant — Project Context
 
 ## Last Updated
-2026-07-11
+2026-07-22
+
+---
+
+## Session 2026-07-22 — summary
+- **Invoice ₹ fix:** bundled DejaVu Sans (has ₹) into `src/assets/fonts/`, registered in
+  `invoice.js`; ₹ now renders (was blank under PDFKit's Helvetica). Headings use the real
+  bold weight (old `{bold:true}` text options were no-ops).
+- **Sarvam live + reasoning fix:** `SARVAM_API_KEY` set. Live testing showed `sarvam-30b` IS a
+  reasoning model (docs were wrong) → at `max_tokens` 800 it returned null `content`. Fix in
+  `ai.js`: append `/no_think` to the system prompt for Sarvam only → clean Tanglish answer +
+  tool-calling in ~100-180 tok, 800 budget kept.
+- **Tanglish prompt upgrade:** added a Tanglish-only tone block + negative constraints
+  ("enna panna kudadhu") + short worked examples to `generateSystemPrompt()`; English prompt
+  unchanged, cache-safe ordering preserved.
+- **Unified admin console:** replaced the 3 standalone pages (`apiwork.html`,
+  `whatsapp-link.html`, `knowledge-hub.html`) with ONE Vite + React app in `admin/` (light/clean
+  responsive theme, sidebar: Monitor · WhatsApp · Knowledge Hub). All behind ONE login; the
+  monitor + WhatsApp APIs are now token-protected. Served at `/admin`; old URLs redirect.
+- **MongoDB live:** installed `mongodb` driver (was missing → always fell back to JSON), added
+  `npm run migrate-mongo`. Migrated 44 sessions / 66 leads / 27 customers into Atlas; verified
+  the bot reads from Mongo.
+- **Knowledge auto-diagnosis queue:** `diagnose.js` turns struggling conversations into inactive
+  "needs answer" drafts (badge count, owner WhatsApp/Telegram alert on new gaps); **Dismiss** is
+  a permanent tombstone so drafts don't regenerate; answering makes a draft a live entry.
+- `KNOWLEDGE_HUB_PASSWORD` set (hub enabled). `KNOWLEDGE_HUB_PASSWORD`/`SARVAM_API_KEY`/
+  `MONGODB_URI` all live in `.env`.
 
 ---
 
@@ -227,6 +253,71 @@ On "training the model" from stored conversations (weekly/monthly): storing conv
 6. **Persistent Retry Queue**: setTimeout + DB persistence ensures retries survive server restarts.
 7. **Per-Provider Throttling**: Each provider has its own throttle timer tuned to its rate limits, avoiding unnecessary delays on faster providers.
 8. **Proactive Quota Skipping**: Providers with recently exhausted quotas are skipped until their reset window passes, reducing latency.
+
+---
+
+## Instagram DM Integration — Setup Guide (added 2026-07-18)
+
+How to connect the existing AI chatbot to Instagram DMs.
+
+**Status:** The *sending* half is built (`src/services/instagram.js`) and config keys are
+reserved. The inbound *webhook receiver* (in `src/index.js`) is **not yet built** — that is
+the one real code gap.
+
+### Key concept: Instagram is NOT like WhatsApp here
+The WhatsApp bot uses `whatsapp-web.js` — an **unofficial**, QR-scan browser session.
+Instagram has **no** safe equivalent. It **must** go through the **official Meta Graph API**
+with a **public HTTPS webhook**. `localhost:3000` will not work — Meta needs a publicly
+reachable URL.
+
+### What already exists in the code
+| Piece | Status | Location |
+|-------|--------|----------|
+| Instagram **send** service (Graph API `/me/messages`) | ✅ Built (MOCK mode without a token) | `src/services/instagram.js` |
+| Config keys | ✅ Reserved | `src/config/config.js:71` |
+| Inbound **webhook receiver** | ❌ Missing — must be added to `src/index.js` | — |
+
+Config keys already present (`.env`):
+```
+INSTAGRAM_PAGE_ACCESS_TOKEN=      # Page Access Token from the Meta app
+INSTAGRAM_VERIFY_TOKEN=           # defaults to theaurax_verify_token_2026
+OWNER_INSTAGRAM_ID=               # optional
+```
+
+### What's missing (the code gap)
+Two endpoints to add to `src/index.js`:
+1. **`GET /webhook/instagram`** — verification handshake. Echoes `hub.challenge` when
+   `hub.verify_token` matches `INSTAGRAM_VERIFY_TOKEN`.
+2. **`POST /webhook/instagram`** — receives DMs, extracts sender IGSID + text, calls
+   `aiService.answerQuery()`, replies via `instagramService.sendTextMessage()`.
+
+### Meta / dashboard side (browser setup)
+1. **Instagram account must be Professional** (Business or Creator) — convert in the IG app.
+2. **Link the IG account to the business/Page** — Meta Business Suite → left nav →
+   **Instagram accounts** → connect it, link to the "Rocky Testing" Facebook Page.
+3. **In the Meta app** (developers.facebook.com):
+   - Add the **Instagram** product (Instagram API / Messaging).
+   - Under **Webhooks**: callback URL `https://<public-url>/webhook/instagram`, verify token
+     `theaurax_verify_token_2026` (must match `.env`), **subscribe to the `messages` field**.
+   - Generate a **Page Access Token** with `instagram_basic`, `instagram_manage_messages`,
+     `pages_manage_metadata`, `pages_messaging`. Put it in `.env` as
+     `INSTAGRAM_PAGE_ACCESS_TOKEN`.
+   - **Subscribe the app to the Page.**
+4. **Instagram app → Settings → Messages → Connected Tools → allow access to messages.**
+5. **Testing vs. live:** Until **App Review** approves `instagram_manage_messages`, the bot
+   can only DM accounts with a **role on the app** (admin/tester). **24-hour rule:** you can
+   only reply within 24h of the user's last message (unless using approved message tags).
+
+### Public URL requirement
+- **Testing:** `ngrok http 3000` → use `https://<subdomain>.ngrok.../webhook/instagram`.
+- **Production:** deploy to a host with a real domain + HTTPS.
+
+### Recommended order of operations
+1. Add the webhook route to `src/index.js` (the missing code piece).
+2. Start ngrok → get the public HTTPS URL.
+3. Wire the Meta app: webhook URL + verify token + subscribe `messages`.
+4. Add the Page Access Token to `.env`.
+5. DM the IG account from a tester account → confirm the AI replies.
 
 ---
 

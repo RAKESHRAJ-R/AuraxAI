@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import config from '../config/config.js';
 import faqService from './faq.js';
+import knowledgeService from './knowledge.js';
 import woocommerceService from './woocommerce.js';
 import dbService from './db.js';
 import { generateInvoicePDF } from './invoice.js';
@@ -78,6 +79,30 @@ class AIService {
       this.openrouterClients = [];
     }
 
+    // --- Fireworks Provider (paid, client-supplied) — OpenAI-compatible, supports multiple keys ---
+    this.fireworksClients = (config.fireworks?.apiKeys || []).map(key => new OpenAI({
+      apiKey: key,
+      baseURL: 'https://api.fireworks.ai/inference/v1',
+    }));
+    if (this.fireworksClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.fireworksClients.length} Fireworks API key(s) (model: ${config.fireworks?.model}).`);
+    } else {
+      this.fireworksClients = [];
+    }
+
+    // --- Sarvam Provider (Indic-specialised, paid) — OpenAI-compatible, supports multiple keys ---
+    // Tanglish-first provider: purpose-trained on romanized/code-mixed Tamil. Bearer-auth,
+    // OpenAI-compatible /v1/chat/completions with full tool-calling support.
+    this.sarvamClients = (config.sarvam?.apiKeys || []).map(key => new OpenAI({
+      apiKey: key,
+      baseURL: 'https://api.sarvam.ai/v1',
+    }));
+    if (this.sarvamClients.length > 0) {
+      console.log(`[AI Service] Loaded ${this.sarvamClients.length} Sarvam API key(s) (model: ${config.sarvam?.model}).`);
+    } else {
+      this.sarvamClients = [];
+    }
+
     // --- Tertiary LLM Provider (Gemini fallback) — supports multiple API keys ---
     this.geminiClients = (config.gemini.apiKeys || []).map(key => new GoogleGenerativeAI(key));
     if (this.geminiClients.length > 0) {
@@ -95,6 +120,8 @@ class AIService {
       groq: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
       openai: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
       openrouter: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
+      fireworks: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
+      sarvam: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
       gemini: { success: 0, errors: 0, quotaExhausted: 0, tokensUsed: 0, lastErrorAt: null, lastErrorMsg: null },
     };
     this.totalCalls = 0;
@@ -122,59 +149,15 @@ class AIService {
   }
 
   generateSystemPrompt(session) {
-    return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
-Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
+    const isTanglish = session.language === 'tanglish';
 
----
-COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
-whenever the customer is idle with an empty cart (shipping, COD/payment, sizing, returns,
-customization, bulk orders). If one of these topics comes up mid-flow (cart non-empty or
-collecting address) and you need to answer it yourself, keep it brief and accurate — don't
-invent policy details you're not sure of.
----
-
-Tone & Style:
-- Never sound like a robot. Be local, friendly, and hype up the products.
-- If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
-
-Current Session Context:
-Cart: ${JSON.stringify(session.cart || [])}
-Address: ${session.address || 'Not provided'}
-
-Instructions:
-1. ALWAYS use 'search_products' when asked about jerseys. Never guess prices or stock.
-2. If products are found, provide exact name, price, sizes, and permalink. Hype it up! (e.g., "Bro, indha jersey vera level!" OR "This jersey is absolutely stunning!")
-3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
-4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
-5. Once the address is provided, use 'set_shipping_address'. The order summary and total are shown to the customer automatically right after — you do NOT need to (and must not try to) write your own summary or total for this step.
-6. Once the tool result confirms the cart is valid, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
-7. Use emojis naturally to make it engaging.
-8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
-9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.
-10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Paste that EXACT URL string verbatim, character-for-character, on its own line in your reply — never paraphrase it, shorten it, describe it ("I've sent your link"), or omit it. If the URL is missing from your reply, the customer cannot pay.
-11. FORMATTING: When listing 2+ products, put each product on its own line (use a line break or bullet), never run them together in one sentence. Ask the size/quantity follow-up question ONCE, at the very end, after all products are listed — never repeat "which size?" after every single product. Keep replies in short, grammatically complete sentences — no sentence fragments or unrelated asides tacked onto the end of a reply.
-12. NEVER call 'confirm_order' unless the customer's last message is PURELY a plain confirmation (yes/ok/confirm/seri, nothing else added). If they mention any change, correction, different item, different quantity, or a negation ("illa", "no", "wait", "change it") — do NOT confirm. Instead use 'update_cart' to fix the item first, then show the corrected summary and ask them to confirm again.
-
----
-LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
-- This customer's language has been detected as: ${session.language === 'tanglish' ? 'TANGLISH' : 'ENGLISH'}.
-${session.language === 'tanglish'
-  ? '- Respond ONLY in natural Tanglish (Tamil-English code-mixed, Roman script) for this ENTIRE conversation — e.g. "Bro, indha jersey vera level!", "Kandippa iruku!", "Enna size venum?". Never switch to pure English.'
-  : '- Respond in professional, friendly English for this ENTIRE conversation. No Tamil/Tanglish words.'}
-- This was decided from the customer\'s own words, not your guess — never override it mid-conversation.
-
-TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
-- When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
-- NEVER output XML-style tags like <function=name>...</function>. That is a bug. Never do it.
-- After the tool returns a result, write your reply naturally based on the result.
-
-WORKED EXAMPLES — Follow these exactly:
-
-[English] Product search:
-  Customer: "Do you have Chelsea jersey?"
-  → [Use the search_products tool with query "Chelsea jersey"]  [ONLY use the tool, no text]
-  Tool returns products.
-  → Reply: "Yes! We have the *Chelsea Home 25/26 Jersey* at ₹849 🔵 Available in S/M/L/XL. Tap the link to see it: [url]. Which size would you like?"
+    // Worked examples are emitted for the SESSION'S LANGUAGE ONLY. session.language is
+    // deterministically decided and locked before this runs, so a Tanglish session never
+    // needs the English examples and vice-versa — sending both was ~41% of the prompt for
+    // no benefit. Each language block below is self-contained (product search, multi-match
+    // one-question rule, verbatim payment-link rule, an FAQ) so neither loses coverage.
+    const workedExamples = isTanglish
+      ? `WORKED EXAMPLES — Follow these exactly:
 
 [Tanglish] Product search + order:
   Customer: "bro chelsea jersey iruka?"
@@ -204,17 +187,118 @@ https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
 Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum!"
   (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
 
+[Tanglish] FAQ query — COD:
+  Customer: "COD available ah bro?"
+  → Reply directly (NO tool call needed): "Aama bro, COD available! 🚚 Courier flat ₹50 COD fee iruku. UPI illa card la online pay panna extra charge illa."
+
+[Tanglish] Quick FAQ — crisp, 2-3 sentences, straight to the answer (do NOT repeat the question back):
+  Customer: "how many days for delivery to chennai?"
+  → Reply: "Chennai-ku 2-3 days la delivery aagidum bro. Express shipping dhaan! 🚚"
+  Customer: "price evlo bro?"
+  → Reply: "Player version jersey ₹799 bro. Quality and fit semma irukum!"
+
+[Tanglish] Stock/size check — offer to add to cart:
+  Customer: "XL size stock iruka?"
+  → [If unsure of the exact product/stock, use search_products first; if the product is already known, answer directly.]
+  → Reply: "Iruku bro! XL size available. Cart la add pannatuma?"`
+      : `WORKED EXAMPLES — Follow these exactly:
+
+[English] Product search:
+  Customer: "Do you have Chelsea jersey?"
+  → [Use the search_products tool with query "Chelsea jersey"]  [ONLY use the tool, no text]
+  Tool returns products.
+  → Reply: "Yes! We have the *Chelsea Home 25/26 Jersey* at ₹849 🔵 Available in S/M/L/XL. Tap the link to see it: [url]. Which size would you like?"
+
+[English] Product search — multiple matches (pick top 2-3, ONE question at the end, not after each):
+  Customer: "Do you have Messi jerseys?"
+  → [Use the search_products tool with query "messi jersey"]
+  Tool returns 10 products.
+  → Reply: "Great choice! 🔥 Here are the top Messi jerseys:
+• FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI — ₹470 [S, M, L, XL]
+• ARGENTINA 2006 HOME — MESSI — ₹430 [S, M, L, XL]
+• ARGENTINA 2026 WORLD CUP FULL SLEEVE EDITION — MESSI — ₹470 [S, M, L, XL]
+These are the top matches — more options on our website. Which one would you like, and what size? 🤔"
+  (WRONG — do NOT do this: repeating "Which size?" after every single bullet. Ask it exactly once, at the very end.)
+
+[English] Order confirmed — paying the checkout link:
+  Tool (confirm_order) returns: { paymentUrl: "https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc" }
+  → Reply: "Order confirmed! 🎉 Here's your payment link:
+https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
+Open the link, choose UPI or COD, and your order is placed!"
+  (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
+
 [English] FAQ query — COD:
   Customer: "Do you support cash on delivery?"
-  → Reply directly from COMMON FAQs section above (NO tool call needed): "Yes, we support Cash on Delivery (COD)! 🚚 There's a flat ₹50 COD fee from the courier. You can also pay online via UPI or cards at no extra charge."
+  → Reply directly (NO tool call needed): "Yes, we support Cash on Delivery (COD)! 🚚 There's a flat ₹50 COD fee from the courier. You can also pay online via UPI or cards at no extra charge."`;
 
-[English] FAQ query — shipping:
-  Customer: "How long does delivery take?"
-  → Reply directly: "We ship all across India! 🚚 Metro cities: 3-5 business days. Other areas: 5-7 business days. Tracking link sent to your WhatsApp once shipped!"`;
+    // PROMPT-CACHING NOTE: everything above the "Current Session Context" line below is a
+    // stable prefix (identical byte-for-byte across every call within a language), so the
+    // OpenAI-compatible providers (Groq, Fireworks, Sarvam) auto-cache it and bill it at a
+    // discount. The ONLY per-call-varying content (cart, address) is deliberately placed
+    // LAST — if it sat near the top (as it used to) it would break the cache prefix and
+    // nothing after it could be cached. Keep dynamic session state at the very end.
+    const sessionContext = `---
+Current Session Context (this is the ONLY part that changes per turn):
+Cart: ${JSON.stringify(session.cart || [])}
+Address: ${session.address || 'Not provided'}`;
 
+    return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
+Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
 
+---
+COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
+whenever the customer is idle with an empty cart (shipping, COD/payment, sizing, returns,
+customization, bulk orders). If one of these topics comes up mid-flow (cart non-empty or
+collecting address) and you need to answer it yourself, keep it brief and accurate — don't
+invent policy details you're not sure of.
+---
 
+Tone & Style:
+- Never sound like a robot. Be local, friendly, and hype up the products.
+- If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
 
+Instructions:
+1. ALWAYS use 'search_products' when asked about jerseys. Never guess prices or stock.
+2. If products are found, provide exact name, price, sizes, and permalink. Hype it up! (e.g., "Bro, indha jersey vera level!" OR "This jersey is absolutely stunning!")
+3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
+4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
+5. Once the address is provided, use 'set_shipping_address'. The order summary and total are shown to the customer automatically right after — you do NOT need to (and must not try to) write your own summary or total for this step.
+6. Once the tool result confirms the cart is valid, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
+7. Use emojis naturally to make it engaging.
+8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
+9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.
+10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Paste that EXACT URL string verbatim, character-for-character, on its own line in your reply — never paraphrase it, shorten it, describe it ("I've sent your link"), or omit it. If the URL is missing from your reply, the customer cannot pay.
+11. FORMATTING: When listing 2+ products, put each product on its own line (use a line break or bullet), never run them together in one sentence. Ask the size/quantity follow-up question ONCE, at the very end, after all products are listed — never repeat "which size?" after every single product. Keep replies in short, grammatically complete sentences — no sentence fragments or unrelated asides tacked onto the end of a reply.
+12. NEVER call 'confirm_order' unless the customer's last message is PURELY a plain confirmation (yes/ok/confirm/seri, nothing else added). If they mention any change, correction, different item, different quantity, or a negation ("illa", "no", "wait", "change it") — do NOT confirm. Instead use 'update_cart' to fix the item first, then show the corrected summary and ask them to confirm again.
+
+---
+LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
+- This customer's language has been detected as: ${isTanglish ? 'TANGLISH' : 'ENGLISH'}.
+${isTanglish
+  ? '- Respond ONLY in natural Tanglish (Tamil-English code-mixed, Roman script) for this ENTIRE conversation — e.g. "Bro, indha jersey vera level!", "Kandippa iruku!", "Enna size venum?". Never switch to pure English.'
+  : '- Respond in professional, friendly English for this ENTIRE conversation. No Tamil/Tanglish words.'}
+- This was decided from the customer\'s own words, not your guess — never override it mid-conversation.
+${isTanglish ? `
+TANGLISH STYLE (chat like a real, friendly Chennai/Tamil Nadu store owner on WhatsApp):
+- Warm, casual openers: "Bro", "Ji", "Sure bro", "Kandippa", "Solren ji". Get STRAIGHT to the answer.
+- Crisp — 2-3 short sentences max per reply. No walls of text.
+- Keep product names, sizes (S/M/L/XL), prices, and terms like "delivery", "payment link", "stock", "size chart" in plain English. Mix them in naturally.
+- Use REAL spoken chat phrases — never word-for-word translate English idioms into Tamil.
+
+TANGLISH — STRICTLY NEVER DO THIS (these make you sound like a robot, not a human seller):
+- NEVER use pure Tamil script (e.g. வணக்கம் / நன்றி). ALWAYS Roman letters (Vanakkam, Nandri).
+- NEVER sound like Google Translate. WRONG: "Ungalukku naan eppadi uthavuven?" → RIGHT: "Enna jersey venum bro? Solliyae!"
+- NEVER repeat the customer's full question back to them. Answer directly.
+- NEVER spam emojis — 1 or 2 relevant ones per message, maximum.` : ''}
+
+TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
+- When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
+- NEVER output XML-style tags like <function=name>...</function>. That is a bug. Never do it.
+- After the tool returns a result, write your reply naturally based on the result.
+
+${workedExamples}
+
+${sessionContext}`;
   }
 
   getTools() {
@@ -388,6 +472,10 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
       ? (config.openai?.model || 'gpt-4o-mini')
       : provider === 'openrouter'
       ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+      : provider === 'fireworks'
+      ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+      : provider === 'sarvam'
+      ? (config.sarvam?.model || 'sarvam-30b')
       : provider === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
       ? config.groq.tanglishModel
       : (config.groq?.model || 'llama-3.3-70b-versatile');
@@ -396,10 +484,40 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
     // chain-of-thought into the reply content instead of just the final answer.
     const isQwenReasoning = provider === 'groq' && model.includes('qwen');
 
+    // Fireworks' deepseek-v4-pro is also a reasoning model: it needs enough max_tokens
+    // to finish its internal reasoning AND still emit the visible answer, or content
+    // comes back empty/truncated (returns the answer cleanly in `content` on Fireworks,
+    // so no reasoning_format flag is needed — verified in test_fireworks.js). No 8000 TPM
+    // ceiling here (paid tier), so give it comfortable headroom.
+    const isFireworks = provider === 'fireworks';
+
+    // sarvam-30b is ALSO a reasoning model (contrary to the vendor docs used when it was
+    // first wired). By default it spends the ENTIRE max_tokens budget on an internal
+    // chain-of-thought — returned in a separate `reasoning_content` field — and leaves the
+    // visible `content` null/truncated. Verified live 2026-07-22: at max_tokens 800 AND 1500
+    // `content` came back null (finish_reason 'length'); only ~2500 let it finish, at
+    // ~1400 tokens/reply. The `/no_think` control tag disables that reasoning pass entirely:
+    // same clean Tanglish answer AND full tool-calling, in ~100-180 tokens. So for Sarvam we
+    // append `/no_think` to the system message (below) and keep the normal 800 budget.
+    const isSarvam = provider === 'sarvam';
+
     // Qwen's free tier caps at 8000 TPM/key for prompt+max_tokens COMBINED — much
     // tighter than Llama's. A multi-turn conversation's accumulated history can alone
     // approach that ceiling, so give it a much smaller trim budget than other providers.
-    const trimmed = this.trimMessagesToTokenBudget(messages, isQwenReasoning ? 9000 : 20000);
+    let trimmed = this.trimMessagesToTokenBudget(messages, isQwenReasoning ? 9000 : 20000);
+
+    // For Sarvam only, append the `/no_think` control tag to the system prompt so the model
+    // returns its answer directly instead of exhausting max_tokens on reasoning (see note
+    // above). Other providers' messages are left byte-identical so their cacheable prefix
+    // is unaffected.
+    if (isSarvam) {
+      const sysIdx = trimmed.findIndex(m => m.role === 'system');
+      if (sysIdx !== -1) {
+        trimmed = trimmed.map((m, i) =>
+          i === sysIdx ? { ...m, content: `${m.content} /no_think` } : m
+        );
+      }
+    }
 
     // Dynamically size max_tokens to what's actually left under the 8000 TPM ceiling,
     // rather than a fixed guess — a fixed 2000 still overflowed once real conversation
@@ -428,7 +546,7 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
           // an actual reply once reasoning ran long, silently truncating to empty content.
           // qwenMaxTokens is sized dynamically against the actual prompt for this call
           // (see above) so it can't itself tip the request over the 8000 TPM ceiling.
-          max_tokens: isQwenReasoning ? qwenMaxTokens : 800,
+          max_tokens: isQwenReasoning ? qwenMaxTokens : isFireworks ? 1500 : 800,
           temperature: attempt <= 2 ? 0.7 : 0.2,
           ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {})
         }), provider, keyIndex);
@@ -685,18 +803,26 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
     const groqEntries = this.rotateEntries('groq', this.groqClients, 'openai');
     const geminiEntries = this.rotateEntries('gemini', this.geminiClients, 'gemini');
     const openrouterEntries = this.rotateEntries('openrouter', this.openrouterClients, 'openai');
+    const fireworksEntries = this.rotateEntries('fireworks', this.fireworksClients, 'openai');
+    const sarvamEntries = this.rotateEntries('sarvam', this.sarvamClients, 'openai');
 
     if (language === 'tanglish') {
-      entries.push(...geminiEntries, ...groqEntries);
+      // Sarvam (sarvam-30b) is purpose-trained on romanized/code-mixed Tamil — best
+      // Tanglish quality and cheapest, so it's tried FIRST. Fireworks (deepseek-v4-pro)
+      // is the paid backup below it (also strong at code-mixing), then Groq/Llama-3.3 as
+      // the fast free backstop. Gemini's old Tanglish-first slot is dead (free tier
+      // returns limit:0). If neither Sarvam nor Fireworks keys are set, this degrades
+      // cleanly to Groq-first.
+      entries.push(...sarvamEntries, ...fireworksEntries, ...groqEntries);
     } else {
-      entries.push(...groqEntries);
+      // English: Groq stays primary (fast, free); Fireworks then Sarvam as paid fallbacks.
+      entries.push(...groqEntries, ...fireworksEntries, ...sarvamEntries);
     }
 
     entries.push(...this.rotateEntries('openai', this.openaiClients, 'openai'));
     entries.push(...openrouterEntries);
-    if (language !== 'tanglish') {
-      entries.push(...geminiEntries);
-    }
+    // Gemini last-resort for both languages (kept for parity; currently limit:0 on free tier).
+    entries.push(...geminiEntries);
 
     if (entries.length === 0) {
       throw new Error('All LLM providers failed — no API keys configured');
@@ -741,22 +867,44 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
           this.activeKeyIndex = entry.keyIndex;
         }
 
-        const tokensUsed = result.usage?.total_tokens || 0;
+        // Per-call token accounting. OpenAI-compatible providers return prompt/completion
+        // splits; `prompt_tokens_details.cached_tokens` (when present) tells us how much of
+        // the input was served from the provider's prompt cache — the direct signal for how
+        // well the cacheable-prefix restructuring (dynamic session context moved last) is
+        // paying off. Logged per call so real production numbers replace the report's
+        // 40k-token/conversation estimate before any volume commitment.
+        const usage = result.usage || {};
+        const promptTokens = usage.prompt_tokens || 0;
+        const completionTokens = usage.completion_tokens || 0;
+        const cachedTokens = usage.prompt_tokens_details?.cached_tokens || 0;
+        const tokensUsed = usage.total_tokens || (promptTokens + completionTokens) || 0;
         const modelUsed = entry.name === 'openai'
           ? (config.openai?.model || 'gpt-4o-mini')
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+          : entry.name === 'fireworks'
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+          : entry.name === 'sarvam'
+          ? (config.sarvam?.model || 'sarvam-30b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
           ? config.groq.tanglishModel
           : (config.groq?.model || 'llama-3.3-70b-versatile');
 
-        // Update token statistics
+        // Update token statistics (running totals + input/output/cached splits per provider)
         if (this.providerStats[providerName]) {
-          this.providerStats[providerName].tokensUsed = (this.providerStats[providerName].tokensUsed || 0) + tokensUsed;
+          const ps = this.providerStats[providerName];
+          ps.tokensUsed = (ps.tokensUsed || 0) + tokensUsed;
+          ps.promptTokens = (ps.promptTokens || 0) + promptTokens;
+          ps.completionTokens = (ps.completionTokens || 0) + completionTokens;
+          ps.cachedTokens = (ps.cachedTokens || 0) + cachedTokens;
         }
         this.totalTokensUsed = (this.totalTokensUsed || 0) + tokensUsed;
+
+        // Per-call token log — the single line to watch when tuning token usage.
+        const cachedNote = cachedTokens > 0 ? ` cached=${cachedTokens} (${Math.round((cachedTokens / promptTokens) * 100)}% of input)` : '';
+        console.log(`[Tokens] ${entry.name}${keySuffix} model=${modelUsed} lang=${language} in=${promptTokens} out=${completionTokens} total=${tokensUsed}${cachedNote}`);
 
         // Push a call record
         this.callRecords.push({
@@ -765,6 +913,10 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
           keyIndex: entry.keyIndex,
           success: true,
           tokens: tokensUsed,
+          promptTokens,
+          completionTokens,
+          cachedTokens,
+          language,
           model: modelUsed
         });
         if (this.callRecords.length > 500) {
@@ -783,6 +935,10 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
           ? (config.openai?.model || 'gpt-4o-mini')
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
+          : entry.name === 'fireworks'
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+          : entry.name === 'sarvam'
+          ? (config.sarvam?.model || 'sarvam-30b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
@@ -864,8 +1020,10 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
         groq: this.groqClients.length,
         openai: this.openaiClients.length,
         openrouter: this.openrouterClients.length,
+        fireworks: this.fireworksClients.length,
+        sarvam: this.sarvamClients.length,
         gemini: this.geminiClients.length,
-        total: this.groqClients.length + this.openaiClients.length + this.openrouterClients.length + this.geminiClients.length,
+        total: this.groqClients.length + this.openaiClients.length + this.openrouterClients.length + this.fireworksClients.length + this.sarvamClients.length + this.geminiClients.length,
       },
       keyExhaustedUntil: { ...this.keyExhaustedUntil },
       recentCalls: (this.callRecords || []).slice(-50),
@@ -1170,7 +1328,7 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
     let quotaExhaustedWaitMs = null;
     let matchedProductIds = [];
 
-    if (this.groqClients.length === 0 && this.openaiClients.length === 0 && this.openrouterClients.length === 0 && this.geminiClients.length === 0) {
+    if (this.groqClients.length === 0 && this.openaiClients.length === 0 && this.openrouterClients.length === 0 && this.fireworksClients.length === 0 && this.sarvamClients.length === 0 && this.geminiClients.length === 0) {
       resultText = "I'm currently undergoing maintenance. Please reach out to our support number directly on WhatsApp.";
       return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
     }
@@ -1181,6 +1339,20 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
     // the user might be specifying a size ("M"), address, or confirming an order.
     const isIdle = !session.state || session.state === 'IDLE';
     if (isIdle && session.cart.length === 0 && userQuery) {
+      // --- Knowledge Hub pre-check (client-taught corrections) ---
+      // Runs BEFORE the static FAQ matcher so a correction the client saved via the
+      // /knowledge-hub page always wins over the hard-coded default. A CONFIDENT match is
+      // answered directly with zero LLM (like FAQ); softer matches fall through and are
+      // injected into the LLM context below instead. Language-scoped in the matcher.
+      const knowledgeHit = await knowledgeService.match(userQuery, session.language);
+      if (knowledgeHit && knowledgeHit.tier === 'confident') {
+        const answer = knowledgeHit.entry.answer;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: answer });
+        await dbService.saveSession(senderId, session);
+        return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
+      }
+
       const faqMatches = faqService.searchFAQs(userQuery);
       if (faqMatches.length > 0) {
         const answer = faqMatches[0].answer;
@@ -1303,6 +1475,27 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
     for (const msg of session.history) {
       messages.push({ role: msg.role, content: msg.content || "" });
     }
+
+    // --- Knowledge Hub context injection ---
+    // If the client has taught the bot something relevant to this query (but not a
+    // confident-enough match to answer deterministically above), inject it as a
+    // high-priority system note so the LLM prefers it over its own guess. Kept as a
+    // SEPARATE message (not folded into generateSystemPrompt) so the main system prompt
+    // stays a stable, cacheable prefix, and placed right before the user's message so it's
+    // adjacent to it and survives token-budget trimming. Zero cost when there's no match.
+    try {
+      const knowledgeHit = await knowledgeService.match(userQuery, session.language);
+      if (knowledgeHit) {
+        const e = knowledgeHit.entry;
+        messages.push({
+          role: 'system',
+          content: `VERIFIED BUSINESS KNOWLEDGE (provided by the store owner — treat this as the source of truth and prefer it over your own guess when it answers the customer's current question):\nQ: ${e.question || (e.keywords || []).join(', ')}\nA: ${e.answer}`
+        });
+      }
+    } catch (err) {
+      console.warn('[AI Service] Knowledge injection skipped:', err.message);
+    }
+
     messages.push({ role: "user", content: userQuery });
 
     let keepLooping = true;
