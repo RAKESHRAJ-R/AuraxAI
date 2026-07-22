@@ -10,6 +10,7 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.json');
 const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
 const RETRY_QUEUE_FILE = path.join(DATA_DIR, 'retry_queue.json');
+const KNOWLEDGE_FILE = path.join(DATA_DIR, 'knowledge.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -45,6 +46,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(RETRY_QUEUE_FILE)) {
       fs.writeFileSync(RETRY_QUEUE_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(KNOWLEDGE_FILE)) {
+      fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify([]), 'utf-8');
     }
 
     this.initMongo();
@@ -267,6 +271,167 @@ class DatabaseService {
     } catch (err) {
       console.error('[Database Service] Local JSON getAllLeads error:', err.message);
       return [];
+    }
+  }
+
+  // --- Knowledge Hub (client-editable corrections/FAQs that the bot consults) ---
+  // Each entry: { id, keywords:[], question, answer, language:'both'|'english'|'tanglish',
+  //   source:'manual'|'correction', active:bool, createdAt, updatedAt }
+
+  async getAllKnowledge() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('knowledge').find({}).sort({ updatedAt: -1 }).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllKnowledge error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, 'utf-8'));
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllKnowledge error:', err.message);
+      return [];
+    }
+  }
+
+  async getActiveKnowledge() {
+    const all = await this.getAllKnowledge();
+    return all.filter(k => k.active !== false);
+  }
+
+  async saveKnowledge(entry) {
+    const now = new Date().toISOString();
+    const record = {
+      id: entry.id || `kn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      keywords: Array.isArray(entry.keywords) ? entry.keywords.map(k => String(k).trim()).filter(Boolean) : [],
+      question: (entry.question || '').trim(),
+      answer: (entry.answer || '').trim(),
+      language: ['both', 'english', 'tanglish'].includes(entry.language) ? entry.language : 'both',
+      // 'auto' = an unanswered-question draft the diagnosis queue created for the owner to fill in.
+      source: ['manual', 'correction', 'auto'].includes(entry.source) ? entry.source : 'manual',
+      active: entry.active !== false,
+      createdAt: entry.createdAt || now,
+      updatedAt: now,
+    };
+    // Carry the "asked N times" counter for auto-drafts (how many conversations hit this gap).
+    if (entry.hits !== undefined) record.hits = entry.hits;
+
+    if (this.useMongo) {
+      try {
+        const { createdAt, ...updateFields } = record;
+        await this.db.collection('knowledge').updateOne(
+          { id: record.id },
+          { $set: updateFields, $setOnInsert: { createdAt } },
+          { upsert: true }
+        );
+        return record;
+      } catch (err) {
+        console.error('[Database Service] MongoDB saveKnowledge error:', err.message);
+      }
+    }
+
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, 'utf-8'));
+      const idx = all.findIndex(k => k.id === record.id);
+      if (idx !== -1) {
+        record.createdAt = all[idx].createdAt || record.createdAt;
+        all[idx] = record;
+      } else {
+        all.push(record);
+      }
+      fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(all, null, 2), 'utf-8');
+      return record;
+    } catch (err) {
+      console.error('[Database Service] Local JSON saveKnowledge error:', err.message);
+      return record;
+    }
+  }
+
+  async deleteKnowledge(id) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('knowledge').deleteOne({ id });
+        return true;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteKnowledge error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, 'utf-8'));
+      const next = all.filter(k => k.id !== id);
+      fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(next, null, 2), 'utf-8');
+      return true;
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteKnowledge error:', err.message);
+      return false;
+    }
+  }
+
+  // --- Auto-diagnosed "needs answer" drafts (the unanswered-question queue) ---
+  // The diagnosis pass (diagnose.js) records questions the bot couldn't handle well as
+  // INACTIVE knowledge drafts (source:'auto', empty answer). They show up in the Teach
+  // list marked "needs answer" for the owner to fill in. Because active:false, the matcher
+  // (getActiveKnowledge) never serves them to a customer until the owner answers + activates.
+
+  /** Upsert an unanswered-question draft, de-duplicated by normalized question text. */
+  async saveUnansweredDraft({ question, keywords = [], language = 'both' }) {
+    const q = (question || '').trim();
+    if (!q) return { created: false };
+    const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const target = norm(q);
+    if (!target) return { created: false };
+
+    const all = await this.getAllKnowledge();
+    const existing = all.find(k => norm(k.question) === target);
+    if (existing) {
+      // The owner dismissed this question → it's a tombstone; never re-queue it.
+      if (existing.dismissed) return { created: false, dismissed: true };
+      // Already answered by the owner (or a manual entry covers it) → nothing to queue.
+      if (existing.answer && existing.answer.trim()) return { created: false, alreadyAnswered: true };
+      // Still an open draft → bump how many times it's been hit.
+      await this.saveKnowledge({
+        ...existing, source: 'auto', active: false, hits: (existing.hits || 1) + 1,
+      });
+      return { created: false, bumped: true };
+    }
+
+    const entry = await this.saveKnowledge({
+      question: q, answer: '', keywords, language, source: 'auto', active: false, hits: 1,
+    });
+    return { created: true, entry };
+  }
+
+  /** Count open drafts still waiting for an answer (for the Knowledge Hub badge). */
+  async countPendingKnowledge() {
+    const all = await this.getAllKnowledge();
+    return all.filter(k => k.source === 'auto' && !k.dismissed && !(k.answer && k.answer.trim())).length;
+  }
+
+  /**
+   * Permanently dismiss an auto-draft: keep it as a hidden tombstone (dismissed:true) so
+   * the diagnosis pass never re-creates it, but exclude it from the list and the badge.
+   * This is what makes "Dismiss" stick — a plain delete would just get regenerated on the
+   * next scan because the underlying flagged conversation still exists.
+   */
+  async dismissKnowledge(id) {
+    const patch = { dismissed: true, active: false, updatedAt: new Date().toISOString() };
+    if (this.useMongo) {
+      try {
+        await this.db.collection('knowledge').updateOne({ id }, { $set: patch });
+        return true;
+      } catch (err) {
+        console.error('[Database Service] MongoDB dismissKnowledge error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, 'utf-8'));
+      const idx = all.findIndex(k => k.id === id);
+      if (idx !== -1) { all[idx] = { ...all[idx], ...patch }; fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(all, null, 2), 'utf-8'); }
+      return true;
+    } catch (err) {
+      console.error('[Database Service] Local JSON dismissKnowledge error:', err.message);
+      return false;
     }
   }
 

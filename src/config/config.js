@@ -49,6 +49,31 @@ const config = {
       .filter(k => k.length > 0),
     model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
   },
+  fireworks: {
+    // Paid provider (client-supplied key). OpenAI-compatible API. Confirmed working
+    // for tool-calling. deepseek-v4-pro gives noticeably better English discipline and
+    // natural Tanglish code-mixing than Llama-3.3 — used Tanglish-first (Gemini's old
+    // Tanglish slot is dead: free tier returns limit:0) and as an English paid fallback.
+    apiKey: process.env.FIREWORKS_API_KEY || '',
+    apiKeys: (process.env.FIREWORKS_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !k.includes('your_fireworks')),
+    model: process.env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-pro',
+  },
+  sarvam: {
+    // Indic-specialised provider (Sarvam AI, Indian). OpenAI-compatible endpoint
+    // (baseURL https://api.sarvam.ai/v1, Authorization: Bearer). sarvam-30b/105b are
+    // purpose-trained on romanized AND code-mixed Indian-language text (Tamil incl.),
+    // so this is the Tanglish-first provider — better code-mixing than Llama-3.3 and
+    // cheaper than Fireworks (~₹360/mo at 100 convos/day; ₹1,000 signup credit covers
+    // ~12,000 convos). Full OpenAI-style tool calling confirmed. Gated behind
+    // SARVAM_API_KEY — absent = provider simply isn't loaded, no behavior change.
+    apiKey: process.env.SARVAM_API_KEY || '',
+    apiKeys: (process.env.SARVAM_API_KEY || '').split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !k.includes('your_sarvam')),
+    model: process.env.SARVAM_MODEL || 'sarvam-30b',
+  },
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
@@ -78,6 +103,11 @@ const config = {
     enabled: process.env.WHATSAPP_WEB_ENABLED === 'true',
   },
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
+  knowledgeHub: {
+    // Single shared password protecting the /knowledge-hub admin page + its APIs.
+    // If unset, the hub APIs refuse all logins (page is inert) — set it to enable.
+    password: process.env.KNOWLEDGE_HUB_PASSWORD || '',
+  },
 };
 
 // Basic validation
