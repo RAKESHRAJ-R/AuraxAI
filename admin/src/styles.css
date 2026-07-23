@@ -70,6 +70,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-badge.alert { background: var(--gold-soft); color: var(--gold); margin-left: 8px; }
 .sidebar-foot { margin-top: auto; padding: 10px; }
+.who-badge { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 9px 11px; margin-bottom: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 
 .main { flex: 1; margin-left: var(--sidebar-w); min-width: 0; display: flex; flex-direction: column; }
 .topbar {

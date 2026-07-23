@@ -9,7 +9,7 @@ const SECTIONS = [
 ];
 
 export default function Layout({ children }) {
-  const { logout, api } = useAuth();
+  const { logout, api, teamLabel } = useAuth();
   const [drawer, setDrawer] = useState(false);
   const [pending, setPending] = useState(0);
   const { pathname } = useLocation();
@@ -57,6 +57,12 @@ export default function Layout({ children }) {
           ))}
         </nav>
         <div className="sidebar-foot">
+          {teamLabel && (
+            <div className="who-badge" title="Signed in team">
+              <span className="dot" style={{ background: 'var(--accent)' }} />
+              {teamLabel}
+            </div>
+          )}
           <button className="btn ghost sm" style={{ width: '100%' }} onClick={logout}>
             Sign out
           </button>

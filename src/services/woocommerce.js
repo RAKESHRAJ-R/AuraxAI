@@ -178,6 +178,10 @@ class WooCommerceService {
       '\\bmardona\\b': 'maradona',
       '\\bmardon\\b': 'maradona',
       '\\bfrans\\b': 'france',
+      // Player nicknames → the name the catalog actually uses, so "cr7 away" finds
+      // Ronaldo jerseys instead of falling back to random cheap items.
+      '\\bcr7\\b': 'ronaldo',
+      '\\bcristiano\\b': 'ronaldo',
     };
     let normalized = name.toLowerCase().trim();
     for (const [pattern, replacement] of Object.entries(aliasMap)) {
@@ -210,6 +214,15 @@ class WooCommerceService {
       const c = cat.toLowerCase();
       return c.includes('kids') || c.includes('kid') || c.includes('youth') || c.includes('child');
     });
+  }
+
+  // A product is only sellable/showable if it has a real positive price. Some Woo
+  // products sync with price "0" or "" (variable products with no default price,
+  // drafts, etc.) — showing "₹0" to a customer looks broken and can't be ordered,
+  // so these are filtered out of every search path.
+  hasValidPrice(p) {
+    const price = parseFloat(p.price);
+    return !isNaN(price) && price > 0;
   }
 
   /**
@@ -258,6 +271,18 @@ class WooCommerceService {
     // Detect if they specifically want adult/grown items, or want to exclude kids items
     const adultKeywords = ['adult', 'adults', 'grown ones', 'grown', 'men', 'mens', 'man', 'women', 'womens', 'fv', 'pv', 'player version', 'fan version', 'retro'];
     const isAdultSearch = adultKeywords.some(kw => cleanQuery.includes(kw));
+
+    // Kids products are shown ONLY when the customer explicitly asks for kids/child sizes.
+    // Otherwise they're hidden — previously they were only hidden when the query literally
+    // said "adult", so a normal "ronaldo"/"cr7 away" search surfaced (KIDS) kits and confused
+    // adult buyers. This filter (plus the ₹0 filter) is applied ONCE to the source list so
+    // every downstream path — scored match, cheap, bestseller, budget, and fallback — inherits it.
+    const kidsKeywords = ['kid', 'kids', 'child', 'children', 'boy', 'boys', 'girl', 'girls', 'baby', 'infant', 'junior'];
+    const isKidsSearch = kidsKeywords.some(kw => new RegExp(`\\b${kw}\\b`).test(cleanQuery));
+    products = products.filter(p => this.hasValidPrice(p));
+    products = isKidsSearch
+      ? products.filter(p => this.isKidsProduct(p))
+      : products.filter(p => !this.isKidsProduct(p));
 
     // Stop words to filter out from query tokens
     const stopWords = new Set([

@@ -106,7 +106,15 @@ const config = {
   knowledgeHub: {
     // Single shared password protecting the /knowledge-hub admin page + its APIs.
     // If unset, the hub APIs refuse all logins (page is inert) — set it to enable.
+    // Kept as a backward-compatible fallback that logs in as the Aurax team.
     password: process.env.KNOWLEDGE_HUB_PASSWORD || '',
+  },
+  // Team-scoped admin logins: one shared password per team. Whichever password
+  // is entered decides which team the session is tagged with. Both grant the same
+  // access today — the team tag is for attribution, not different permissions.
+  adminTeams: {
+    auraxPassword: process.env.AURAX_TEAM_PASSWORD || '',
+    testingPassword: process.env.TESTING_TEAM_PASSWORD || '',
   },
 };
 

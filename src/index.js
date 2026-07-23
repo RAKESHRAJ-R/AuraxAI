@@ -2,6 +2,7 @@ import { serverLogs } from './services/logger.js';
 import express from 'express';
 import config, { validateConfig } from './config/config.js';
 import whatsappWebBot from './services/whatsapp-web-bot.js';
+import woocommerceService from './services/woocommerce.js';
 import followUpService from './services/followup.js';
 import aiService from './services/ai.js';
 import dbService from './services/db.js';
@@ -152,12 +153,34 @@ app.get('/api/logs', requireKnowledgeAuth, (req, res) => {
  * corrections/answers without any code change. Single shared-password auth: log in once,
  * get a bearer token (kept in memory — a restart just requires re-login).
  */
-const knowledgeTokens = new Set(); // valid session tokens (in-memory)
+// token -> { team, label, at } (in-memory). Restarting the server invalidates all sessions.
+const knowledgeTokens = new Map();
+
+// The credential table: one shared password per team. Whichever password matches
+// decides which team the session is tagged with. The legacy KNOWLEDGE_HUB_PASSWORD
+// still works and is treated as the Aurax team so existing logins don't break.
+function teamCredentials() {
+  const creds = [];
+  if (config.adminTeams?.auraxPassword) {
+    creds.push({ team: 'aurax', label: 'Aurax Team', password: config.adminTeams.auraxPassword });
+  }
+  if (config.adminTeams?.testingPassword) {
+    creds.push({ team: 'testing', label: 'Testing Team', password: config.adminTeams.testingPassword });
+  }
+  if (config.knowledgeHub?.password && !creds.some((c) => c.team === 'aurax')) {
+    creds.push({ team: 'aurax', label: 'Aurax Team', password: config.knowledgeHub.password });
+  }
+  return creds;
+}
 
 function requireKnowledgeAuth(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (token && knowledgeTokens.has(token)) return next();
+  const session = token && knowledgeTokens.get(token);
+  if (session) {
+    req.adminTeam = session.team;
+    return next();
+  }
   return res.status(401).json({ error: 'Unauthorized. Please log in.' });
 }
 
@@ -176,19 +199,26 @@ function normalizeMsg(t) {
 }
 
 app.post('/api/knowledge-hub/login', (req, res) => {
-  const configured = config.knowledgeHub?.password;
-  if (!configured) {
-    return res.status(503).json({ error: 'Knowledge Hub is not configured. Set KNOWLEDGE_HUB_PASSWORD.' });
+  const creds = teamCredentials();
+  if (!creds.length) {
+    return res.status(503).json({
+      error: 'Admin login is not configured. Set AURAX_TEAM_PASSWORD / TESTING_TEAM_PASSWORD (or KNOWLEDGE_HUB_PASSWORD).',
+    });
   }
   const supplied = (req.body?.password || '').toString();
-  // constant-time compare to avoid leaking the password length/prefix via timing
   const a = Buffer.from(supplied);
-  const b = Buffer.from(configured);
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) return res.status(401).json({ error: 'Incorrect password.' });
+  // Check against every team password. Compare all (no early return) so the
+  // response time doesn't reveal which team's password was closest.
+  let match = null;
+  for (const c of creds) {
+    const b = Buffer.from(c.password);
+    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    if (ok) match = c;
+  }
+  if (!match) return res.status(401).json({ error: 'Incorrect password.' });
   const token = crypto.randomBytes(24).toString('hex');
-  knowledgeTokens.add(token);
-  res.json({ token });
+  knowledgeTokens.set(token, { team: match.team, label: match.label, at: Date.now() });
+  res.json({ token, team: match.team, label: match.label });
 });
 
 app.get('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
@@ -324,12 +354,25 @@ app.listen(PORT, () => {
   console.log(`🛠️  Admin console (single app):  GET http://localhost:${PORT}/admin`);
   console.log(`     ├─ Monitor        /admin/monitor`);
   console.log(`     ├─ WhatsApp link  /admin/whatsapp`);
-  console.log(`     └─ Knowledge Hub  /admin/knowledge   (sign in with KNOWLEDGE_HUB_PASSWORD)`);
+  console.log(`     └─ Knowledge Hub  /admin/knowledge   (sign in with AURAX_TEAM_PASSWORD / TESTING_TEAM_PASSWORD)`);
 
   // Initialize WhatsApp Web Bot if enabled in configuration
   if (config.whatsappWeb && config.whatsappWeb.enabled) {
     whatsappWebBot.initialize();
   }
+
+  // Keep the local product cache fresh WITHOUT any manual `npm run sync`, so products the
+  // client adds/edits in WooCommerce become searchable automatically. This ONLY calls the
+  // store's own WooCommerce REST API — zero LLM tokens, no paid-AI quota. Sync once shortly
+  // after boot (delayed so startup isn't blocked), then every 30 minutes. Failures are
+  // non-fatal: the bot keeps serving the last good cache.
+  const PRODUCT_SYNC_INTERVAL_MS = 30 * 60 * 1000;
+  const runProductSync = () =>
+    woocommerceService.syncAndCacheProducts()
+      .then(list => console.log(`[Product Sync] Cache refreshed — ${list.length} products.`))
+      .catch(err => console.error('[Product Sync] Failed (keeping last cache):', err.message));
+  setTimeout(runProductSync, 8000);
+  setInterval(runProductSync, PRODUCT_SYNC_INTERVAL_MS);
 
   // Start cold lead follow-up scheduler
   followUpService.start();

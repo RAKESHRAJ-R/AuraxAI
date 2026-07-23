@@ -220,13 +220,21 @@ class WhatsAppWebBot {
       // message instead of wondering if it went through. WhatsApp auto-expires the
       // typing indicator after ~25s if it isn't refreshed, so keep re-sending it.
       try {
-        const chat = await msg.getChat();
-        await chat.sendStateTyping();
-        typingInterval = setInterval(() => {
-          chat.sendStateTyping().catch(() => {});
-        }, 20000);
-      } catch (typingErr) {
-        console.error(`[DEBUG] Failed to send typing indicator:`, typingErr.message);
+        // Some newer @lid chats reject msg.getChat() in whatsapp-web.js; fall back to
+        // resolving the chat by the sender id we already reply to.
+        let chat = await msg.getChat().catch(() => null);
+        if (!chat) chat = await this.client.getChatById(senderId).catch(() => null);
+        if (chat) {
+          await chat.sendStateTyping();
+          typingInterval = setInterval(() => {
+            chat.sendStateTyping().catch(() => {});
+          }, 20000);
+        }
+        // If the chat couldn't be resolved, silently skip the typing indicator — it's
+        // purely cosmetic and the reply below still sends normally. (Was logging a noisy
+        // "Failed to send typing indicator: r" on every message.)
+      } catch {
+        /* non-fatal: typing indicator is best-effort */
       }
 
       // Answer using AI Service

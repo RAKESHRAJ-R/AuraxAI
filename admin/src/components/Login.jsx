@@ -21,7 +21,7 @@ export default function Login() {
         setErr(data.error || 'Login failed');
         return;
       }
-      login(data.token);
+      login(data.token, data.team, data.label);
     } catch {
       setErr('Could not reach the server.');
     } finally {
@@ -39,13 +39,13 @@ export default function Login() {
             <div className="sub">Store control console</div>
           </div>
         </div>
-        <p className="desc">Sign in to manage the bot, WhatsApp link, and monitoring.</p>
-        <label style={{ textAlign: 'left' }}>Password</label>
+        <p className="desc">Restricted to the Aurax team and testing team. Enter your team password to continue.</p>
+        <label style={{ textAlign: 'left' }}>Team password</label>
         <input
           type="password"
           value={pw}
           autoFocus
-          placeholder="Enter admin password"
+          placeholder="Enter your team password"
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
