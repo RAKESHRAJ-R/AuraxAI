@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts.jsx';
+import logo from '../assets/aurax-logo.png';
 
 export default function Login() {
   const { login } = useAuth();
@@ -33,9 +34,9 @@ export default function Login() {
     <div className="login-page">
       <div className="card login-card fade">
         <div className="brand" style={{ justifyContent: 'center', padding: '0 0 8px' }}>
-          <span className="mark">⚽</span>
+          <span className="mark logo"><img src={logo} alt="Aurax" /></span>
           <div style={{ textAlign: 'left' }}>
-            <div className="name">Theaurax Admin</div>
+            <div className="name">AURAX Admin</div>
             <div className="sub">Store control console</div>
           </div>
         </div>

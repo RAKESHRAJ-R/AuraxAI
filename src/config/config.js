@@ -91,6 +91,14 @@ const config = {
     instagramId: process.env.OWNER_INSTAGRAM_ID || '',
     bulkThreshold: parseInt(process.env.BULK_ORDER_THRESHOLD || '20', 10),
   },
+  // Customer-support contact details surfaced by the after-sales / support agent.
+  // These are the real Theaurax channels the bot hands out (and the humans a ticket
+  // routes to). Overridable via env, with sensible hard-coded defaults so the feature
+  // works out of the box without extra config.
+  support: {
+    email: (process.env.SUPPORT_EMAIL || 'support@theaurax.in').trim(),
+    wholesaleNumber: (process.env.WHOLESALE_NUMBER || '9884442049').replace(/[^0-9]/g, ''),
+  },
   wati: {
     endpoint: process.env.WATI_API_ENDPOINT || '',
     accessToken: process.env.WATI_ACCESS_TOKEN || '',

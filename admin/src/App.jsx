@@ -5,6 +5,7 @@ import Layout from './components/Layout.jsx';
 import Monitor from './pages/Monitor.jsx';
 import WhatsApp from './pages/WhatsApp.jsx';
 import Knowledge from './pages/Knowledge.jsx';
+import Tickets from './pages/Tickets.jsx';
 
 export default function App() {
   const { token } = useAuth();
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/monitor" element={<Monitor />} />
         <Route path="/whatsapp" element={<WhatsApp />} />
         <Route path="/knowledge" element={<Knowledge />} />
+        <Route path="/tickets" element={<Tickets />} />
         <Route path="*" element={<Navigate to="/monitor" replace />} />
       </Routes>
     </Layout>

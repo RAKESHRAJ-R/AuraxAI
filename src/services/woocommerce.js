@@ -476,6 +476,77 @@ class WooCommerceService {
       return { success: false, error: err.message };
     }
   }
+
+  // Human-friendly label for a raw WooCommerce order status. Kept deliberately vague on
+  // fulfilment ("being prepared" / "on its way") because WooCommerce core has no real
+  // carrier tracking — we never claim a delivery date we can't back up.
+  orderStatusLabel(status) {
+    const map = {
+      pending: 'Order placed — awaiting payment',
+      'on-hold': 'On hold — awaiting payment confirmation',
+      processing: 'Confirmed — being packed & prepared for dispatch',
+      completed: 'Shipped / fulfilled',
+      cancelled: 'Cancelled',
+      refunded: 'Refunded',
+      failed: 'Payment failed',
+      trash: 'Cancelled',
+    };
+    return map[status] || status;
+  }
+
+  // Scan order meta for a tracking number/URL left by common WooCommerce shipment-tracking
+  // plugins. Returns nulls if none present — we NEVER fabricate a tracking number.
+  extractTracking(order) {
+    const meta = order.meta_data || [];
+    const get = (keys) => {
+      const hit = meta.find(m => keys.includes((m.key || '').toLowerCase()));
+      return hit && hit.value ? String(hit.value) : null;
+    };
+    return {
+      trackingNumber: get(['_tracking_number', 'tracking_number', '_wc_shipment_tracking_items']),
+      trackingUrl: get(['_tracking_url', 'tracking_url']),
+    };
+  }
+
+  /**
+   * Fetch a single order by its numeric ID for the support/tracking agent.
+   * Returns a SANITISED, minimal view — plus billingPhone so the caller can verify the
+   * requester actually owns the order before revealing name/address details. Never throws.
+   */
+  async getOrder(orderId) {
+    const id = String(orderId || '').replace(/\D/g, '');
+    if (!id) return { success: false, notFound: true };
+    try {
+      const { data: order } = await this.client.get(`/orders/${id}`);
+      const items = (order.line_items || []).map(li => {
+        const sizeMeta = (li.meta_data || []).find(m => /size/i.test(m.key || ''));
+        return { name: li.name, qty: li.quantity, size: sizeMeta ? String(sizeMeta.value) : null };
+      });
+      const { trackingNumber, trackingUrl } = this.extractTracking(order);
+      return {
+        success: true,
+        order: {
+          id: order.id,
+          status: order.status,
+          statusLabel: this.orderStatusLabel(order.status),
+          dateCreated: order.date_created,
+          total: order.total,
+          currency: order.currency || 'INR',
+          items,
+          customerName: `${order.billing?.first_name || ''} ${order.billing?.last_name || ''}`.trim(),
+          billingPhone: (order.billing?.phone || '').replace(/\D/g, '').slice(-10),
+          city: order.billing?.city || order.shipping?.city || '',
+          trackingNumber,
+          trackingUrl,
+        }
+      };
+    } catch (err) {
+      const code = err.response?.status;
+      if (code === 404) return { success: false, notFound: true };
+      console.error(`[WooCommerce] getOrder(${id}) failed:`, err.response?.data?.message || err.message);
+      return { success: false, error: err.message };
+    }
+  }
 }
 
 const woocommerceService = new WooCommerceService();

@@ -3,7 +3,7 @@ import qrcode from 'qrcode';
 import config from '../config/config.js';
 import aiService from './ai.js';
 
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 
 class WhatsAppWebBot {
   constructor() {
@@ -167,8 +167,11 @@ class WhatsAppWebBot {
         return;
       }
 
-      // Check message body exists
-      if (!msg.body) return;
+      // A message must have EITHER text or media. A photo of a damaged/wrong jersey
+      // typically arrives with no caption (empty body) — previously that was dropped
+      // silently, so the support flow never saw it. Accept media too.
+      const hasMedia = !!msg.hasMedia;
+      if (!msg.body && !hasMedia) return;
 
       const senderId = msg.from; // e.g. "919940954744@c.us"
       const normalizedSender = senderId.replace(/[^0-9]/g, '');
@@ -213,7 +216,29 @@ class WhatsAppWebBot {
         }
       }
 
-      console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${msg.body}"`);
+      console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${msg.body}"${hasMedia ? ' [+media]' : ''}`);
+
+      // Media handling: forward the customer's photo to the owner (so they can see a
+      // damaged/wrong jersey) and give the agent a text stand-in so it responds to the
+      // image instead of ignoring an empty body. Best-effort — never blocks the reply.
+      let messageBody = msg.body || '';
+      if (hasMedia) {
+        try {
+          const media = await msg.downloadMedia();
+          if (media && (media.mimetype || '').startsWith('image') && config.owner?.whatsappNumber && this.status === 'CONNECTED') {
+            const owner = config.owner.whatsappNumber.replace(/[^0-9]/g, '') + '@c.us';
+            const fwd = new MessageMedia(media.mimetype, media.data, media.filename || 'customer-photo');
+            await this.client.sendMessage(owner, fwd, {
+              caption: `📷 Photo from customer *${customerName}* (${customerPhone})${msg.body ? `\nCaption: "${msg.body}"` : ''}`
+            }).catch(e => console.error('[WhatsApp] Failed to forward media to owner:', e.message));
+          }
+        } catch (mediaErr) {
+          console.error('[WhatsApp] downloadMedia failed:', mediaErr.message);
+        }
+        if (!messageBody.trim()) {
+          messageBody = '[The customer just sent a photo/image of their item.]';
+        }
+      }
 
       // Show a "typing..." indicator while the agent works (product search + LLM
       // call(s) can take several seconds) so the customer knows we've seen their
@@ -238,7 +263,7 @@ class WhatsAppWebBot {
       }
 
       // Answer using AI Service
-      const agentResponse = await aiService.answerQuery(senderId, msg.body, customerName, customerPhone);
+      const agentResponse = await aiService.answerQuery(senderId, messageBody, customerName, customerPhone, { hasMedia });
 
       console.log(`🧠 [AI Agent] Intent: ${agentResponse.intent.toUpperCase()} | Matches: ${agentResponse.suggestedProductIds.length} products | Escalate: ${agentResponse.requiresEscalation}`);
 

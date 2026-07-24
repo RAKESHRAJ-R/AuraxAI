@@ -136,6 +136,40 @@ app.get('/api/sessions', requireKnowledgeAuth, async (req, res) => {
 });
 
 /**
+ * Support Tickets Route
+ * After-sales tickets raised by the support agent (complaints, returns, tracking issues).
+ */
+app.get('/api/tickets', requireKnowledgeAuth, async (req, res) => {
+  try {
+    res.json(await dbService.getAllTickets());
+  } catch (err) {
+    console.error('[Server] /api/tickets error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch tickets' });
+  }
+});
+
+// Open-ticket count for the admin sidebar badge (cheap poll).
+app.get('/api/tickets/open-count', requireKnowledgeAuth, async (req, res) => {
+  try {
+    const tickets = await dbService.getAllTickets();
+    res.json({ count: tickets.filter(t => (t.status || 'open') === 'open').length });
+  } catch (err) {
+    res.json({ count: 0 });
+  }
+});
+
+// Update a ticket's status (open / resolved) from the admin console.
+app.post('/api/tickets/:id/status', requireKnowledgeAuth, async (req, res) => {
+  try {
+    await dbService.updateTicketStatus(req.params.id, req.body?.status);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Server] POST /api/tickets/:id/status error:', err.message);
+    res.status(500).json({ error: 'Failed to update ticket' });
+  }
+});
+
+/**
  * Server Logs Route
  * Serves the rolling console output history for diagnostics.
  */

@@ -242,8 +242,8 @@ Current Session Context (this is the ONLY part that changes per turn):
 Cart: ${JSON.stringify(session.cart || [])}
 Address: ${session.address || 'Not provided'}`;
 
-    return `You are an expert, highly persuasive, and friendly AI Sales Assistant for "Theaurax.in" (a premium football jerseys retailer in India).
-Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout.
+    return `You are "Aura", the friendly AI assistant for "Theaurax.in" (a premium football jerseys retailer in India). You handle BOTH sales and after-sales customer support. If a customer asks your name or who they're talking to, tell them you're Aura from Theaurax.
+Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout — and to resolve support issues with genuine care.
 
 ---
 COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
@@ -278,6 +278,42 @@ NEVER INVENT PRODUCTS (CRITICAL — ZERO TOLERANCE):
 - To suggest ANY product — including when the customer says "any other options?", "vera ethuvum iruka?", "show me more" — you MUST call 'search_products' again first (for "any other", search the SAME team/player they were just asking about, e.g. still "ronaldo"), then reply ONLY with what the tool returns.
 - If 'search_products' returns nothing, say so honestly and ask them to name a specific team or player — e.g. "Sorry bro, adhu ippo stock la illa. Vera enna team venum? Real Madrid, Barcelona, Chelsea?" — do NOT paper over it with invented items.
 - Kids jerseys are only offered when the customer explicitly asks for kids/child sizes. Never push a (KIDS) product to someone asking for a normal/adult jersey.
+
+---
+AFTER-SALES SUPPORT (you are ALSO the customer-support agent, not just sales):
+Besides selling, you handle post-purchase help: order tracking, delivery delays, wrong/damaged/missing items, wrong customization, size exchanges, and general complaints. Switch naturally into support mode when the customer raises a problem — do not try to sell to someone with a complaint.
+
+HOW TO HANDLE AN UPSET / COMPLAINING CUSTOMER (follow in order):
+1. ACKNOWLEDGE FIRST. Open with genuine empathy BEFORE asking for anything — e.g. "I'm really sorry this happened, I understand how frustrating that is." Never lead with "Please share your order ID."
+2. NEVER ARGUE. Even if the customer is rude, blaming, or swears — stay calm, never match their tone, never lecture, never tell them to calm down, never blame them.
+3. BE SOLUTION-FOCUSED. Every reply moves toward a fix or a next step. Never dead-end with "that's our policy." Say "here's what we can do."
+4. Then collect what's needed and act: for a specific order use the 'lookup_order' tool; for an issue the team must handle use 'create_support_ticket'.
+
+ORDER TRACKING:
+- To check an order, you MUST use the 'lookup_order' tool with the order number. NEVER invent or guess a status, delivery date, or tracking number.
+- If the customer hasn't given an order number, ask for it warmly first.
+
+COMPLAINT SCENARIOS (wrong item, damaged/defective, misprinted customization, missing/not-received package, delayed delivery):
+- Apologise sincerely and acknowledge the inconvenience first.
+- Ask for the order ID, and for a PHOTO when it's a wrong/damaged/misprinted item ("Please share a photo of the item you received").
+- For a "marked delivered but not received" case, also gently ask them to check with neighbours/security/nearby before escalating.
+- Then call 'create_support_ticket' with their name, order ID, issue type, and a short description so the human team takes over. Reassure them the team will follow up.
+
+RETURNS / EXCHANGES / REFUNDS (state this policy correctly — do NOT over-promise):
+- We offer a 7-DAY EXCHANGE for size issues or defects, item unused with tags intact. We do NOT do cash refunds — it is an exchange, or a replacement for a defective/wrong item. Never promise a money refund.
+- Custom-printed (name/number) jerseys cannot be returned or exchanged unless there's a manufacturing defect.
+- For a return/exchange, guide them to email ${config.support.email} with their order ID, reason, and photos (if damaged/wrong), or raise a ticket here.
+
+CANCELLATION: An order can be cancelled anytime before it's packed/shipped — ask for the order number and raise a ticket quickly. Once shipped, the 7-day exchange policy applies instead.
+
+CONTACT / ESCALATION:
+- Support email: ${config.support.email}
+- WHOLESALE / BULK enquiries: share this number — ${config.support.wholesaleNumber}.
+- If the customer asks to talk to a real person, reassure them and call 'create_support_ticket' (issueType "talk_to_human") after collecting name + order ID + issue.
+
+ABUSE HANDLING: If the customer becomes threatening, hatefully abusive, or harassing (not just frustrated/swearing about the problem — keep helping those), warn ONCE politely that you can't continue if it continues and offer to connect them to the team, then disengage if it persists.
+
+OUT OF SCOPE — politely decline and redirect to jersey/order help: legal, medical or financial advice, competitor recommendations, politics, internal business info, and any promise you can't back (delivery dates you don't know, refunds, discounts not offered).
 
 ---
 LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
@@ -395,6 +431,38 @@ ${sessionContext}`;
             required: ["confirm"]
           }
         }
+      },
+      {
+        type: "function",
+        function: {
+          name: "lookup_order",
+          description: "Look up the status of an EXISTING customer order by its order number. Use this when a customer asks where their order is, its shipping/delivery status, or to check a specific past order. Requires the numeric order ID — if they haven't given one, ask for it first. Never guess an order status; always call this tool.",
+          parameters: {
+            type: "object",
+            properties: {
+              orderId: { type: "string", description: "The order number / order ID the customer provided (digits only)." }
+            },
+            required: ["orderId"]
+          }
+        }
+      },
+      {
+        type: "function",
+        function: {
+          name: "create_support_ticket",
+          description: "Raise a support ticket for the human team when a customer has an after-sales issue you cannot resolve directly — wrong item, damaged/defective product, missing or not-received package, delayed delivery, wrong customization, a size exchange request, or an explicit request to talk to a person. Before calling, acknowledge their frustration, and collect their name plus the order ID and a short description of the problem (ask for a photo when the issue is a wrong/damaged/misprinted item).",
+          parameters: {
+            type: "object",
+            properties: {
+              customerName: { type: "string", description: "Customer's name." },
+              orderId: { type: "string", description: "Order number if the customer has one, else empty string." },
+              issueType: { type: "string", description: "One of: wrong_item, damaged, missing_package, delayed, wrong_customization, exchange, talk_to_human, other." },
+              description: { type: "string", description: "Short summary of the customer's issue in plain words." },
+              email: { type: "string", description: "Customer's email if they provided one, else empty string." }
+            },
+            required: ["customerName", "issueType", "description"]
+          }
+        }
       }
     ];
   }
@@ -423,6 +491,27 @@ ${sessionContext}`;
     if (config.telegram?.botToken && config.telegram?.chatId) {
       telegramService.sendAlert(htmlAlertMsg).catch(err => {
         console.error('[AI Service] Failed to send Telegram owner escalation alert:', err.message);
+      });
+    }
+  }
+
+  // Live owner notification for a NEW after-sales support ticket (separate from the
+  // wholesale/bulk lead alert — different template, different intent).
+  sendSupportTicketAlert(senderId, ticket, session) {
+    const phone = ticket.phone || senderId.toString().replace(/[^0-9]/g, '');
+    const md = `🎫 *New Support Ticket* — ${ticket.id}\n\n👤 Name: ${ticket.name}\n📱 Phone: ${phone}\n${ticket.email ? `✉️ Email: ${ticket.email}\n` : ''}🧾 Order ID: ${ticket.orderId || 'Not provided'}\n🏷️ Issue: ${ticket.issueType}\n📷 Photo received: ${ticket.hasPhoto ? 'Yes' : 'No'}\n\n*Details:*\n${ticket.description || '(none)'}\n\nPlease follow up with the customer.`;
+    const html = `🎫 <b>New Support Ticket</b> — ${ticket.id}<br><br>👤 Name: ${ticket.name}<br>📱 Phone: ${phone}<br>${ticket.email ? `✉️ Email: ${ticket.email}<br>` : ''}🧾 Order ID: ${ticket.orderId || 'Not provided'}<br>🏷️ Issue: ${ticket.issueType}<br>📷 Photo: ${ticket.hasPhoto ? 'Yes' : 'No'}<br><br><b>Details:</b> ${ticket.description || '(none)'}`;
+
+    const ownerNumber = config.owner?.whatsappNumber;
+    if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+      const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
+      whatsappWebBot.client.sendMessage(cleanOwner, md).catch(err => {
+        console.error('[AI Service] Failed to send WhatsApp support ticket alert:', err.message);
+      });
+    }
+    if (config.telegram?.botToken && config.telegram?.chatId) {
+      telegramService.sendAlert(html).catch(err => {
+        console.error('[AI Service] Failed to send Telegram support ticket alert:', err.message);
       });
     }
   }
@@ -1287,10 +1376,13 @@ ${sessionContext}`;
     };
   }
 
-  async answerQuery(senderId, userQuery, customerName = null, customerPhone = null) {
+  async answerQuery(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
     const session = await dbService.getSession(senderId);
     if (customerName && customerName !== 'Customer') session.customerName = customerName;
     if (customerPhone) session.customerPhone = customerPhone;
+    // A photo/image just arrived on WhatsApp — remember it so a support ticket raised in
+    // this or the next turn is tagged "photo received" (the owner sees the forwarded image).
+    if (options.hasMedia) session.photoReceived = true;
 
     // Detect language every turn, but only ever move TOWARD Tanglish, never away from
     // it. A neutral opener like "hi" carries no signal and used to lock the whole
@@ -1361,7 +1453,18 @@ ${sessionContext}`;
         return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
       }
 
-      const faqMatches = faqService.searchFAQs(userQuery);
+      // Skip the canned FAQ fast-path for real order-tracking lookups and complaints so
+      // they reach the LLM support agent (which can call lookup_order / create_support_ticket)
+      // instead of being intercepted by a generic policy blurb. A bare "how do I track?"
+      // (no order number) still gets the cheap FAQ answer.
+      const looksLikeOrderLookup = /\b(order|parcel|package|shipment|tracking|track|delivered|delivery|status)\b/i.test(userQuery) && /\d{3,}/.test(userQuery);
+      const looksLikeComplaint = /\b(wrong (item|jersey|name|number|size|team|product)|damaged|broken|defective|torn|stained|misprint|missing|not received|didn'?t (get|receive)|never (got|arrived|received)|haven'?t received)\b/i.test(userQuery);
+      // Refund/money-back is a sensitive money topic — route it to the LLM so the exact
+      // exchange-only policy is stated (never a canned size-chart/other blurb, and never a
+      // refund promise). The prompt instructs: we do NOT do cash refunds, only exchanges.
+      const looksLikeRefund = /\b(refund|money back|cashback|return my money|my money back)\b/i.test(userQuery);
+
+      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? [] : faqService.searchFAQs(userQuery);
       if (faqMatches.length > 0) {
         const answer = faqMatches[0].answer;
         session.history.push({ role: 'user', content: userQuery });
@@ -1712,6 +1815,53 @@ ${sessionContext}`;
               } else {
                 toolResultObj = { status: "success", message: "Order noted manually. Tell the customer our team will reach out shortly to confirm payment. Be warm and end on a positive note." };
               }
+            } else if (fnName === "lookup_order") {
+              const res = await woocommerceService.getOrder(args.orderId);
+              if (res.success) {
+                // Privacy guard: an order ID alone must NOT expose another customer's
+                // order. Only reveal details if the requester's WhatsApp number matches
+                // the order's billing phone (WooCommerce IDs are sequential/guessable).
+                const sessionPhone = (session.customerPhone || senderId.replace(/\D/g, '')).slice(-10);
+                const owns = res.order.billingPhone && sessionPhone && res.order.billingPhone === sessionPhone;
+                if (res.order.billingPhone && !owns) {
+                  toolResultObj = { status: "not_authorized", message: `Order #${res.order.id} is not linked to this WhatsApp number, so its details can't be shared here (customer privacy). Politely ask the customer to message from the number used to place the order, or offer to raise a support ticket so the team can verify and help.` };
+                } else {
+                  const o = res.order;
+                  const itemsText = o.items.map(i => `${i.name}${i.size ? ' (Size ' + i.size + ')' : ''} x${i.qty}`).join(', ');
+                  toolResultObj = {
+                    status: "found",
+                    order: {
+                      id: o.id, status: o.statusLabel, placed: o.dateCreated,
+                      total: `${o.currency} ${o.total}`, items: itemsText,
+                      tracking: o.trackingNumber || null, trackingUrl: o.trackingUrl || null
+                    },
+                    message: `Share this order's status warmly and clearly. ${o.trackingNumber ? 'Give the tracking number/link to the customer.' : 'There is NO tracking number yet — do NOT invent one; if it is still being prepared, reassure them it will ship soon.'} If the customer is unhappy about a delay or a problem, offer to raise a support ticket.`
+                  };
+                }
+              } else if (res.notFound) {
+                toolResultObj = { status: "not_found", message: "No order found with that number. Gently ask the customer to double-check the order ID (it's in their order confirmation), or offer to raise a support ticket so the team can look it up manually." };
+              } else {
+                toolResultObj = { status: "error", message: "Couldn't fetch the order right now. Apologise and offer to raise a support ticket so the team can check it manually." };
+              }
+            } else if (fnName === "create_support_ticket") {
+              const ticket = await dbService.saveTicket({
+                userId: senderId,
+                name: args.customerName || session.customerName || 'Customer',
+                phone: session.customerPhone || senderId.replace(/\D/g, ''),
+                email: args.email || '',
+                orderId: args.orderId || '',
+                issueType: args.issueType || 'other',
+                description: args.description || '',
+                hasPhoto: !!session.photoReceived,
+              });
+              this.sendSupportTicketAlert(senderId, ticket, session);
+              session.photoReceived = false; // consumed by this ticket
+              session.lastTicketId = ticket.id;
+              toolResultObj = {
+                status: "success",
+                ticketId: ticket.id,
+                message: `Support ticket ${ticket.id} is created. Warmly confirm the issue is logged and the team will follow up soon. Give them the ticket reference ${ticket.id} and mention they can also email ${config.support.email} with their order ID and photos. Do NOT promise a refund or a specific resolution — only that the team will help.`
+              };
             }
 
             messages.push({
@@ -1734,7 +1884,7 @@ ${sessionContext}`;
           // JSON-style leak — handles one level of nested braces e.g. {"type":"function","parameters":{"topic":"..."}}
           resultText = resultText.replace(/\{"type"\s*:\s*"function"(?:[^{}]|\{[^{}]*\})*\}/g, '').trim();
           // Bare "toolName{...}" or "toolName(...)" leak — no wrapper tags at all, just the raw call
-          resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
+          resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order|lookup_order|create_support_ticket)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
           // Malformed/incomplete function-tag leak with no "=" or JSON body at all,
           // e.g. a bare "<function(</function>" — seen in production when generation
           // got cut off mid tool-call. Strip any stray <function...> / </function> fragment.

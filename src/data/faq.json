@@ -3,7 +3,7 @@
     "category": "Greetings",
     "keywords": ["hi", "hello", "hey", "good morning", "good evening", "good afternoon", "hii", "hlo", "helo"],
     "question": "Hello! How can I help you?",
-    "answer": "Hey there! 👋 Welcome to Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥"
+    "answer": "Hey there! 👋 I'm Aura, your assistant at Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥"
   },
   {
     "category": "COD & Payment",
@@ -33,7 +33,7 @@
     "category": "Return & Exchange",
     "keywords": ["return", "exchange", "refund", "replace", "wrong size", "damaged"],
     "question": "What is your return and exchange policy?",
-    "answer": "We offer a 7-day exchange policy for size issues or defects. The jersey must be unused, with all tags intact. However, please note that custom-printed jerseys (with custom names/numbers) cannot be exchanged or returned. To initiate an exchange, please contact us here with your order details."
+    "answer": "We offer a 7-day exchange policy for size issues or defects. The jersey must be unused, with all tags intact. Please note custom-printed jerseys (with custom names/numbers) cannot be exchanged or returned. To start an exchange, message us here with your order details, or email support@theaurax.in with your order ID, reason, and photos (if the item is damaged or wrong)."
   },
   {
     "category": "Jersey Quality",
@@ -45,7 +45,7 @@
     "category": "Wholesale / Bulk Orders",
     "keywords": ["bulk", "wholesale", "50 pieces", "many pieces", "wholesale price", "team kit", "discount"],
     "question": "Do you offer discounts for wholesale or bulk orders?",
-    "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Please share the quantity you are looking for, and we will connect you directly with our wholesale team to provide the best quote."
+    "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Share the quantity you're looking for, or reach our wholesale team directly on 9884442049 for the best quote."
   },
   {
     "category": "Order Tracking",
@@ -76,5 +76,11 @@
     "keywords": ["kids", "kid", "children", "youth", "child size"],
     "question": "Do you have jerseys for kids?",
     "answer": "Yes! We carry kids/youth versions for a lot of our popular player jerseys. Just let us know the team or player you're looking for and we'll check what's available in kids sizing."
+  },
+  {
+    "category": "Contact & Support",
+    "keywords": ["support email", "email id", "contact number", "customer care", "helpline", "wholesale number", "contact details", "support number"],
+    "question": "How do I contact Theaurax support?",
+    "answer": "We're right here to help on WhatsApp — just tell us your issue and order number and we'll sort it out. 📩 For emails: support@theaurax.in. 🛒 Wholesale/bulk orders: 9884442049. Share your order ID and any photos (for damaged/wrong items) and we'll get you a resolution."
   }
 ]
