@@ -11,6 +11,7 @@ const LEADS_FILE = path.join(DATA_DIR, 'leads.json');
 const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
 const RETRY_QUEUE_FILE = path.join(DATA_DIR, 'retry_queue.json');
 const KNOWLEDGE_FILE = path.join(DATA_DIR, 'knowledge.json');
+const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -49,6 +50,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(KNOWLEDGE_FILE)) {
       fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(TICKETS_FILE)) {
+      fs.writeFileSync(TICKETS_FILE, JSON.stringify([]), 'utf-8');
     }
 
     this.initMongo();
@@ -431,6 +435,88 @@ class DatabaseService {
       return true;
     } catch (err) {
       console.error('[Database Service] Local JSON dismissKnowledge error:', err.message);
+      return false;
+    }
+  }
+
+  // --- Support Tickets (after-sales: complaints, returns, tracking escalations) ---
+  // Each ticket: { id, userId, name, phone, email, orderId, issueType, description,
+  //   hasPhoto, status:'open'|'resolved', createdAt, updatedAt }. Created by the support
+  //   agent's create_support_ticket tool; the owner is also alerted live via WhatsApp/Telegram.
+
+  async saveTicket(ticketData) {
+    const now = new Date().toISOString();
+    const ticket = {
+      id: ticketData.id || `TKT-${Date.now().toString(36).toUpperCase()}`,
+      userId: ticketData.userId || '',
+      name: ticketData.name || 'Customer',
+      phone: (ticketData.phone || '').replace(/\D/g, ''),
+      email: ticketData.email || '',
+      orderId: ticketData.orderId ? String(ticketData.orderId).replace(/\D/g, '') : '',
+      issueType: ticketData.issueType || 'other',
+      description: ticketData.description || '',
+      hasPhoto: !!ticketData.hasPhoto,
+      status: ticketData.status || 'open',
+      createdAt: ticketData.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (this.useMongo) {
+      try {
+        await this.db.collection('tickets').insertOne(ticket);
+        return ticket;
+      } catch (err) {
+        console.error('[Database Service] MongoDB saveTicket error:', err.message);
+      }
+    }
+
+    try {
+      const tickets = JSON.parse(fs.readFileSync(TICKETS_FILE, 'utf-8'));
+      tickets.push(ticket);
+      fs.writeFileSync(TICKETS_FILE, JSON.stringify(tickets, null, 2), 'utf-8');
+      return ticket;
+    } catch (err) {
+      console.error('[Database Service] Local JSON saveTicket error:', err.message);
+      return ticket;
+    }
+  }
+
+  async getAllTickets() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('tickets').find({}).sort({ createdAt: -1 }).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllTickets error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(TICKETS_FILE, 'utf-8')).reverse();
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllTickets error:', err.message);
+      return [];
+    }
+  }
+
+  /** Update a ticket's status ('open' | 'resolved') — used by the admin console. */
+  async updateTicketStatus(id, status) {
+    const next = status === 'resolved' ? 'resolved' : 'open';
+    const patch = { status: next, updatedAt: new Date().toISOString() };
+    if (this.useMongo) {
+      try {
+        await this.db.collection('tickets').updateOne({ id }, { $set: patch });
+        return true;
+      } catch (err) {
+        console.error('[Database Service] MongoDB updateTicketStatus error:', err.message);
+      }
+    }
+    try {
+      const tickets = JSON.parse(fs.readFileSync(TICKETS_FILE, 'utf-8'));
+      const idx = tickets.findIndex(t => t.id === id);
+      if (idx !== -1) { tickets[idx] = { ...tickets[idx], ...patch }; fs.writeFileSync(TICKETS_FILE, JSON.stringify(tickets, null, 2), 'utf-8'); }
+      return true;
+    } catch (err) {
+      console.error('[Database Service] Local JSON updateTicketStatus error:', err.message);
       return false;
     }
   }

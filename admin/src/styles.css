@@ -48,6 +48,8 @@ button { font-family: inherit; cursor: pointer; }
   background: linear-gradient(135deg, var(--accent), #16a163); color: #fff; font-size: 20px;
   box-shadow: 0 4px 12px rgba(14, 122, 75, .28);
 }
+.brand .mark.logo { background: #0b0d10; padding: 5px; overflow: hidden; }
+.brand .mark.logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand .name { font-weight: 800; font-size: 16px; letter-spacing: -.2px; }
 .brand .sub { font-size: 11.5px; color: var(--faint); font-weight: 500; margin-top: 1px; }
 .nav { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
@@ -70,6 +72,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-badge.alert { background: var(--gold-soft); color: var(--gold); margin-left: 8px; }
 .sidebar-foot { margin-top: auto; padding: 10px; }
+.who-badge { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 9px 11px; margin-bottom: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 
 .main { flex: 1; margin-left: var(--sidebar-w); min-width: 0; display: flex; flex-direction: column; }
 .topbar {
@@ -189,6 +192,12 @@ label .hint { font-weight: 400; color: var(--muted); }
 .chip.src { background: var(--gold-soft); color: var(--gold); border-color: transparent; }
 .chip.off { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .chip.need { background: var(--gold-soft); color: var(--gold); border-color: transparent; font-weight: 700; }
+
+/* Segmented filter + compact search (Tickets page) */
+.seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; }
+.seg-btn { width: auto; border: none; background: transparent; color: var(--muted); font-weight: 600; font-size: 13px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.seg-btn.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .06); }
+.search-input { width: auto; padding: 8px 12px; font-size: 13px; }
 .entry.flag { border-left: 3px solid var(--gold); }
 .entry.need { border-left: 3px solid var(--gold); background: #fffdf6; }
 .entry .noanswer { color: var(--gold); font-size: 13.5px; font-style: italic; }

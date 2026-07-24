@@ -1,25 +1,30 @@
 import { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts.jsx';
+import logo from '../assets/aurax-logo.png';
 
 const SECTIONS = [
   { id: 'monitor', label: 'Monitor', icon: '📊', title: 'Monitoring Dashboard', live: true },
   { id: 'whatsapp', label: 'WhatsApp', icon: '💬', title: 'WhatsApp Connection' },
   { id: 'knowledge', label: 'Knowledge Hub', icon: '🧠', title: 'Knowledge Hub' },
+  { id: 'tickets', label: 'Support Tickets', icon: '🎫', title: 'Support Tickets' },
 ];
 
 export default function Layout({ children }) {
-  const { logout, api } = useAuth();
+  const { logout, api, teamLabel } = useAuth();
   const [drawer, setDrawer] = useState(false);
   const [pending, setPending] = useState(0);
+  const [openTickets, setOpenTickets] = useState(0);
   const { pathname } = useLocation();
   const active = SECTIONS.find((s) => pathname.startsWith('/' + s.id)) || SECTIONS[0];
 
-  // Poll how many auto-diagnosed questions are waiting for an answer (nav badge).
+  // Poll the nav badges: auto-diagnosed questions awaiting an answer, and open tickets.
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try { const r = await api('/api/knowledge/pending-count'); if (alive) setPending(r.count || 0); }
+      catch { /* silent */ }
+      try { const t = await api('/api/tickets/open-count'); if (alive) setOpenTickets(t.count || 0); }
       catch { /* silent */ }
     };
     load();
@@ -33,9 +38,9 @@ export default function Layout({ children }) {
 
       <aside className={'sidebar' + (drawer ? ' open' : '')}>
         <div className="brand">
-          <span className="mark">⚽</span>
+          <span className="mark logo"><img src={logo} alt="Aurax" /></span>
           <div>
-            <div className="name">Theaurax</div>
+            <div className="name">AURAX</div>
             <div className="sub">Admin console</div>
           </div>
         </div>
@@ -53,10 +58,19 @@ export default function Layout({ children }) {
               {s.id === 'knowledge' && pending > 0 && (
                 <span className="nav-badge alert" title={`${pending} question(s) need an answer`}>{pending}</span>
               )}
+              {s.id === 'tickets' && openTickets > 0 && (
+                <span className="nav-badge alert" title={`${openTickets} open ticket(s)`}>{openTickets}</span>
+              )}
             </NavLink>
           ))}
         </nav>
         <div className="sidebar-foot">
+          {teamLabel && (
+            <div className="who-badge" title="Signed in team">
+              <span className="dot" style={{ background: 'var(--accent)' }} />
+              {teamLabel}
+            </div>
+          )}
           <button className="btn ghost sm" style={{ width: '100%' }} onClick={logout}>
             Sign out
           </button>

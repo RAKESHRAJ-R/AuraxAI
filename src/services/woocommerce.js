@@ -178,6 +178,10 @@ class WooCommerceService {
       '\\bmardona\\b': 'maradona',
       '\\bmardon\\b': 'maradona',
       '\\bfrans\\b': 'france',
+      // Player nicknames → the name the catalog actually uses, so "cr7 away" finds
+      // Ronaldo jerseys instead of falling back to random cheap items.
+      '\\bcr7\\b': 'ronaldo',
+      '\\bcristiano\\b': 'ronaldo',
     };
     let normalized = name.toLowerCase().trim();
     for (const [pattern, replacement] of Object.entries(aliasMap)) {
@@ -210,6 +214,15 @@ class WooCommerceService {
       const c = cat.toLowerCase();
       return c.includes('kids') || c.includes('kid') || c.includes('youth') || c.includes('child');
     });
+  }
+
+  // A product is only sellable/showable if it has a real positive price. Some Woo
+  // products sync with price "0" or "" (variable products with no default price,
+  // drafts, etc.) — showing "₹0" to a customer looks broken and can't be ordered,
+  // so these are filtered out of every search path.
+  hasValidPrice(p) {
+    const price = parseFloat(p.price);
+    return !isNaN(price) && price > 0;
   }
 
   /**
@@ -258,6 +271,18 @@ class WooCommerceService {
     // Detect if they specifically want adult/grown items, or want to exclude kids items
     const adultKeywords = ['adult', 'adults', 'grown ones', 'grown', 'men', 'mens', 'man', 'women', 'womens', 'fv', 'pv', 'player version', 'fan version', 'retro'];
     const isAdultSearch = adultKeywords.some(kw => cleanQuery.includes(kw));
+
+    // Kids products are shown ONLY when the customer explicitly asks for kids/child sizes.
+    // Otherwise they're hidden — previously they were only hidden when the query literally
+    // said "adult", so a normal "ronaldo"/"cr7 away" search surfaced (KIDS) kits and confused
+    // adult buyers. This filter (plus the ₹0 filter) is applied ONCE to the source list so
+    // every downstream path — scored match, cheap, bestseller, budget, and fallback — inherits it.
+    const kidsKeywords = ['kid', 'kids', 'child', 'children', 'boy', 'boys', 'girl', 'girls', 'baby', 'infant', 'junior'];
+    const isKidsSearch = kidsKeywords.some(kw => new RegExp(`\\b${kw}\\b`).test(cleanQuery));
+    products = products.filter(p => this.hasValidPrice(p));
+    products = isKidsSearch
+      ? products.filter(p => this.isKidsProduct(p))
+      : products.filter(p => !this.isKidsProduct(p));
 
     // Stop words to filter out from query tokens
     const stopWords = new Set([
@@ -448,6 +473,77 @@ class WooCommerceService {
       return { success: true, orderId: order.id, paymentUrl };
     } catch (err) {
       console.error('[WooCommerce] createOrder failed:', err.response?.data || err.message);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Human-friendly label for a raw WooCommerce order status. Kept deliberately vague on
+  // fulfilment ("being prepared" / "on its way") because WooCommerce core has no real
+  // carrier tracking — we never claim a delivery date we can't back up.
+  orderStatusLabel(status) {
+    const map = {
+      pending: 'Order placed — awaiting payment',
+      'on-hold': 'On hold — awaiting payment confirmation',
+      processing: 'Confirmed — being packed & prepared for dispatch',
+      completed: 'Shipped / fulfilled',
+      cancelled: 'Cancelled',
+      refunded: 'Refunded',
+      failed: 'Payment failed',
+      trash: 'Cancelled',
+    };
+    return map[status] || status;
+  }
+
+  // Scan order meta for a tracking number/URL left by common WooCommerce shipment-tracking
+  // plugins. Returns nulls if none present — we NEVER fabricate a tracking number.
+  extractTracking(order) {
+    const meta = order.meta_data || [];
+    const get = (keys) => {
+      const hit = meta.find(m => keys.includes((m.key || '').toLowerCase()));
+      return hit && hit.value ? String(hit.value) : null;
+    };
+    return {
+      trackingNumber: get(['_tracking_number', 'tracking_number', '_wc_shipment_tracking_items']),
+      trackingUrl: get(['_tracking_url', 'tracking_url']),
+    };
+  }
+
+  /**
+   * Fetch a single order by its numeric ID for the support/tracking agent.
+   * Returns a SANITISED, minimal view — plus billingPhone so the caller can verify the
+   * requester actually owns the order before revealing name/address details. Never throws.
+   */
+  async getOrder(orderId) {
+    const id = String(orderId || '').replace(/\D/g, '');
+    if (!id) return { success: false, notFound: true };
+    try {
+      const { data: order } = await this.client.get(`/orders/${id}`);
+      const items = (order.line_items || []).map(li => {
+        const sizeMeta = (li.meta_data || []).find(m => /size/i.test(m.key || ''));
+        return { name: li.name, qty: li.quantity, size: sizeMeta ? String(sizeMeta.value) : null };
+      });
+      const { trackingNumber, trackingUrl } = this.extractTracking(order);
+      return {
+        success: true,
+        order: {
+          id: order.id,
+          status: order.status,
+          statusLabel: this.orderStatusLabel(order.status),
+          dateCreated: order.date_created,
+          total: order.total,
+          currency: order.currency || 'INR',
+          items,
+          customerName: `${order.billing?.first_name || ''} ${order.billing?.last_name || ''}`.trim(),
+          billingPhone: (order.billing?.phone || '').replace(/\D/g, '').slice(-10),
+          city: order.billing?.city || order.shipping?.city || '',
+          trackingNumber,
+          trackingUrl,
+        }
+      };
+    } catch (err) {
+      const code = err.response?.status;
+      if (code === 404) return { success: false, notFound: true };
+      console.error(`[WooCommerce] getOrder(${id}) failed:`, err.response?.data?.message || err.message);
       return { success: false, error: err.message };
     }
   }
