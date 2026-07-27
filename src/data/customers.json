@@ -4,7 +4,7 @@
     "name": "RAKESH",
     "phone": "7708435288",
     "channel": "whatsapp",
-    "updatedAt": "2026-07-24T03:09:38.401Z",
+    "updatedAt": "2026-07-26T11:16:06.774Z",
     "createdAt": "2026-07-04T16:44:19.580Z"
   },
   {
@@ -102,5 +102,93 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-24T05:18:33.719Z",
     "createdAt": "2026-07-24T05:18:33.726Z"
+  },
+  {
+    "userId": "e2e_test_session_1785050653817",
+    "name": "E2E Tester",
+    "phone": "9999900000",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T07:24:13.839Z",
+    "createdAt": "2026-07-26T07:24:13.841Z"
+  },
+  {
+    "userId": "e2e_en_1785052158515",
+    "name": "Customer",
+    "phone": "5052158515",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T07:49:18.704Z",
+    "createdAt": "2026-07-26T07:49:18.712Z"
+  },
+  {
+    "userId": "e2e_ta_1785052455965",
+    "name": "Customer",
+    "phone": "5052455965",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T07:54:15.969Z",
+    "createdAt": "2026-07-26T07:54:15.971Z"
+  },
+  {
+    "userId": "e2e_kn_1785052457047",
+    "name": "Customer",
+    "phone": "5052457047",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T07:54:17.055Z",
+    "createdAt": "2026-07-26T07:54:17.056Z"
+  },
+  {
+    "userId": "e2e_funnel_1785052457066",
+    "name": "Alice Smith",
+    "phone": "9819928374",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T07:55:46.829Z",
+    "createdAt": "2026-07-26T07:54:17.071Z"
+  },
+  {
+    "userId": "groq_model_test_1785055426878",
+    "name": "Customer",
+    "phone": "5055426878",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T08:43:47.063Z",
+    "createdAt": "2026-07-26T08:43:47.071Z"
+  },
+  {
+    "userId": "groq_model_test_1785055599566",
+    "name": "Customer",
+    "phone": "5055599566",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T08:46:39.818Z",
+    "createdAt": "2026-07-26T08:46:39.827Z"
+  },
+  {
+    "userId": "lat_1785058057397ljkv",
+    "name": "Customer",
+    "phone": "5058057397",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T09:27:37.529Z",
+    "createdAt": "2026-07-26T09:27:37.537Z"
+  },
+  {
+    "userId": "lat_1785058061563fejf",
+    "name": "Customer",
+    "phone": "5058061563",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T09:27:41.566Z",
+    "createdAt": "2026-07-26T09:27:41.568Z"
+  },
+  {
+    "userId": "lat_1785058065550y5zu",
+    "name": "Customer",
+    "phone": "0580655505",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T09:27:45.552Z",
+    "createdAt": "2026-07-26T09:27:45.553Z"
+  },
+  {
+    "userId": "fixtest_1785064252166",
+    "name": "Customer",
+    "phone": "5064252166",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-26T11:10:52.346Z",
+    "createdAt": "2026-07-26T11:10:52.347Z"
   }
 ]

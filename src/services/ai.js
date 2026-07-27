@@ -912,8 +912,16 @@ ${sessionContext}`;
       // cleanly to Groq-first.
       entries.push(...sarvamEntries, ...fireworksEntries, ...groqEntries);
     } else {
-      // English: Groq stays primary (fast, free); Fireworks then Sarvam as paid fallbacks.
-      entries.push(...groqEntries, ...fireworksEntries, ...sarvamEntries);
+      // English: Fireworks (deepseek-v4-pro) is primary, Sarvam second, Groq LAST as a
+      // free backstop. Groq WAS primary, but its constrained tool-calling decoder currently
+      // rejects THIS bot's prompt+7-tool schema 100% of the time with `tool_use_failed`
+      // (verified 2026-07-26 across llama-3.3, llama-3.1-8b AND gpt-oss-120b — the bare
+      // models tool-call fine, so it's the prompt/schema combo, not quota). With Groq first
+      // every reply burned MAX_ATTEMPTS(4) × 5 keys of failed retries (~76s) before falling
+      // through to Fireworks anyway. Demoting Groq to last removes that stall; Fireworks
+      // input is ~100% prompt-cached (cheap) and returns clean tool-calls. Re-promote Groq
+      // if/when the tool_use_failed root cause is fixed.
+      entries.push(...fireworksEntries, ...sarvamEntries, ...groqEntries);
     }
 
     entries.push(...this.rotateEntries('openai', this.openaiClients, 'openai'));
@@ -1351,6 +1359,54 @@ ${sessionContext}`;
   }
 
   /**
+   * Resolve the AUTHORITATIVE product for an `update_cart` call. The LLM supplies a
+   * (productId, name, price) triple but can desync them — most dangerously by carrying a
+   * STALE productId from earlier conversation history while displaying the CORRECT name and
+   * price. Because the customer-facing order summary is built from name+price but the real
+   * WooCommerce order is built from productId (woocommerce.createOrder → line_items.product_id),
+   * a mismatch silently orders and charges for a DIFFERENT product than the one shown.
+   * (Observed live 2026-07-26: customer picked & was quoted CSK 2025 id=74297 ₹350, but the
+   * created order was Barcelona Messi id=74379 ₹470 — the model reused a stale id from a prior
+   * order in the same chat's history.)
+   *
+   * Fix: never trust the LLM's raw productId. Re-derive the product from a trusted source —
+   * first the exact list shown to THIS customer (`lastShownProducts`), then the full product
+   * cache — and return that product's real id+name+price so the summary, the order, and the
+   * charge always agree. The NAME is trusted over the id because the model copies the name
+   * verbatim from our own templated result list, whereas the id is what it hallucinates.
+   * Returns null only when nothing matches (caller falls back to raw args with a warning).
+   */
+  resolveCartProduct(args, session) {
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const argId = args.productId != null ? String(args.productId) : null;
+    const argName = norm(args.name);
+
+    const shown = session.lastShownProducts || [];
+    const cache = (woocommerceService.getLocalProducts() || [])
+      .map(p => ({ productId: p.id, name: p.name, price: p.price }));
+    const pools = [shown, cache]; // prefer the list actually shown to this customer
+
+    // 1) Exact name match — strongest signal (name is copied verbatim from our template).
+    for (const pool of pools) {
+      const m = argName && pool.find(p => norm(p.name) === argName);
+      if (m) return { productId: m.productId, name: m.name, price: m.price };
+    }
+    // 2) Exact productId match.
+    for (const pool of pools) {
+      const m = argId && pool.find(p => String(p.productId) === argId);
+      if (m) return { productId: m.productId, name: m.name, price: m.price };
+    }
+    // 3) Fuzzy name (length-guarded to avoid short-string false positives).
+    if (argName && argName.length >= 8) {
+      for (const pool of pools) {
+        const m = pool.find(p => { const n = norm(p.name); return n && (n.includes(argName) || argName.includes(n)); });
+        if (m) return { productId: m.productId, name: m.name, price: m.price };
+      }
+    }
+    return null;
+  }
+
+  /**
    * Shared order-creation logic used by both the deterministic confirmation bypass and
    * the confirm_order tool handler in the main LLM loop, so there's one place that
    * decides what counts as a valid, orderable cart.
@@ -1369,6 +1425,14 @@ ${sessionContext}`;
       pincode: ''
     };
     const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
+    // Remember orders created in this session so the customer can always track them later
+    // without the billing-phone match (they entered a delivery number, we placed it here).
+    if (orderResult.success && orderResult.orderId) {
+      session.orderIds = session.orderIds || [];
+      if (!session.orderIds.map(String).includes(String(orderResult.orderId))) {
+        session.orderIds.push(String(orderResult.orderId));
+      }
+    }
     return {
       ok: true,
       orderId: orderResult.success ? orderResult.orderId : null,
@@ -1390,6 +1454,17 @@ ${sessionContext}`;
     // (e.g. "iruka bro" on message 2) — now a Tanglish word on ANY turn switches the
     // session over and stays there; plain-English replies afterward (numbers, product
     // names) no longer flip it back.
+    // Re-detect language on a FRESH conversation. session.language is otherwise sticky for
+    // the whole session (below), but a session persists across days — so a returning customer
+    // kept whatever language was locked in a PREVIOUS chat even if they now open in the other
+    // language. If this message starts a new conversation (long idle gap since last activity),
+    // drop the old lock so detection decides fresh from this turn.
+    const NEW_CONVERSATION_GAP_MS = 6 * 60 * 60 * 1000; // 6h
+    const lastActiveMs = session.lastActive ? new Date(session.lastActive).getTime() : 0;
+    if (lastActiveMs && (Date.now() - lastActiveMs) > NEW_CONVERSATION_GAP_MS) {
+      session.language = null;
+    }
+
     const detected = this.detectLanguage(userQuery);
     if (detected === 'tanglish') {
       session.language = 'tanglish';
@@ -1692,10 +1767,21 @@ ${sessionContext}`;
 
               toolResultObj = { products: products.length > 0 ? products : null, message: products.length > 0 ? "Found products" : "No matching products found. Advise user to search website: https://theaurax.in/?s=" + encodeURIComponent(args.query || "") };
             } else if (fnName === "update_cart") {
+              // Re-derive the product from a trusted source (the list shown to this
+              // customer, then the cache) instead of trusting the LLM's raw productId,
+              // which can be stale/mismatched vs the name+price it displayed — that
+              // silently orders/charges a DIFFERENT product. See resolveCartProduct().
+              const resolved = this.resolveCartProduct(args, session);
+              if (resolved && String(resolved.productId) !== String(args.productId)) {
+                console.warn(`[AI Service] update_cart productId corrected: LLM sent ${args.productId} ("${args.name}") → resolved to ${resolved.productId} ("${resolved.name}") ₹${resolved.price}`);
+              } else if (!resolved) {
+                console.warn(`[AI Service] update_cart could not resolve product (id=${args.productId}, name="${args.name}") against shown list/cache — using raw args.`);
+              }
+              const chosen = resolved || { productId: args.productId, name: args.name, price: args.price };
               session.cart = [{
-                productId: args.productId,
-                name: args.name,
-                price: args.price,
+                productId: chosen.productId,
+                name: chosen.name,
+                price: chosen.price,
                 size: args.size,
                 qty: args.qty
               }];
@@ -1806,6 +1892,14 @@ ${sessionContext}`;
 
               if (orderResult.success) {
                 checkoutUrl = orderResult.paymentUrl;
+                // Remember this order so the customer can track it here later regardless of
+                // which phone they entered vs. their WhatsApp number (see lookup_order).
+                if (orderResult.orderId) {
+                  session.orderIds = session.orderIds || [];
+                  if (!session.orderIds.map(String).includes(String(orderResult.orderId))) {
+                    session.orderIds.push(String(orderResult.orderId));
+                  }
+                }
                 toolResultObj = {
                   status: "success",
                   orderId: orderResult.orderId,
@@ -1822,7 +1916,12 @@ ${sessionContext}`;
                 // order. Only reveal details if the requester's WhatsApp number matches
                 // the order's billing phone (WooCommerce IDs are sequential/guessable).
                 const sessionPhone = (session.customerPhone || senderId.replace(/\D/g, '')).slice(-10);
-                const owns = res.order.billingPhone && sessionPhone && res.order.billingPhone === sessionPhone;
+                // A customer can always track an order THEY placed in this chat — we created
+                // it here, so ownership is already established. Without this, entering a
+                // delivery/family phone that differs from their WhatsApp number (common) locks
+                // them out of tracking their own just-placed order.
+                const placedHere = (session.orderIds || []).map(String).includes(String(res.order.id));
+                const owns = placedHere || (res.order.billingPhone && sessionPhone && res.order.billingPhone === sessionPhone);
                 if (res.order.billingPhone && !owns) {
                   toolResultObj = { status: "not_authorized", message: `Order #${res.order.id} is not linked to this WhatsApp number, so its details can't be shared here (customer privacy). Politely ask the customer to message from the number used to place the order, or offer to raise a support ticket so the team can verify and help.` };
                 } else {
