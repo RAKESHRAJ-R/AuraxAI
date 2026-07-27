@@ -63,7 +63,11 @@ class FollowUpService {
     }
 
     try {
-      await whatsappWebBot.client.sendMessage(lead.userId, message);
+      // Route through the paced outbound queue, not client.sendMessage directly. This is
+      // the highest ban-risk path in the app: it fires unsolicited, near-identical
+      // messages at a batch of cold leads in a tight loop — the textbook automation
+      // pattern. sendText() spaces them out globally.
+      await whatsappWebBot.sendText(lead.userId, message);
       await dbService.updateLeadFollowUp(lead.userId);
       console.log(`[FollowUp] Follow-up #${followUpCount + 1} sent to ${lead.phone || lead.userId}`);
     } catch (err) {

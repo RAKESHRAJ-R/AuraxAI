@@ -24,6 +24,92 @@ class WhatsAppWebBot {
     // for what the customer only sent once. Capped FIFO so it can't grow unbounded
     // in a long-running process.
     this.seenMessageIds = new Set();
+    // --- Outbound send pacing (ban-risk protection) ---
+    // WhatsApp rate-limits and bans per ACCOUNT, not per chat, so pacing has to be
+    // global across every customer AND every owner alert. sendChain serialises all
+    // outbound sends into one queue; each one takes its turn and only then checks the
+    // clock. (Checking the clock in parallel is the classic mistake — N callers all
+    // read the same "last send" timestamp, all wait the same amount, then all fire
+    // together, which is no rate limit at all.)
+    this.sendChain = Promise.resolve();
+    this.lastSendAt = 0;
+    // Rolling 60s window of send timestamps, for the per-minute ceiling.
+    this.sendWindow = [];
+  }
+
+  /**
+   * The ONLY place that may call client.sendMessage. Serialises every outbound message
+   * behind a single global queue and paces it (min gap + jitter + per-minute ceiling)
+   * so a 100-customer burst goes out at a human rate instead of all at once.
+   *
+   * Returns the underlying sendMessage promise, so callers can still await/catch it.
+   * A failed send never breaks the queue for the messages behind it.
+   */
+  sendText(to, content, options = undefined) {
+    const run = this.sendChain.then(async () => {
+      if (!this.client) throw new Error('WhatsApp client not initialised');
+      await this.awaitSendSlot();
+      return options ? this.client.sendMessage(to, content, options)
+                     : this.client.sendMessage(to, content);
+    });
+    // Swallow this send's outcome for chain-continuation purposes only — the caller
+    // still sees the real result/rejection via `run`.
+    this.sendChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  /**
+   * Blocks until it's safe to send the next message. Called only from inside the
+   * serialised sendChain, so the timestamps it reads and writes can't race.
+   */
+  async awaitSendSlot() {
+    const cfg = config.whatsappWeb;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // 1) Rolling per-minute ceiling.
+    const maxPerMin = cfg.maxSendsPerMinute;
+    if (maxPerMin > 0) {
+      this.sendWindow = this.sendWindow.filter(t => Date.now() - t < 60000);
+      if (this.sendWindow.length >= maxPerMin) {
+        const waitMs = 60000 - (Date.now() - this.sendWindow[0]) + 50;
+        if (waitMs > 0) {
+          console.log(`[WhatsApp] Send cap reached (${maxPerMin}/min) — holding ${Math.round(waitMs / 1000)}s.`);
+          await sleep(waitMs);
+          this.sendWindow = this.sendWindow.filter(t => Date.now() - t < 60000);
+        }
+      }
+    }
+
+    // 2) Minimum gap since the previous send, plus jitter so the cadence isn't robotic.
+    const gap = cfg.minSendGapMs + Math.floor(Math.random() * (cfg.sendJitterMs || 0));
+    const sinceLast = Date.now() - this.lastSendAt;
+    if (this.lastSendAt && sinceLast < gap) {
+      await sleep(gap - sinceLast);
+    }
+
+    this.lastSendAt = Date.now();
+    this.sendWindow.push(this.lastSendAt);
+  }
+
+  /**
+   * Holds a reply back so the total time from "customer sent" to "bot replied" never
+   * looks inhumanly fast. Deterministic fast paths (FAQ, knowledge, size parsing) answer
+   * in single-digit milliseconds — instant replies to everyone, around the clock, is one
+   * of the clearest automation tells. Replies that already took longer than the target
+   * (any LLM call) are sent immediately with no added delay, so this costs real customers
+   * nothing on the slow paths.
+   */
+  async humanizeDelay(receivedAt, replyText = '') {
+    const cfg = config.whatsappWeb;
+    const lengthBonus = Math.min(
+      (replyText || '').length * (cfg.replyDelayPerCharMs || 0),
+      Math.max(cfg.maxReplyDelayMs - cfg.minReplyDelayMs, 0)
+    );
+    const target = cfg.minReplyDelayMs + lengthBonus + Math.floor(Math.random() * 400);
+    const elapsed = Date.now() - receivedAt;
+    if (elapsed < target) {
+      await new Promise(r => setTimeout(r, target - elapsed));
+    }
   }
 
   isDuplicateMessage(msg) {
@@ -161,6 +247,9 @@ class WhatsAppWebBot {
 
   async handleIncomingMessage(msg) {
     let typingInterval = null;
+    // When the customer's message landed — humanizeDelay() measures the reply turnaround
+    // from here, so deterministic zero-latency answers don't go out instantly.
+    const receivedAt = Date.now();
     try {
       // Ignore group chats, broadcast/status
       if (msg.isGroupMsg || msg.from.includes('@g.us') || msg.from === 'status@broadcast') {
@@ -228,7 +317,7 @@ class WhatsAppWebBot {
           if (media && (media.mimetype || '').startsWith('image') && config.owner?.whatsappNumber && this.status === 'CONNECTED') {
             const owner = config.owner.whatsappNumber.replace(/[^0-9]/g, '') + '@c.us';
             const fwd = new MessageMedia(media.mimetype, media.data, media.filename || 'customer-photo');
-            await this.client.sendMessage(owner, fwd, {
+            await this.sendText(owner, fwd, {
               caption: `📷 Photo from customer *${customerName}* (${customerPhone})${msg.body ? `\nCaption: "${msg.body}"` : ''}`
             }).catch(e => console.error('[WhatsApp] Failed to forward media to owner:', e.message));
           }
@@ -267,9 +356,11 @@ class WhatsAppWebBot {
 
       console.log(`🧠 [AI Agent] Intent: ${agentResponse.intent.toUpperCase()} | Matches: ${agentResponse.suggestedProductIds.length} products | Escalate: ${agentResponse.requiresEscalation}`);
 
-      // Reply back
-      await this.client.sendMessage(senderId, agentResponse.replyText);
-      console.log(`📤 [WhatsApp] Sent reply to ${normalizedSender}`);
+      // Hold the reply back to a human-plausible turnaround (no-op if the agent already
+      // took longer than the target), then send through the paced outbound queue.
+      await this.humanizeDelay(receivedAt, agentResponse.replyText);
+      await this.sendText(senderId, agentResponse.replyText);
+      console.log(`📤 [WhatsApp] Sent reply to ${normalizedSender} (${Date.now() - receivedAt}ms turnaround)`);
     } catch (err) {
       console.error(`❌ [WhatsApp Bot Error]:`, err.message);
     } finally {

@@ -109,6 +109,27 @@ const config = {
   },
   whatsappWeb: {
     enabled: process.env.WHATSAPP_WEB_ENABLED === 'true',
+    // --- Outbound send pacing (WhatsApp ban-risk protection) ---
+    // whatsapp-web.js is an UNOFFICIAL client: WhatsApp bans numbers that behave like
+    // bots, and the loudest signal is a burst of instant, evenly-spaced replies to many
+    // different people at once (exactly what a reel drop produces). Every outbound
+    // message in the app funnels through whatsappWebBot.sendText(), which serialises
+    // sends and enforces these limits globally — per ACCOUNT, not per chat, because
+    // that's how WhatsApp measures it.
+    // Defaults are deliberately conservative; raise only with evidence.
+    minSendGapMs: parseInt(process.env.WA_MIN_SEND_GAP_MS || '1200', 10),
+    // Random extra 0..N ms on top of the gap so the spacing isn't machine-perfect.
+    sendJitterMs: parseInt(process.env.WA_SEND_JITTER_MS || '900', 10),
+    // Hard ceiling over a rolling 60s window. 30/min ≈ a fast human on WhatsApp Web.
+    maxSendsPerMinute: parseInt(process.env.WA_MAX_SENDS_PER_MIN || '30', 10),
+    // Minimum time between receiving a message and replying to it. Deterministic
+    // fast-path replies (FAQ / knowledge / size-parse) return in ~0ms, which reads as
+    // inhuman; this pads them. Replies that already took longer (LLM calls) are NOT
+    // delayed further — see humanizeDelay().
+    minReplyDelayMs: parseInt(process.env.WA_MIN_REPLY_DELAY_MS || '1400', 10),
+    // Extra think-time scaled by reply length (ms per character), capped below.
+    replyDelayPerCharMs: parseFloat(process.env.WA_REPLY_DELAY_PER_CHAR_MS || '12'),
+    maxReplyDelayMs: parseInt(process.env.WA_MAX_REPLY_DELAY_MS || '4000', 10),
   },
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
   knowledgeHub: {

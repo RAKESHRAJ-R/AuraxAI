@@ -111,7 +111,7 @@ function sendKnowledgeGapAlert(created, pendingCount) {
   const ownerNumber = config.owner?.whatsappNumber;
   if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
     const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
-    whatsappWebBot.client.sendMessage(cleanOwner, md).catch((err) =>
+    whatsappWebBot.sendText(cleanOwner, md).catch((err) =>
       console.error('[Diagnose] Failed to send WhatsApp knowledge-gap alert:', err.message)
     );
   }

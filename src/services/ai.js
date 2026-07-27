@@ -26,21 +26,58 @@ class AIService {
     openai: 666,
     openrouter: 1000,
     gemini: 1500,
+    // Fireworks and Sarvam were missing here and silently fell through to the 1000ms
+    // default — a problem once Fireworks became the English primary and Sarvam the
+    // Tanglish primary, since each runs on a SINGLE key (no rotation to spread load).
+    // Both are paid, so the constraint is account concurrency rather than a free-tier
+    // RPM cliff; 900ms/750ms are conservative starting points. Raise the throughput by
+    // adding more comma-separated keys to .env (rotation then multiplies it), not by
+    // shrinking these.
+    fireworks: 900,
+    sarvam: 750,
   };
+  // Per-key serialisation chains for the throttle. See callWithThrottle().
+  static throttleChains = {};
   // Round-robin cursor per provider so consecutive requests spread across keys instead
   // of every request piling onto key[0] first (which is what starves the other keys).
   static roundRobinIndex = {};
 
+  /**
+   * Spaces out calls so a provider key never gets hit faster than its rate limit allows.
+   *
+   * This MUST serialise. The obvious implementation — read the last-call timestamp,
+   * sleep the difference, then write the timestamp — is a barrier, not a rate limiter:
+   * N concurrent callers all read the SAME timestamp before any of them has written it,
+   * all sleep the same amount, and then all fire simultaneously. Under sequential load
+   * (every test we've ever run) it looks perfect; under a real burst — 100 customers
+   * messaging after a reel drops — it lets the whole burst through at once, which earns
+   * a wall of 429s and then MAX_ATTEMPTS × exponential backoff on every one of them.
+   * Slower and more fragile than having queued properly in the first place.
+   *
+   * So each (provider, key) gets its own promise chain: a caller joins the back of the
+   * queue, and only reads/writes the clock once it's actually at the front. Same pattern
+   * as senderChains in whatsapp-web-bot.js. Different keys still run fully in parallel,
+   * which is the entire point of key rotation.
+   */
   async callWithThrottle(fn, provider = 'groq', keyIndex = 0) {
-    const now = Date.now();
     const minGap = AIService.minApiGapMs[provider] || 1000;
     const timerKey = `${provider}#${keyIndex}`;
-    const lastCall = AIService.lastApiCallTimes[timerKey] || 0;
-    const elapsed = now - lastCall;
-    if (elapsed < minGap) {
-      await new Promise(r => setTimeout(r, minGap - elapsed));
-    }
-    AIService.lastApiCallTimes[timerKey] = Date.now();
+
+    const previous = AIService.throttleChains[timerKey] || Promise.resolve();
+    // The turn resolves once this caller has waited out its slot — it does NOT include
+    // fn() itself, so the next caller can start its gap while this request is in flight.
+    const turn = previous.then(async () => {
+      const lastCall = AIService.lastApiCallTimes[timerKey] || 0;
+      const elapsed = Date.now() - lastCall;
+      if (lastCall && elapsed < minGap) {
+        await new Promise(r => setTimeout(r, minGap - elapsed));
+      }
+      AIService.lastApiCallTimes[timerKey] = Date.now();
+    });
+    // Never let one caller's failure poison the queue behind it.
+    AIService.throttleChains[timerKey] = turn.then(() => {}, () => {});
+
+    await turn;
     return fn();
   }
 
@@ -156,22 +193,37 @@ class AIService {
     // needs the English examples and vice-versa — sending both was ~41% of the prompt for
     // no benefit. Each language block below is self-contained (product search, multi-match
     // one-question rule, verbatim payment-link rule, an FAQ) so neither loses coverage.
+    // ⚠️ DO NOT "improve" the tool-format guidance below by naming the bad output format.
+    // Measured live against Groq llama-3.3-70b (2026-07-27, 20 calls per variant, temp 0.7,
+    // production prompt + all 7 tools). tool_use_failed rate:
+    //   95% — original prompt
+    //   55% — after removing the line that literally spelled out "<function=name>...</function>"
+    //   30% — after ALSO removing tool ARGUMENTS from the worked examples below
+    // Both of those lines were added as guardrails against the model leaking tool calls as
+    // text, and both made it dramatically WORSE: writing the forbidden token sequence into
+    // the prompt primes the model to emit it (negation is weak; the pattern is strong), and
+    // an example rendering `productId:45, name:"…", price:849, size:"L", qty:1` teaches that
+    // arguments-as-text is a valid reply shape — which is very likely the source of the raw
+    // JSON reply seen in the 2026-07-26 funnel test (identical field order).
+    // Describe tool use ABSTRACTLY here. Never show the wire format, right or wrong.
+    // 30% is still far too high for Groq to be the primary provider — see the provider
+    // ordering note in getFallbackEntries(). Re-measure before promoting Groq.
     const workedExamples = isTanglish
       ? `WORKED EXAMPLES — Follow these exactly:
 
 [Tanglish] Product search + order:
   Customer: "bro chelsea jersey iruka?"
-  → [Use the search_products tool with query "chelsea jersey"]
+  → [Call the search_products tool]
   Tool returns products.
   → Reply: "Bro kandippa iruku! 🔥 *Chelsea Home 25/26 Jersey* — ₹849 la kedaikuthu! S, M, L, XL size la iruku. Enna size venum?"
   Customer: "L bro 1 venum"
-  → [Use the update_cart tool with productId:45, name:"Chelsea Home 25/26 Jersey", price:849, size:"L", qty:1]
+  → [Call the update_cart tool]
   Tool returns success.
   → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Name, Address, Pincode, Mobile number."
 
 [Tanglish] Product search — multiple matches (pick top 2-3, ONE question at the end, not after each):
   Customer: "messi jersey iruka?"
-  → [Use the search_products tool with query "messi jersey"]
+  → [Call the search_products tool]
   Tool returns 10 products.
   → Reply: "Bro kandippa iruku! 🔥 Messi jersey la ivalo options iruku:
 • FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI — ₹470 [S, M, L, XL]
@@ -205,13 +257,13 @@ Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum
 
 [English] Product search:
   Customer: "Do you have Chelsea jersey?"
-  → [Use the search_products tool with query "Chelsea jersey"]  [ONLY use the tool, no text]
+  → [Call the search_products tool]  [ONLY use the tool, no text]
   Tool returns products.
   → Reply: "Yes! We have the *Chelsea Home 25/26 Jersey* at ₹849 🔵 Available in S/M/L/XL. Tap the link to see it: [url]. Which size would you like?"
 
 [English] Product search — multiple matches (pick top 2-3, ONE question at the end, not after each):
   Customer: "Do you have Messi jerseys?"
-  → [Use the search_products tool with query "messi jersey"]
+  → [Call the search_products tool]
   Tool returns 10 products.
   → Reply: "Great choice! 🔥 Here are the top Messi jerseys:
 • FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI — ₹470 [S, M, L, XL]
@@ -337,7 +389,7 @@ TANGLISH — STRICTLY NEVER DO THIS (these make you sound like a robot, not a hu
 
 TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
 - When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
-- NEVER output XML-style tags like <function=name>...</function>. That is a bug. Never do it.
+- Emit tool calls ONLY through the structured tool-call interface. Never write a tool call, its name, or its arguments into the message body in any form.
 - After the tool returns a result, write your reply naturally based on the result.
 
 ${workedExamples}
@@ -483,7 +535,7 @@ ${sessionContext}`;
     const ownerNumber = config.owner?.whatsappNumber;
     if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
       const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
-      whatsappWebBot.client.sendMessage(cleanOwner, mdAlertMsg).catch(err => {
+      whatsappWebBot.sendText(cleanOwner, mdAlertMsg).catch(err => {
         console.error('[AI Service] Failed to send WhatsApp owner escalation alert:', err.message);
       });
     }
@@ -505,7 +557,7 @@ ${sessionContext}`;
     const ownerNumber = config.owner?.whatsappNumber;
     if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
       const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
-      whatsappWebBot.client.sendMessage(cleanOwner, md).catch(err => {
+      whatsappWebBot.sendText(cleanOwner, md).catch(err => {
         console.error('[AI Service] Failed to send WhatsApp support ticket alert:', err.message);
       });
     }
@@ -913,14 +965,22 @@ ${sessionContext}`;
       entries.push(...sarvamEntries, ...fireworksEntries, ...groqEntries);
     } else {
       // English: Fireworks (deepseek-v4-pro) is primary, Sarvam second, Groq LAST as a
-      // free backstop. Groq WAS primary, but its constrained tool-calling decoder currently
-      // rejects THIS bot's prompt+7-tool schema 100% of the time with `tool_use_failed`
-      // (verified 2026-07-26 across llama-3.3, llama-3.1-8b AND gpt-oss-120b — the bare
-      // models tool-call fine, so it's the prompt/schema combo, not quota). With Groq first
-      // every reply burned MAX_ATTEMPTS(4) × 5 keys of failed retries (~76s) before falling
-      // through to Fireworks anyway. Demoting Groq to last removes that stall; Fireworks
-      // input is ~100% prompt-cached (cheap) and returns clean tool-calls. Re-promote Groq
-      // if/when the tool_use_failed root cause is fixed.
+      // free backstop. Groq WAS primary, but its constrained tool-calling decoder rejects
+      // THIS bot's prompt+7-tool schema with `tool_use_failed` at a 95% rate (measured
+      // 2026-07-27, 20 calls, temp 0.7 — the bare model tool-calls fine, so it's the
+      // prompt/schema combo, not quota). With Groq first every reply burned failed retries
+      // for ~76s before falling through to Fireworks anyway.
+      //
+      // ROOT CAUSE FOUND 2026-07-27 (see the note above generateSystemPrompt's
+      // workedExamples): two "guardrail" prompt lines were causing it. Fixing both took the
+      // rate 95% → 30%. Better, but 30% is still far too high to be the primary provider,
+      // so Groq stays last for now.
+      //
+      // ⚠️ Before promoting Groq back, note the free tier is limited per ORGANIZATION, not
+      // per key — a live 429 on 2026-07-27 read "Rate limit reached ... in organization
+      // org_…" while rotating across all 5 keys. If those 5 keys are on ONE Groq account
+      // they share ~30 RPM total, and rotation buys no extra rate-limit headroom at all.
+      // Verify that before counting on Groq for burst capacity.
       entries.push(...fireworksEntries, ...sarvamEntries, ...groqEntries);
     }
 
@@ -1173,7 +1233,7 @@ ${sessionContext}`;
           shouldDelete = false;
         } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
           try {
-            await whatsappWebBot.client.sendMessage(senderId, retryResponse.replyText);
+            await whatsappWebBot.sendText(senderId, retryResponse.replyText);
             console.log(`[AI Service] Sent delayed quota-retry reply to ${senderId}`);
           } catch (sendErr) {
             console.error(`[AI Service] Failed to send delayed quota-retry reply to ${senderId}:`, sendErr.message);
@@ -1217,7 +1277,7 @@ ${sessionContext}`;
             shouldDelete = false;
           } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
             try {
-              await whatsappWebBot.client.sendMessage(entry.senderId, retryResponse.replyText);
+              await whatsappWebBot.sendText(entry.senderId, retryResponse.replyText);
               console.log(`[AI Service] Persistent retry reply sent to ${entry.senderId}`);
             } catch (sendErr) {
               console.error(`[AI Service] Failed to send retry reply to ${entry.senderId}:`, sendErr.message);

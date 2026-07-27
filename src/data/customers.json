@@ -190,5 +190,13 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-26T11:10:52.346Z",
     "createdAt": "2026-07-26T11:10:52.347Z"
+  },
+  {
+    "userId": "test_user_single_878",
+    "name": "Customer",
+    "phone": "878",
+    "channel": "whatsapp",
+    "updatedAt": "2026-07-27T03:06:53.039Z",
+    "createdAt": "2026-07-27T03:06:53.047Z"
   }
 ]
