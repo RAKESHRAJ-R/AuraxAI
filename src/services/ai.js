@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import config from '../config/config.js';
 import faqService from './faq.js';
 import knowledgeService from './knowledge.js';
+import retrievalService from './retrieval.js';
 import woocommerceService from './woocommerce.js';
 import dbService from './db.js';
 import { generateInvoicePDF } from './invoice.js';
@@ -1740,6 +1741,27 @@ ${sessionContext}`;
       }
     } catch (err) {
       console.warn('[AI Service] Knowledge injection skipped:', err.message);
+    }
+
+    // --- Knowledge SOURCE retrieval (uploaded documents + crawled website) ---
+    // Same placement rationale as the Q&A injection above: a separate system message
+    // right before the user's turn, so the cacheable system-prompt prefix stays intact
+    // and this survives token trimming. Deliberately AFTER the Q&A injection — a
+    // hand-written answer from the owner is more authoritative than a document excerpt.
+    //
+    // Costs nothing when no documents are indexed (retrieval short-circuits on an empty
+    // chunk set), and this runs only on the LLM path — the deterministic fast paths
+    // (FAQ, confident Q&A match, size/qty parsing, order confirmation) return before
+    // reaching here and stay zero-latency.
+    try {
+      const contextMessage = await retrievalService.buildContextMessage(userQuery);
+      if (contextMessage) {
+        const { _hits, ...message } = contextMessage;
+        messages.push(message);
+        console.log(`[Knowledge] Injected ${_hits} document chunk(s) into context`);
+      }
+    } catch (err) {
+      console.warn('[AI Service] Knowledge source retrieval skipped:', err.message);
     }
 
     messages.push({ role: "user", content: userQuery });

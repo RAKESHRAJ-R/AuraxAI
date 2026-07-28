@@ -12,6 +12,12 @@ const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
 const RETRY_QUEUE_FILE = path.join(DATA_DIR, 'retry_queue.json');
 const KNOWLEDGE_FILE = path.join(DATA_DIR, 'knowledge.json');
 const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
+// Knowledge SOURCES (uploaded documents + crawled websites) and the searchable text
+// CHUNKS extracted from them. Kept separate from knowledge.json, which holds the
+// hand-written Q&A pairs — different shape, different lifecycle, and chunks are bulky
+// (each carries an embedding vector).
+const KNOWLEDGE_SOURCES_FILE = path.join(DATA_DIR, 'knowledge_sources.json');
+const KNOWLEDGE_CHUNKS_FILE = path.join(DATA_DIR, 'knowledge_chunks.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -53,6 +59,12 @@ class DatabaseService {
     }
     if (!fs.existsSync(TICKETS_FILE)) {
       fs.writeFileSync(TICKETS_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(KNOWLEDGE_SOURCES_FILE)) {
+      fs.writeFileSync(KNOWLEDGE_SOURCES_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(KNOWLEDGE_CHUNKS_FILE)) {
+      fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify([]), 'utf-8');
     }
 
     this.initMongo();
@@ -437,6 +449,195 @@ class DatabaseService {
       console.error('[Database Service] Local JSON dismissKnowledge error:', err.message);
       return false;
     }
+  }
+
+  // --- Knowledge SOURCES (uploaded documents + crawled websites) ---
+  // A source is the thing the owner added ("sizechart.pdf", "https://theaurax.in/shipping").
+  // Its extracted text lives in knowledge_chunks as many small searchable rows, each
+  // carrying an embedding vector. Sources and chunks are always written together:
+  // replaceKnowledgeChunks() wipes a source's old chunks before inserting the new set, so
+  // re-indexing never leaves stale text behind to be retrieved.
+  // Shape: { id, type:'document'|'website', title, url, filename, chunkCount, charCount,
+  //          status:'ready'|'error', error, embedded:bool, createdAt, updatedAt }
+
+  async getAllKnowledgeSources() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('knowledge_sources').find({}).sort({ createdAt: -1 }).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllKnowledgeSources error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(KNOWLEDGE_SOURCES_FILE, 'utf-8'));
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllKnowledgeSources error:', err.message);
+      return [];
+    }
+  }
+
+  async saveKnowledgeSource(source) {
+    const now = new Date().toISOString();
+    const record = {
+      id: source.id || `src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      type: source.type === 'website' ? 'website' : 'document',
+      title: (source.title || '').trim() || 'Untitled',
+      url: source.url || null,
+      filename: source.filename || null,
+      chunkCount: source.chunkCount || 0,
+      charCount: source.charCount || 0,
+      pageCount: source.pageCount || null,
+      status: ['ready', 'error', 'indexing'].includes(source.status) ? source.status : 'ready',
+      error: source.error || null,
+      embedded: source.embedded === true,
+      language: ['both', 'english', 'tanglish'].includes(source.language) ? source.language : 'both',
+      active: source.active !== false,
+      createdAt: source.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (this.useMongo) {
+      try {
+        const { createdAt, ...updateFields } = record;
+        await this.db.collection('knowledge_sources').updateOne(
+          { id: record.id },
+          { $set: updateFields, $setOnInsert: { createdAt } },
+          { upsert: true }
+        );
+        return record;
+      } catch (err) {
+        console.error('[Database Service] MongoDB saveKnowledgeSource error:', err.message);
+      }
+    }
+
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_SOURCES_FILE, 'utf-8'));
+      const idx = all.findIndex(s => s.id === record.id);
+      if (idx !== -1) {
+        record.createdAt = all[idx].createdAt || record.createdAt;
+        all[idx] = record;
+      } else {
+        all.push(record);
+      }
+      fs.writeFileSync(KNOWLEDGE_SOURCES_FILE, JSON.stringify(all, null, 2), 'utf-8');
+      return record;
+    } catch (err) {
+      console.error('[Database Service] Local JSON saveKnowledgeSource error:', err.message);
+      return record;
+    }
+  }
+
+  /** Delete a source AND every chunk belonging to it — orphan chunks would still be retrievable. */
+  async deleteKnowledgeSource(id) {
+    await this.deleteChunksBySource(id);
+    if (this.useMongo) {
+      try {
+        await this.db.collection('knowledge_sources').deleteOne({ id });
+        return true;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteKnowledgeSource error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_SOURCES_FILE, 'utf-8'));
+      fs.writeFileSync(KNOWLEDGE_SOURCES_FILE, JSON.stringify(all.filter(s => s.id !== id), null, 2), 'utf-8');
+      return true;
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteKnowledgeSource error:', err.message);
+      return false;
+    }
+  }
+
+  // --- Knowledge CHUNKS (the searchable slices of each source) ---
+  // Shape: { id, sourceId, sourceTitle, sourceType, url, text, embedding:number[]|null, order }
+
+  async getAllKnowledgeChunks() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('knowledge_chunks').find({}).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllKnowledgeChunks error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(KNOWLEDGE_CHUNKS_FILE, 'utf-8'));
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllKnowledgeChunks error:', err.message);
+      return [];
+    }
+  }
+
+  async deleteChunksBySource(sourceId) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('knowledge_chunks').deleteMany({ sourceId });
+        return true;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteChunksBySource error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_CHUNKS_FILE, 'utf-8'));
+      fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify(all.filter(c => c.sourceId !== sourceId), null, 2), 'utf-8');
+      return true;
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteChunksBySource error:', err.message);
+      return false;
+    }
+  }
+
+  /**
+   * Replace all chunks for a source in one shot (delete-then-insert). Re-indexing a
+   * source must never leave the previous version's text searchable alongside the new one.
+   */
+  async replaceKnowledgeChunks(sourceId, chunks) {
+    await this.deleteChunksBySource(sourceId);
+    const records = (chunks || []).map((c, i) => ({
+      id: `chk_${sourceId}_${i}`,
+      sourceId,
+      sourceTitle: c.sourceTitle || '',
+      sourceType: c.sourceType || 'document',
+      url: c.url || null,
+      text: c.text || '',
+      embedding: Array.isArray(c.embedding) ? c.embedding : null,
+      order: i,
+    })).filter(r => r.text);
+
+    if (!records.length) return 0;
+
+    if (this.useMongo) {
+      try {
+        await this.db.collection('knowledge_chunks').insertMany(records);
+        return records.length;
+      } catch (err) {
+        console.error('[Database Service] MongoDB replaceKnowledgeChunks error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(KNOWLEDGE_CHUNKS_FILE, 'utf-8'));
+      all.push(...records);
+      fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify(all, null, 2), 'utf-8');
+      return records.length;
+    } catch (err) {
+      console.error('[Database Service] Local JSON replaceKnowledgeChunks error:', err.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Total indexed characters across all sources — drives the storage bar in the admin UI.
+   * Wati caps this at 1MB; we don't, but showing the number keeps the owner oriented.
+   */
+  async getKnowledgeStorageUsage() {
+    const sources = await this.getAllKnowledgeSources();
+    const chars = sources.reduce((sum, s) => sum + (s.charCount || 0), 0);
+    return {
+      chars,
+      sources: sources.length,
+      chunks: sources.reduce((sum, s) => sum + (s.chunkCount || 0), 0),
+    };
   }
 
   // --- Support Tickets (after-sales: complaints, returns, tracking escalations) ---

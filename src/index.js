@@ -7,7 +7,11 @@ import followUpService from './services/followup.js';
 import aiService from './services/ai.js';
 import dbService from './services/db.js';
 import knowledgeService from './services/knowledge.js';
+import retrievalService from './services/retrieval.js';
+import textExtractService from './services/textextract.js';
+import embeddingService from './services/embeddings.js';
 import { diagnoseUnanswered } from './services/diagnose.js';
+import multer from 'multer';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -329,6 +333,114 @@ app.post('/api/knowledge/diagnose', requireKnowledgeAuth, async (req, res) => {
   } catch (err) {
     console.error('[Server] POST /api/knowledge/diagnose error:', err.message);
     res.status(500).json({ error: 'Failed to run diagnosis' });
+  }
+});
+
+/**
+ * ── Knowledge SOURCES (documents + websites) ───────────────────────────────
+ * The Q&A endpoints above cover hand-written answers. These cover the other two
+ * knowledge-source types: uploaded files and crawled web pages. Both are extracted
+ * to text, chunked, embedded (when an embedding key is available) and retrieved at
+ * answer time by retrievalService.
+ *
+ * Uploads are held in memory, never written to disk — the extracted text is what we
+ * keep, and a stray uploads/ directory on the server is just an attack surface.
+ */
+const uploadDocument = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (textExtractService.isSupported(file.originalname)) return cb(null, true);
+    cb(new Error(`Unsupported file type. Supported: ${textExtractService.supportedExtensions.join(', ')}`));
+  },
+});
+
+app.get('/api/knowledge/sources', requireKnowledgeAuth, async (req, res) => {
+  try {
+    const [sources, usage] = await Promise.all([
+      dbService.getAllKnowledgeSources(),
+      dbService.getKnowledgeStorageUsage(),
+    ]);
+    res.json({
+      sources,
+      usage,
+      // Surfaced in the UI so the owner knows whether they're getting semantic search
+      // or the keyword-only fallback — otherwise a silent downgrade looks like a bug.
+      embeddings: {
+        enabled: embeddingService.isEnabled(),
+        model: embeddingService.model,
+        lastError: embeddingService.disabledReason,
+      },
+    });
+  } catch (err) {
+    console.error('[Server] GET /api/knowledge/sources error:', err.message);
+    res.status(500).json({ error: 'Failed to load knowledge sources' });
+  }
+});
+
+app.post('/api/knowledge/sources/document', requireKnowledgeAuth, (req, res) => {
+  uploadDocument.single('file')(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ error: uploadErr.message });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    try {
+      const result = await retrievalService.indexDocument(req.file.buffer, req.file.originalname, {
+        language: req.body?.language,
+        title: req.body?.title,
+      });
+      console.log(`[Server] Indexed document "${result.source.title}" — ${result.chunks} chunks, embedded=${result.embedded}`);
+      res.json(result);
+    } catch (err) {
+      // Extraction failures are almost always the owner's file being unreadable
+      // (scanned PDF, empty doc), not a server bug — report it as a 400 with the
+      // actual reason so they can fix it themselves.
+      console.warn('[Server] Document indexing failed:', err.message);
+      res.status(400).json({ error: err.message });
+    }
+  });
+});
+
+app.post('/api/knowledge/sources/website', requireKnowledgeAuth, async (req, res) => {
+  const { url, maxPages, maxDepth, language, title } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'A website URL is required.' });
+  try {
+    const result = await retrievalService.indexWebsite(url, {
+      language,
+      title,
+      maxPages: Number(maxPages) || undefined,
+      maxDepth: Number(maxDepth) >= 0 ? Number(maxDepth) : undefined,
+    });
+    console.log(`[Server] Indexed website "${result.source.title}" — ${result.pagesCrawled} pages, ${result.chunks} chunks`);
+    res.json(result);
+  } catch (err) {
+    console.warn('[Server] Website indexing failed:', err.message);
+    res.status(400).json({ error: err.message, blocked: err.blocked === true });
+  }
+});
+
+app.post('/api/knowledge/sources/:id/toggle', requireKnowledgeAuth, async (req, res) => {
+  try {
+    const all = await dbService.getAllKnowledgeSources();
+    const existing = all.find(s => s.id === req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Source not found' });
+    const saved = await dbService.saveKnowledgeSource({ ...existing, active: !existing.active });
+    retrievalService.invalidate();
+    res.json(saved);
+  } catch (err) {
+    console.error('[Server] POST /api/knowledge/sources/:id/toggle error:', err.message);
+    res.status(500).json({ error: 'Failed to update source' });
+  }
+});
+
+app.delete('/api/knowledge/sources/:id', requireKnowledgeAuth, async (req, res) => {
+  try {
+    await dbService.deleteKnowledgeSource(req.params.id);
+    retrievalService.invalidate();
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('[Server] DELETE /api/knowledge/sources/:id error:', err.message);
+    res.status(500).json({ error: 'Failed to delete source' });
   }
 });
 

@@ -224,6 +224,55 @@ Verified 2026-07-20: a seeded correction changed a live `answerQuery` reply (int
 zero LLM); all API auth paths (wrong/right password, missing token, CRUD, review over 60 real
 leads) pass; the React page renders in headless Chrome with zero console errors.
 
+### Knowledge Sources — documents + website (RAG), added 2026-07-28
+
+Matches the three "Knowledge source" types the client used in Wati (Website · Document ·
+Q&A). Q&A was already the Knowledge Hub above; this adds the other two.
+
+**Flow:** `/admin/knowledge` → **🗂 Knowledge sources** tab → crawl a URL or upload a file.
+Text is extracted, chunked (~900 chars, 150 overlap, split on paragraph then sentence
+boundaries), embedded, and stored. At answer time the top-3 relevant chunks are injected
+into the LLM call.
+
+| File | Purpose |
+|------|---------|
+| `src/services/textextract.js` | PDF/DOCX/TXT/MD/HTML → plain text; chunking. Rejects scanned/image-only PDFs with an actionable message |
+| `src/services/crawler.js` | Same-origin BFS crawl, page/depth capped, 400ms polite delay. `detectBlock()` recognises the Cloudflare/security-plugin signature and returns a fix-the-store message |
+| `src/services/embeddings.js` | OpenAI `text-embedding-3-small` @ 512 dims. Returns `null` (never throws) on failure |
+| `src/services/retrieval.js` | Indexing orchestration + hybrid search + prompt-context builder |
+
+**Retrieval scoring is hybrid.** With embeddings: `0.75×cosine + 0.25×keyword`, threshold
+0.28. Without embeddings it degrades to keyword-only — but that path is deliberately
+stricter (≥2 distinct query terms AND ≥50% of terms matched), because a single incidental
+word match is very noisy on a jersey catalogue: "who won the 1998 world cup" hit crawled
+pages containing "world"/"Cup" until this guard was added.
+
+**Injection point** is `answerQuery` in `ai.js`, right after the Q&A injection and before
+the user message — same rationale as that one (keeps the cacheable system-prompt prefix
+intact, survives token trimming). It runs only on the LLM path, so the deterministic fast
+paths (FAQ, confident Q&A match, size/qty parse, order confirm) stay zero-latency. Costs
+nothing when no sources are indexed.
+
+**Storage:** `knowledge_sources` + `knowledge_chunks` (Mongo or JSON, same dual-branch
+pattern). Deleting a source cascades to its chunks; re-indexing replaces them wholesale so
+stale text is never left searchable. Toggling a source off removes it from retrieval
+immediately without deleting it. No 1MB cap (Wati's limit) — the admin bar is informational.
+
+**Endpoints** (all `requireKnowledgeAuth`): `GET /api/knowledge/sources`,
+`POST /api/knowledge/sources/document` (multipart, 20MB, memory storage — uploads are never
+written to disk), `POST /api/knowledge/sources/website`,
+`POST /api/knowledge/sources/:id/toggle`, `DELETE /api/knowledge/sources/:id`.
+
+**⚠️ Embeddings are currently INACTIVE** — `OPENAI_API_KEY` returns `429 exceeded your
+current quota`, so everything indexes keyword-only. The architecture activates semantic
+search automatically once a funded key (or a local model) is available; existing sources
+must be re-added to pick up vectors. See `theaurax_context.md` for the options.
+
+Verified live 2026-07-28: 11/11 API + retrieval tests pass (auth, upload, unsupported-type
+rejection, crawl of theaurax.in, invalid-URL rejection, relevant-hit and off-topic-miss
+retrieval, toggle on/off, delete cascade), plus a real `answerQuery` run where the bot
+answered a 90-day stitching-warranty question using only facts from an uploaded PDF.
+
 ### Customer Registry
 
 Every customer interaction upserts a record in `src/data/customers.json` (or MongoDB `customers` collection). Use `dbService.getAllCustomers()` to retrieve all contacts for product launch campaigns or bulk messaging.
