@@ -495,6 +495,12 @@ app.get('/admin/*', (req, res) => res.sendFile(path.join(ADMIN_DIST, 'index.html
 
 // Start Server
 const PORT = config.port;
+
+// Settle the storage backend BEFORE accepting traffic. dbService retries MongoDB with
+// backoff; without this await, requests arriving during those retries would be served
+// from JSON and then be invisible once Mongo came up.
+await dbService.ready;
+
 app.listen(PORT, () => {
   console.log(`🚀 Theaurax AI Sales Assistant is listening on port ${PORT}`);
   console.log(`🛠️  Admin console (single app):  GET http://localhost:${PORT}/admin`);

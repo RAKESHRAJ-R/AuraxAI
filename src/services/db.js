@@ -67,27 +67,66 @@ class DatabaseService {
       fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify([]), 'utf-8');
     }
 
-    this.initMongo();
+    // Callers await this before serving traffic, so the store is decided once and
+    // never switches mid-run (a switch would strand whatever was written meanwhile).
+    this.ready = this.initMongo();
   }
 
   async initMongo() {
     const mongoUri = process.env.MONGODB_URI;
-    if (mongoUri) {
+    if (!mongoUri) {
+      console.log('[Database Service] No MONGODB_URI found. Using local JSON files for storage.');
+      return;
+    }
+
+    // A mongodb+srv:// URI needs a DNS SRV lookup, which Node resolves against the first
+    // configured nameserver — one SERVFAIL there fails the whole connect. That blip is
+    // transient, but the JSON fallback below is permanent for the life of the process,
+    // so a single unlucky moment at boot used to cost an entire run's writes. Retry hard.
+    const ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
       try {
         // Dynamically import mongodb to avoid crash if not installed
         const { MongoClient } = await import('mongodb');
-        this.mongoClient = new MongoClient(mongoUri);
+        this.mongoClient = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 15000 });
         await this.mongoClient.connect();
         this.db = this.mongoClient.db('theaurax_assistant');
         this.useMongo = true;
-        console.log('[Database Service] Successfully connected to MongoDB.');
+        const suffix = attempt > 1 ? ` (on attempt ${attempt}/${ATTEMPTS})` : '';
+        console.log(`[Database Service] Successfully connected to MongoDB${suffix}.`);
+        return;
       } catch (err) {
-        console.warn('[Database Service] Failed to connect to MongoDB, falling back to local JSON files:', err.message);
-        this.useMongo = false;
+        await this.mongoClient?.close().catch(() => {});
+        this.mongoClient = null;
+        console.warn(`[Database Service] MongoDB connect attempt ${attempt}/${ATTEMPTS} failed: ${err.message}`);
+        if (attempt < ATTEMPTS) {
+          const waitMs = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
       }
-    } else {
-      console.log('[Database Service] No MONGODB_URI found. Using local JSON files for storage.');
     }
+
+    this.useMongo = false;
+    this.warnJsonFallback();
+  }
+
+  // Falling back to JSON is not a graceful degradation — it silently forks the data into
+  // a second store that MongoDB will never see. Make that impossible to miss.
+  warnJsonFallback() {
+    const banner =
+      '\n' +
+      '='.repeat(72) + '\n' +
+      '  ⚠️  RUNNING ON LOCAL JSON FILES — MongoDB is NOT connected.\n' +
+      '  Everything written this run stays in src/data/*.json and will NOT be\n' +
+      '  in MongoDB. Fix the connection and re-run `npm run migrate-mongo`\n' +
+      '  to fold this run\'s data back in, or the two stores stay diverged.\n' +
+      '='.repeat(72) + '\n';
+    console.warn(banner);
+    // Repeat every 10 min so a long-running process can't quietly stay in this state.
+    const reminder = setInterval(() => {
+      console.warn('[Database Service] ⚠️  Still on JSON fallback — MongoDB never connected this run.');
+    }, 10 * 60 * 1000);
+    reminder.unref?.();
   }
 
   // --- Session Methods ---
@@ -643,7 +682,7 @@ class DatabaseService {
   // --- Support Tickets (after-sales: complaints, returns, tracking escalations) ---
   // Each ticket: { id, userId, name, phone, email, orderId, issueType, description,
   //   hasPhoto, status:'open'|'resolved', createdAt, updatedAt }. Created by the support
-  //   agent's create_support_ticket tool; the owner is also alerted live via WhatsApp/Telegram.
+  //   agent's create_support_ticket tool; the owner is also alerted live via WhatsApp.
 
   async saveTicket(ticketData) {
     const now = new Date().toISOString();

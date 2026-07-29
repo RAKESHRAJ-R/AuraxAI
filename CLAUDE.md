@@ -17,9 +17,8 @@ npm run test-agent
 # Run a single ad-hoc query through the AI agent
 node src/test_agent.js "Do you have Barcelona jerseys?"
 
-# Run WhatsApp/Telegram test scripts
+# Run WhatsApp test script
 npm run test-whatsapp
-npm run test-telegram
 
 # Semi-automated conversation review — flags likely-problem conversations
 # (fallback/error message appeared, customer repeated same question, abandoned mid-purchase)
@@ -51,13 +50,13 @@ WOOCOMMERCE_CONSUMER_SECRET=
 WHATSAPP_WEB_ENABLED=true
 OWNER_WHATSAPP_NUMBER=     # Owner's WhatsApp for escalation alerts
 BULK_ORDER_THRESHOLD=10    # Qty threshold for bulk order escalation (default)
-TELEGRAM_BOT_TOKEN=        # Optional: owner alerts via Telegram
-TELEGRAM_CHAT_ID=
 GOOGLE_SHEETS_ID=          # Optional: for lead logging
 MONGODB_URI=               # Optional: MongoDB for persistent sessions (JSON fallback used if absent)
 BASE_URL=http://localhost:3000
 ALLOWED_TEST_NUMBERS=      # Comma-separated numbers for safe-mode (only these get replies)
-KNOWLEDGE_HUB_PASSWORD=    # Optional: shared password for the /knowledge-hub.html admin page (unset = hub disabled)
+AURAX_TEAM_PASSWORD=       # Shared admin-console password for the Aurax team
+TESTING_TEAM_PASSWORD=     # Shared admin-console password for the testing team
+KNOWLEDGE_HUB_PASSWORD=    # Legacy single password — ignored once AURAX_TEAM_PASSWORD is set
 PORT=3000
 ```
 
@@ -75,7 +74,7 @@ This is a WhatsApp AI sales bot for **Theaurax.in** (football jerseys). It runs 
 4. If not an FAQ → `ai.js` manages a multi-turn agentic loop (up to 5 iterations) with **triple fallback chain**: Groq → OpenAI → Gemini
 5. The AI calls tools (`search_products`, `update_cart`, `set_shipping_address`, `confirm_order`, `escalate_to_human`) which are executed server-side
 6. On order confirmation, `invoice.js` generates a branded PDF proforma invoice served at `/invoices/`
-7. Bulk orders (≥ threshold qty) trigger `sendEscalationAlert()` which notifies the owner via WhatsApp + Telegram
+7. Bulk orders (≥ threshold qty) trigger `sendEscalationAlert()` which notifies the owner via WhatsApp
 8. First-contact leads are logged to Google Sheets via `sheets.js`
 9. Session state and leads are persisted to MongoDB or JSON files in `src/data/`
 10. On quota exhaustion, the query is saved to a **persistent retry queue** (JSON/MongoDB) and retried once the quota resets
@@ -90,7 +89,6 @@ This is a WhatsApp AI sales bot for **Theaurax.in** (football jerseys). It runs 
 | `src/services/db.js` | Session + lead + retry queue persistence (MongoDB or JSON files) |
 | `src/services/invoice.js` | PDFKit-based proforma invoice generation |
 | `src/services/sheets.js` | Google Sheets lead logging (first-contact only) |
-| `src/services/telegram.js` | Telegram owner alert notifications |
 | `src/services/faq.js` | FAQ search from `src/data/faq.json` |
 | `src/services/followup.js` | Cold-lead re-engagement (every 30 min, max 2 follow-ups) |
 | `src/config/config.js` | Centralised config with env-var fallbacks |
@@ -191,7 +189,7 @@ runtime LLM/quota failures, which are infra, not teachable) and materialises eac
 **inactive** knowledge draft (`source:'auto', active:false, empty answer, hits` counter,
 auto keywords, guessed language) via `dbService.saveUnansweredDraft()` (dedup by normalized
 question; bumps `hits` on repeat). Because `active:false`, the matcher never serves a blank
-draft. Runs 20s after boot then every 30 min (`alert:true` → owner WhatsApp+Telegram ping on
+draft. Runs 20s after boot then every 30 min (`alert:true` → owner WhatsApp ping on
 NEW gaps via `sendKnowledgeGapAlert`), and on-demand when the Teach tab opens (`alert:false`).
 The sidebar shows a **pending-count badge**. Answering a draft flips it to a live `manual`
 entry; **Dismiss** is a permanent tombstone (`dismissed:true`) so the scan never re-queues it

@@ -8,7 +8,6 @@ import woocommerceService from './woocommerce.js';
 import dbService from './db.js';
 import { generateInvoicePDF } from './invoice.js';
 import whatsappWebBot from './whatsapp-web-bot.js';
-import telegramService from './telegram.js';
 import sheetsService from './sheets.js';
 
 class AIService {
@@ -531,19 +530,12 @@ ${sessionContext}`;
     const reason = details.reason || 'Wholesale / Bulk Order';
 
     const mdAlertMsg = `🚨 *New Wholesale Lead Alert!* 🚨\n\n*Customer Details:*\n👤 Name: ${name}\n📱 Phone: ${phone}\n📍 Address: ${address}\n\n*Request Reason:*\n${reason}\n\n*Latest Message:*\n"${userQuery}"\n\nPlease step in to negotiate!`;
-    const htmlAlertMsg = `🚨 <b>New Wholesale Lead Alert!</b><br><br><b>Customer Details:</b><br>👤 Name: ${name}<br>📱 Phone: ${phone}<br>📍 Address: ${address}<br><br><b>Reason:</b> ${reason}<br><b>Message:</b> "${userQuery}"`;
 
     const ownerNumber = config.owner?.whatsappNumber;
     if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
       const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
       whatsappWebBot.sendText(cleanOwner, mdAlertMsg).catch(err => {
         console.error('[AI Service] Failed to send WhatsApp owner escalation alert:', err.message);
-      });
-    }
-
-    if (config.telegram?.botToken && config.telegram?.chatId) {
-      telegramService.sendAlert(htmlAlertMsg).catch(err => {
-        console.error('[AI Service] Failed to send Telegram owner escalation alert:', err.message);
       });
     }
   }
@@ -553,18 +545,12 @@ ${sessionContext}`;
   sendSupportTicketAlert(senderId, ticket, session) {
     const phone = ticket.phone || senderId.toString().replace(/[^0-9]/g, '');
     const md = `🎫 *New Support Ticket* — ${ticket.id}\n\n👤 Name: ${ticket.name}\n📱 Phone: ${phone}\n${ticket.email ? `✉️ Email: ${ticket.email}\n` : ''}🧾 Order ID: ${ticket.orderId || 'Not provided'}\n🏷️ Issue: ${ticket.issueType}\n📷 Photo received: ${ticket.hasPhoto ? 'Yes' : 'No'}\n\n*Details:*\n${ticket.description || '(none)'}\n\nPlease follow up with the customer.`;
-    const html = `🎫 <b>New Support Ticket</b> — ${ticket.id}<br><br>👤 Name: ${ticket.name}<br>📱 Phone: ${phone}<br>${ticket.email ? `✉️ Email: ${ticket.email}<br>` : ''}🧾 Order ID: ${ticket.orderId || 'Not provided'}<br>🏷️ Issue: ${ticket.issueType}<br>📷 Photo: ${ticket.hasPhoto ? 'Yes' : 'No'}<br><br><b>Details:</b> ${ticket.description || '(none)'}`;
 
     const ownerNumber = config.owner?.whatsappNumber;
     if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
       const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
       whatsappWebBot.sendText(cleanOwner, md).catch(err => {
         console.error('[AI Service] Failed to send WhatsApp support ticket alert:', err.message);
-      });
-    }
-    if (config.telegram?.botToken && config.telegram?.chatId) {
-      telegramService.sendAlert(html).catch(err => {
-        console.error('[AI Service] Failed to send Telegram support ticket alert:', err.message);
       });
     }
   }

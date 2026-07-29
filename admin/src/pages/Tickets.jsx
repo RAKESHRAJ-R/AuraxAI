@@ -67,7 +67,7 @@ export default function Tickets() {
   return (
     <div className="fade">
       <div className="section-head">
-        <p>After-sales support tickets raised by Aura (complaints, returns, tracking, escalations). Owner is also alerted live on WhatsApp &amp; Telegram. Auto-refreshes.</p>
+        <p>After-sales support tickets raised by Aura (complaints, returns, tracking, escalations). Owner is also alerted live on WhatsApp. Auto-refreshes.</p>
         <span className="wa-status on" style={{ margin: 0 }}><span className="dot" /> Live</span>
       </div>
 

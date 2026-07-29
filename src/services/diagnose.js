@@ -2,7 +2,6 @@ import dbService from './db.js';
 import knowledgeService from './knowledge.js';
 import config from '../config/config.js';
 import whatsappWebBot from './whatsapp-web-bot.js';
-import telegramService from './telegram.js';
 
 /**
  * Unanswered-question diagnosis.
@@ -11,7 +10,7 @@ import telegramService from './telegram.js';
  * `npm run review` / the Knowledge Hub Review tab), and for each genuine gap it
  * materialises an INACTIVE "needs answer" knowledge draft (question + auto keywords,
  * empty answer) that the owner can fill in from the Teach tab. When brand-new gaps
- * are found, it pings the owner (WhatsApp + Telegram) so they can teach a reply
+ * are found, it pings the owner on WhatsApp so they can teach a reply
  * without waiting to open the dashboard.
  *
  * Drafts are active:false, so the matcher never serves them to a customer until the
@@ -105,19 +104,12 @@ function sendKnowledgeGapAlert(created, pendingCount) {
   const bullets = created.slice(0, 5).map((c) => `• "${c.question}"`).join('\n');
   const more = created.length > 5 ? `\n…and ${created.length - 5} more` : '';
   const md = `🧠 *Bot needs your help!*\n\nThe bot couldn't answer ${created.length} new question(s):\n${bullets}${more}\n\nTeach the right reply here → ${base}/admin/knowledge\n(${pendingCount} question${pendingCount === 1 ? '' : 's'} waiting in total)`;
-  const htmlBullets = created.slice(0, 5).map((c) => `• "${c.question}"`).join('<br>');
-  const html = `🧠 <b>Bot needs your help!</b><br><br>The bot couldn't answer ${created.length} new question(s):<br>${htmlBullets}<br><br>Teach the reply → ${base}/admin/knowledge`;
 
   const ownerNumber = config.owner?.whatsappNumber;
   if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
     const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
     whatsappWebBot.sendText(cleanOwner, md).catch((err) =>
       console.error('[Diagnose] Failed to send WhatsApp knowledge-gap alert:', err.message)
-    );
-  }
-  if (config.telegram?.botToken && config.telegram?.chatId) {
-    telegramService.sendAlert(html).catch((err) =>
-      console.error('[Diagnose] Failed to send Telegram knowledge-gap alert:', err.message)
     );
   }
 }
