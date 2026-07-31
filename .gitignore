@@ -15,3 +15,5 @@ npm-debug.log
 yarn-error.log
 .DS_Store
 src/data/knowledge.json
+# Cached ONNX embedding model (~30MB, re-downloaded from the HF hub on first use)
+.models/

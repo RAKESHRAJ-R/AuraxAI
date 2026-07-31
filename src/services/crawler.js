@@ -47,6 +47,12 @@ class CrawlerService {
       return `The site refused the request (HTTP ${status}). A firewall, Cloudflare rule, or security plugin is blocking this server — whitelist it and try again.`;
     }
     if (status === 503) {
+      // The CMP "Coming Soon & Maintenance" plugin serves its splash page as a 503 to
+      // every logged-out visitor, so EVERY url on the site is uncrawlable while it's on.
+      // Naming the plugin matters: the owner's fix is a toggle in wp-admin, not a firewall rule.
+      if (/cmp-coming-soon-maintenance|coming.soon|under.maintenance/i.test(text)) {
+        return 'theaurax.in is currently in maintenance mode — the "CMP – Coming Soon & Maintenance" WordPress plugin is serving a splash page (HTTP 503) to every visitor, so there is no real site content to crawl. Turn maintenance mode off in wp-admin → CMP, or add this server\'s IP to the plugin\'s whitelist, then crawl again.';
+      }
       return 'The site returned HTTP 503 (unavailable). This is usually a Cloudflare challenge page or WordPress maintenance mode blocking automated requests.';
     }
     if (status === 429) {

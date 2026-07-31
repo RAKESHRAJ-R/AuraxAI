@@ -256,13 +256,17 @@ function SourcesTab() {
 
   return (
     <div>
-      {data && !embeddings.enabled && (
+      {/* The local model needs no key, so `enabled` is true by default — a genuine outage
+          shows up as lastError instead. Keying the warning off `!enabled` alone would mean
+          a failed model load degrades to keyword-only with nothing said. */}
+      {data && (!embeddings.enabled || embeddings.lastError) && (
         <div className="card pad fade" style={{ marginBottom: 16 }}>
           <strong>⚠️ Keyword-only matching</strong>
           <p className="hint" style={{ margin: '6px 0 0' }}>
-            No embedding key is configured, so documents are searched by keyword instead of meaning.
-            The bot still finds exact terms, but will miss re-worded questions. Set <code>OPENAI_API_KEY</code> to
-            enable semantic search, then re-add any existing sources.
+            Semantic search is unavailable, so documents are matched by keyword instead of meaning.
+            The bot still finds exact terms, but will miss re-worded questions.
+            {embeddings.lastError && <> Reason: <code>{embeddings.lastError}</code></>}
+            {' '}Once it is working again, re-add any sources indexed in the meantime so they pick up vectors.
           </p>
         </div>
       )}
@@ -274,7 +278,10 @@ function SourcesTab() {
         </p>
         <input
           value={url}
-          placeholder="https://theaurax.in/shipping-policy"
+          // Prefixed "e.g." on purpose: a bare URL placeholder reads as a filled-in
+          // value, so after a crawl clears the field people press Crawl again and get
+          // the "Enter a website URL" error with no idea why.
+          placeholder="e.g. https://theaurax.in/shipping-policy"
           onChange={(e) => setUrl(e.target.value)}
         />
         <div className="grid-2" style={{ marginTop: 10 }}>

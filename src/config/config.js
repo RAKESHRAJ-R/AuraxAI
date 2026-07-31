@@ -36,6 +36,20 @@ const config = {
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_openai')),
   },
+  // Knowledge-source semantic search. `local` (default) runs all-MiniLM-L6-v2 on CPU via
+  // @huggingface/transformers — no key, no quota, no per-call cost, and nothing leaves the
+  // server. `openai` uses text-embedding-3-small and needs a funded OPENAI_API_KEY.
+  // Switching providers changes the vector width, so existing sources must be re-indexed.
+  embeddings: {
+    provider: (process.env.EMBEDDING_PROVIDER || 'local').toLowerCase(),
+    // Where the ONNX model is cached. Must be writable by the user the app runs as —
+    // the library's default lives inside node_modules, which is root-owned on a
+    // `npm ci` deploy while the service runs as an unprivileged user.
+    cacheDir: process.env.EMBEDDING_CACHE_DIR || './.models',
+    // Preload the model at boot so the first customer question doesn't pay the ~1-4s
+    // load. Skipped automatically when no knowledge sources are indexed.
+    warmup: process.env.EMBEDDING_WARMUP !== 'false',
+  },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
     apiKeys: (process.env.GEMINI_API_KEY || '').split(',')

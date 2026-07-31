@@ -368,7 +368,9 @@ app.get('/api/knowledge/sources', requireKnowledgeAuth, async (req, res) => {
       // or the keyword-only fallback — otherwise a silent downgrade looks like a bug.
       embeddings: {
         enabled: embeddingService.isEnabled(),
+        provider: embeddingService.provider,
         model: embeddingService.model,
+        dimensions: embeddingService.dimensions,
         lastError: embeddingService.disabledReason,
       },
     });
@@ -525,6 +527,19 @@ app.listen(PORT, () => {
       .catch(err => console.error('[Product Sync] Failed (keeping last cache):', err.message));
   setTimeout(runProductSync, 8000);
   setInterval(runProductSync, PRODUCT_SYNC_INTERVAL_MS);
+
+  // Preload the local embedding model so the first customer question after a restart
+  // doesn't pay the model-load latency inside its own reply. Only worth doing when
+  // there is something indexed to search — with no knowledge sources the retrieval
+  // path never embeds anything, and loading the model would just cost ~130 MB of RSS
+  // for nothing. Delayed past the WhatsApp/Chromium startup spike.
+  if (config.embeddings?.warmup) {
+    setTimeout(() => {
+      retrievalService.hasSources()
+        .then(has => has && embeddingService.warmup())
+        .catch(err => console.warn('[Embeddings] Warmup skipped:', err.message));
+    }, 25000);
+  }
 
   // Start cold lead follow-up scheduler
   followUpService.start();

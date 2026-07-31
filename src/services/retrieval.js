@@ -21,7 +21,23 @@ import embeddingService from './embeddings.js';
  */
 
 const TOP_K = 3;                  // chunks injected into the prompt — more than this crowds it out
-const MIN_SCORE = 0.28;           // below this the "match" is noise; inject nothing
+// Below this the "match" is noise; inject nothing.
+//
+// Retuned 0.28 → 0.33 on 2026-07-30 with the switch to local all-MiniLM-L6-v2. 0.28 was
+// tuned against OpenAI text-embedding-3-small, whose cosine range is compressed; MiniLM
+// spreads wider, so the old value sat only 0.03 above the noise floor. Calibrated against
+// a clean 5-chunk policy corpus (the same one `npm run test-embeddings` builds): on-topic
+// queries scored 0.407–0.696, off-topic 0.050–0.248, so anything in (0.248, 0.407]
+// separates them — 0.33 is the midpoint and leaves ~0.08 of margin on both sides.
+// Erring high is deliberate: a missed retrieval just means the LLM answers as it normally
+// would, while a false positive injects misleading text into a customer-facing prompt.
+//
+// ⚠️ A threshold cannot rescue a corpus that doesn't contain the answer. On the actual
+// theaurax.in crawl the two bands OVERLAP ("who won the 1998 world cup" scores 0.367,
+// above the genuine "what sizes do you have" at 0.231) because that crawl indexed product
+// grids, filter sidebars and customer testimonials — no shipping/returns/sizing prose.
+// The fix for that is re-indexing real policy content, not moving this number.
+const MIN_SCORE = 0.33;
 const EMBED_WEIGHT = 0.75;
 const KEYWORD_WEIGHT = 0.25;
 const MAX_INJECT_CHARS = 2400;    // hard ceiling on retrieved context per call
@@ -106,6 +122,12 @@ class RetrievalService {
     // compare against — with keyword-only indexing this stays completely free.
     const anyEmbedded = chunks.some((c) => Array.isArray(c.embedding));
     const queryVector = anyEmbedded ? await embeddingService.embedOne(query) : null;
+    // Vectors from different providers aren't comparable, and the dimensions differ
+    // (OpenAI 512, local MiniLM 384). Without this check a provider switch would score
+    // every stale chunk at cosine 0 — which is WORSE than keyword-only, because the
+    // chunk still looks embedded and so skips the keyword branch entirely. Any chunk
+    // whose width doesn't match the live query vector is treated as un-embedded.
+    const queryDims = queryVector?.length || 0;
 
     // Keyword-only mode is far noisier than semantic mode: a single incidental word
     // match ("world" and "cup" appear all over a jersey catalogue) would otherwise clear
@@ -114,11 +136,16 @@ class RetrievalService {
     const keywordOnlyRatio = 0.5;
     const keywordOnlyMinHits = 2;
 
+    let dimMismatches = 0;
     const scored = [];
     for (const chunk of chunks) {
       const keyword = this.keywordScore(queryTokens, chunk.text);
+      const usableVector = queryVector
+        && Array.isArray(chunk.embedding)
+        && chunk.embedding.length === queryDims;
+      if (queryVector && Array.isArray(chunk.embedding) && !usableVector) dimMismatches++;
       let score;
-      if (queryVector && Array.isArray(chunk.embedding)) {
+      if (usableVector) {
         const cosine = embeddingService.cosine(queryVector, chunk.embedding);
         score = (EMBED_WEIGHT * cosine) + (KEYWORD_WEIGHT * keyword.ratio);
       } else {
@@ -139,6 +166,14 @@ class RetrievalService {
           score,
         });
       }
+    }
+
+    if (dimMismatches) {
+      console.warn(
+        `[Retrieval Service] ${dimMismatches} chunk(s) were embedded with a different model ` +
+        `(${embeddingService.model} is ${queryDims}d now) and scored keyword-only. ` +
+        'Re-index those sources to restore semantic search on them.'
+      );
     }
 
     scored.sort((a, b) => b.score - a.score);
@@ -201,6 +236,9 @@ class RetrievalService {
       url: p.url || source.url,
       text: p.text,
       embedding: vectors ? vectors[i] : null,
+      // Stamped so a later provider/model change is diagnosable rather than a mystery
+      // drop in retrieval quality — search() warns on any width that no longer matches.
+      embeddingModel: vectors ? embeddingService.model : null,
     }));
 
     const saved = await dbService.saveKnowledgeSource({
@@ -208,6 +246,7 @@ class RetrievalService {
       chunkCount: chunkRecords.length,
       charCount: texts.reduce((n, t) => n + t.length, 0),
       embedded: Boolean(vectors),
+      embeddingModel: vectors ? embeddingService.model : null,
       status: 'ready',
     });
     await dbService.replaceKnowledgeChunks(saved.id, chunkRecords);
@@ -217,9 +256,9 @@ class RetrievalService {
       source: saved,
       chunks: chunkRecords.length,
       embedded: Boolean(vectors),
-      embeddingNote: vectors ? null : (embeddingService.isEnabled()
-        ? 'Embedding failed — indexed with keyword search only.'
-        : 'No OPENAI_API_KEY set — indexed with keyword search only.'),
+      embeddingNote: vectors ? null : (embeddingService.disabledReason
+        ? `Embedding unavailable (${embeddingService.disabledReason}) — indexed with keyword search only.`
+        : 'Embedding failed — indexed with keyword search only.'),
     };
   }
 

@@ -10,13 +10,18 @@
     "test-agent": "node src/test_agent.js",
     "test-whatsapp": "node src/test_whatsapp.js",
     "test-search": "node test_product_search.js",
+    "test-embeddings": "node src/test_embeddings.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",
     "migrate-mongo": "node src/migrate_to_mongo.js",
     "build-admin": "npm --prefix admin install && npm --prefix admin run build"
   },
+  "overrides": {
+    "sharp": "^0.35.3"
+  },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@huggingface/transformers": "^3.8.1",
     "async": "^3.2.6",
     "axios": "^1.7.9",
     "cheerio": "^1.2.0",

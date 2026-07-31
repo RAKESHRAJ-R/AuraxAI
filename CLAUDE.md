@@ -236,14 +236,15 @@ into the LLM call.
 |------|---------|
 | `src/services/textextract.js` | PDF/DOCX/TXT/MD/HTML → plain text; chunking. Rejects scanned/image-only PDFs with an actionable message |
 | `src/services/crawler.js` | Same-origin BFS crawl, page/depth capped, 400ms polite delay. `detectBlock()` recognises the Cloudflare/security-plugin signature and returns a fix-the-store message |
-| `src/services/embeddings.js` | OpenAI `text-embedding-3-small` @ 512 dims. Returns `null` (never throws) on failure |
+| `src/services/embeddings.js` | Two providers: **`local` (default)** = all-MiniLM-L6-v2 @ 384 dims on CPU, or `openai` = `text-embedding-3-small` @ 512 dims. Returns `null` (never throws) on failure |
 | `src/services/retrieval.js` | Indexing orchestration + hybrid search + prompt-context builder |
 
 **Retrieval scoring is hybrid.** With embeddings: `0.75×cosine + 0.25×keyword`, threshold
-0.28. Without embeddings it degrades to keyword-only — but that path is deliberately
-stricter (≥2 distinct query terms AND ≥50% of terms matched), because a single incidental
-word match is very noisy on a jersey catalogue: "who won the 1998 world cup" hit crawled
-pages containing "world"/"Cup" until this guard was added.
+**0.33** (retuned from 0.28 on 2026-07-30 for the local model — see below). Without
+embeddings it degrades to keyword-only — but that path is deliberately stricter (≥2
+distinct query terms AND ≥50% of terms matched), because a single incidental word match is
+very noisy on a jersey catalogue: "who won the 1998 world cup" hit crawled pages containing
+"world"/"Cup" until this guard was added.
 
 **Injection point** is `answerQuery` in `ai.js`, right after the Q&A injection and before
 the user message — same rationale as that one (keeps the cacheable system-prompt prefix
@@ -252,24 +253,117 @@ paths (FAQ, confident Q&A match, size/qty parse, order confirm) stay zero-latenc
 nothing when no sources are indexed.
 
 **Storage:** `knowledge_sources` + `knowledge_chunks` (Mongo or JSON, same dual-branch
-pattern). Deleting a source cascades to its chunks; re-indexing replaces them wholesale so
-stale text is never left searchable. Toggling a source off removes it from retrieval
-immediately without deleting it. No 1MB cap (Wati's limit) — the admin bar is informational.
+pattern). Deleting a source cascades to its chunks. Toggling a source off removes it from
+retrieval immediately without deleting it. No 1MB cap (Wati's limit) — the admin bar is
+informational.
+
+⚠️ **Re-crawling the same URL creates a DUPLICATE source, it does not replace the old one**
+(corrected 2026-07-29 — this section previously claimed re-indexing "replaces wholesale",
+which is only true *within* one source id). `retrieval.persist()` calls
+`dbService.saveKnowledgeSource()` with no `id`, so `db.js` mints a fresh
+`src_<ts>_<rand>` every run; `replaceKnowledgeChunks(saved.id, …)` then only replaces the
+chunks under that NEW id. The old source and its chunks stay live and both get searched, so
+the retriever sees near-identical duplicate chunks. **Delete the existing source before
+re-crawling a URL you've already indexed.** (A real fix would be to match an existing
+`type:'website'` source by `url` and reuse its id.)
 
 **Endpoints** (all `requireKnowledgeAuth`): `GET /api/knowledge/sources`,
 `POST /api/knowledge/sources/document` (multipart, 20MB, memory storage — uploads are never
 written to disk), `POST /api/knowledge/sources/website`,
 `POST /api/knowledge/sources/:id/toggle`, `DELETE /api/knowledge/sources/:id`.
 
-**⚠️ Embeddings are currently INACTIVE** — `OPENAI_API_KEY` returns `429 exceeded your
-current quota`, so everything indexes keyword-only. The architecture activates semantic
-search automatically once a funded key (or a local model) is available; existing sources
-must be re-added to pick up vectors. See `theaurax_context.md` for the options.
+### Embeddings — local model by default (switched 2026-07-30)
+
+Semantic search previously depended on `OPENAI_API_KEY`, which returns `429 exceeded your
+current quota`, so **everything indexed keyword-only**. Replaced with a local CPU model:
+
+| | value |
+|---|---|
+| Library | `@huggingface/transformers` (the maintained successor to `@xenova/transformers`) |
+| Model | `Xenova/all-MiniLM-L6-v2`, int8 ONNX (`dtype: 'q8'`) |
+| Dimensions | 384 (was 512 on OpenAI) |
+| Cost | **zero** — no key, no quota, no per-call charge, no data leaves the server |
+| Footprint | ~130 MB RSS once loaded; ~22 MB model cached in `.models/` (gitignored) |
+| Speed (measured) | model load 3.9s cold / 0.2s warm · **17 ms per 900-char chunk** · ~5 ms per query |
+
+Select with `EMBEDDING_PROVIDER=local|openai`. `openai` still works for anyone with a
+funded key and falls back to `local` if the key is missing. `EMBEDDING_CACHE_DIR` pins the
+model cache (the library's default lives inside `node_modules`, which is root-owned on a
+`npm ci` deploy while the service runs unprivileged). `EMBEDDING_WARMUP` preloads the model
+~25s after boot so the first customer question doesn't pay the load — automatically skipped
+when no knowledge sources are indexed, so an unused feature costs nothing.
+
+**Model loading is a lazy promise-deduped singleton** — concurrent requests share one load
+instead of each starting their own 130 MB copy.
+
+**Cross-provider safety:** chunks are stamped with `embeddingModel`, and `search()` treats
+any chunk whose vector width ≠ the live query width as un-embedded, routing it to the
+keyword branch and logging a re-index warning. Without this a provider switch would score
+every stale chunk at cosine 0 — which is *worse* than keyword-only, because the chunk still
+looks embedded and so skips the keyword branch entirely.
+
+**Threshold recalibration (why 0.28 → 0.33).** 0.28 was tuned for OpenAI
+`text-embedding-3-small`, whose cosine range is compressed; MiniLM spreads wider, leaving
+0.28 only ~0.03 above the noise floor. Measured against a clean 5-chunk policy corpus:
+on-topic queries **0.407–0.696**, off-topic **0.050–0.248** → any threshold in
+(0.248, 0.407] separates them; 0.33 is the midpoint. Erring high is deliberate: a missed
+retrieval just means the LLM answers as it normally would, whereas a false positive injects
+misleading text into a customer-facing prompt.
+
+⚠️ **A threshold cannot rescue a corpus that lacks the answer.** Re-run against the actual
+2026-07-29 theaurax.in crawl and the two bands **overlap**: "who won the 1998 world cup"
+scores **0.367**, *above* the genuine "what sizes do you have" at **0.231**. That crawl
+indexed product grids, filter sidebars and customer testimonials — no shipping/returns/
+sizing prose (see the crawl-coverage note above). Fixing it means re-indexing real policy
+content, not moving the number.
+
+**Existing sources must be re-indexed to gain vectors** — the 149 chunks from the
+2026-07-29 crawl have `embedding: null` and (separately) exist only in the JSON files, not
+in Mongo.
+
+`npm run test-embeddings` (`src/test_embeddings.js`) is the regression suite: 28 checks
+covering provider selection, vector shape/normalisation, on-topic retrieval, off-topic
+rejection, prompt-context construction, dimension-mismatch handling, and the keyword-only
+degradation path. It builds its own clean corpus in memory, so it tests the code rather
+than whatever happens to be indexed — no DB, no WhatsApp session, no network beyond the
+one-time model download.
+
+**Dependency note:** `@huggingface/transformers` hard-depends on `sharp` for image
+pipelines we never use, and `sharp <0.35.0` inherits four high-severity libvips CVEs
+(GHSA-f88m-g3jw-g9cj). `package.json` carries an `overrides` entry forcing `sharp ^0.35.3`.
+Net new vulnerabilities from this feature: **zero**.
 
 Verified live 2026-07-28: 11/11 API + retrieval tests pass (auth, upload, unsupported-type
 rejection, crawl of theaurax.in, invalid-URL rejection, relevant-hit and off-topic-miss
 retrieval, toggle on/off, delete cascade), plus a real `answerQuery` run where the bot
 answered a 90-day stitching-warranty question using only facts from an uploaded PDF.
+
+**First real website crawl — 2026-07-29 23:29.** `https://theaurax.in` at maxPages 15 /
+depth 2 → 15 pages, **149 chunks, 118.1 KB, 0 embeddings** (keyword-only, per the OpenAI
+quota note above). ⚠️ **Coverage was poor and it's a BFS-ordering problem, not a bug:** the
+15-page budget was consumed almost entirely by `/product-category/*` (alphabetical — 5-slv,
+ac-milan, argentina, arsenal, ball, bayern-munich, brazil, chelsea, clrfs, clrhf,
+fc-barcelona) plus `/wishlist` and `/my-account`. It never reached shipping-policy, returns,
+or about — i.e. the actual policy prose the feature exists to index. Category pages are
+product grids and the account pages are empty logged-out shells, so most of those 149 chunks
+are low-value. Raising maxPages alone won't fix the ratio. **Proposed but NOT yet
+implemented:** a crawler skip-list for `/my-account`, `/wishlist`, `/cart`, `/checkout` and
+`?add-to-cart=`-style URLs, plus deprioritising `/product-category/` so the budget goes to
+content pages.
+
+**Maintenance-mode 503 (hit + resolved 2026-07-29).** Every URL on theaurax.in — `/`,
+`/shop`, `/robots.txt`, `/wp-sitemap.xml`, `www.` — returned an identical 5KB HTTP **503**
+regardless of User-Agent. Not Cloudflare: it was the **"CMP – Coming Soon & Maintenance"**
+WordPress plugin serving its splash page ("⚠️ Stock Update & Maintenance ⚠️") with
+`retry-after: 86400` via Hostinger/LiteSpeed. `crawler.detectBlock()` now sniffs the CMP
+signature in the 503 body and names the plugin + the wp-admin fix, instead of the old vague
+"usually a Cloudflare challenge page or WordPress maintenance mode". The store owner turned
+maintenance mode off the same evening and the crawl then succeeded.
+
+**Admin UX fix 2026-07-29:** the Website URL input's placeholder is now `e.g. https://…`
+(`admin/src/pages/Knowledge.jsx`). `addWebsite()` clears the field on success, and a bare-URL
+placeholder reads as a filled-in value — so people pressed **Crawl & index** again and got
+"Enter a website URL." with no idea why. Admin app rebuilt.
 
 ### Customer Registry
 
