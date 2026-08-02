@@ -2,39 +2,67 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository Layout
+
+Restructured into a monorepo on 2026-08-02 so the admin console could be deployed to Vercel
+independently of the bot:
+
+```
+TheAurax/
+├── package.json          Thin orchestrator — pass-through scripts only, no dependencies
+├── apps/
+│   ├── bot/              The WhatsApp bot + Express API (everything that was at the root)
+│   │   ├── src/          ← ALL `src/...` paths elsewhere in this file are relative to here
+│   │   ├── public/       Served by express.static; invoice PDFs land in public/invoices
+│   │   ├── .env          Bot config. Loaded from apps/bot/.env, NOT the repo root
+│   │   └── package.json  The real dependency manifest — `npm ci` runs HERE, not at the root
+│   └── admin/            React admin console (Vite SPA)
+│       ├── src/
+│       ├── vercel.json   Vercel build + SPA rewrite + security headers
+│       ├── dist/         Vercel build (base '/')       — gitignored, Vercel builds it
+│       └── dist-express/ Self-hosted build (base '/admin/') — COMMITTED, Express serves it
+├── scripts/              Ops scripts (Mongo backup)
+└── CLAUDE.md, DEPLOY.md, theaurax_context.md, reports/
+```
+
+**Two things bite if forgotten:**
+- The bot resolves `public/`, `.models/` and `.wwebjs_auth/` from the **process CWD**, so it
+  must be started from `apps/bot/` (systemd `WorkingDirectory`, or `npm run bot` from the root).
+- `apps/admin` is not an npm workspace — it installs separately. Keeping it out of the root
+  means `npm ci --omit=dev` on the VPS never pulls React/Vite onto the server.
+
 ## Commands
 
 ```bash
-# Start the server
-npm start
+# ── from the repo root ──
+npm run bot            # Start the server (runs apps/bot's `start` with the right CWD)
+npm run install:all    # Install both apps' dependencies
+npm run dev-admin      # Vite dev server on :5174, proxies /api to the bot on :3000
+npm run build-admin    # Build apps/admin/dist-express (the /admin build Express serves).
+                       # NOT the Vercel build — Vercel runs `npm run build` itself.
 
-# Sync products from WooCommerce API to local cache
-npm run sync
+# ── from apps/bot ──
+npm start              # Start the server
+npm run sync           # Sync products from WooCommerce API to local cache
+npm run test-agent     # AI agent tests (single-turn + multi-turn sales funnel simulation)
+npm run test-whatsapp  # WhatsApp test script
+npm run test-embeddings # Embeddings/retrieval regression suite (28 checks)
+npm run review         # Semi-automated conversation review — flags likely-problem
+                       # conversations (fallback/error reply, repeated question,
+                       # abandoned mid-purchase)
+npm run migrate-mongo  # One-time migrate local JSON data → MongoDB (needs MONGODB_URI)
 
-# Run AI agent tests (single-turn + multi-turn sales funnel simulation)
-npm run test-agent
+node src/test_agent.js "Do you have Barcelona jerseys?"   # single ad-hoc query
 
-# Run a single ad-hoc query through the AI agent
-node src/test_agent.js "Do you have Barcelona jerseys?"
-
-# Run WhatsApp/Telegram test scripts
-npm run test-whatsapp
-npm run test-telegram
-
-# Semi-automated conversation review — flags likely-problem conversations
-# (fallback/error message appeared, customer repeated same question, abandoned mid-purchase)
-npm run review
-
-# Build the unified admin console (Vite + React → admin/dist, served at /admin)
-npm run build-admin
-
-# One-time migrate local JSON data → MongoDB (needs MONGODB_URI in .env)
-npm run migrate-mongo
+# ── from apps/admin ──
+npm run dev            # Vite dev server
+npm run build          # Vercel build   → dist/         (base '/')
+npm run build:express  # Self-hosted    → dist-express/ (base '/admin/')
 ```
 
 ## Environment Setup
 
-Create a `.env` file in the root with:
+Create `apps/bot/.env` with:
 
 ```
 GROQ_API_KEY=              # Required: Groq API key for LLaMA inference
@@ -51,17 +79,24 @@ WOOCOMMERCE_CONSUMER_SECRET=
 WHATSAPP_WEB_ENABLED=true
 OWNER_WHATSAPP_NUMBER=     # Owner's WhatsApp for escalation alerts
 BULK_ORDER_THRESHOLD=10    # Qty threshold for bulk order escalation (default)
-TELEGRAM_BOT_TOKEN=        # Optional: owner alerts via Telegram
-TELEGRAM_CHAT_ID=
 GOOGLE_SHEETS_ID=          # Optional: for lead logging
 MONGODB_URI=               # Optional: MongoDB for persistent sessions (JSON fallback used if absent)
 BASE_URL=http://localhost:3000
 ALLOWED_TEST_NUMBERS=      # Comma-separated numbers for safe-mode (only these get replies)
-KNOWLEDGE_HUB_PASSWORD=    # Optional: shared password for the /knowledge-hub.html admin page (unset = hub disabled)
+AURAX_TEAM_PASSWORD=       # Shared admin-console password for the Aurax team
+TESTING_TEAM_PASSWORD=     # Shared admin-console password for the testing team
+KNOWLEDGE_HUB_PASSWORD=    # Legacy single password — ignored once AURAX_TEAM_PASSWORD is set
+ADMIN_ALLOWED_ORIGINS=     # Required for the Vercel-hosted admin console: comma-separated
+                           # origins allowed to call the API cross-origin. `*.`-prefixed
+                           # entries are suffix matches (e.g. *.vercel.app for previews).
 PORT=3000
 ```
 
-Google Sheets requires a `credentials.json` service account file in the project root.
+Google Sheets requires a `credentials.json` service account file in `apps/bot/`.
+
+`apps/admin` has its own build-time env (`apps/admin/.env.example`) — `VITE_API_BASE_URL`
+and `VITE_DEV_API_PROXY`. Vite inlines `VITE_*` into the public bundle, so never put a
+secret there.
 
 ## Architecture
 
@@ -75,7 +110,7 @@ This is a WhatsApp AI sales bot for **Theaurax.in** (football jerseys). It runs 
 4. If not an FAQ → `ai.js` manages a multi-turn agentic loop (up to 5 iterations) with **triple fallback chain**: Groq → OpenAI → Gemini
 5. The AI calls tools (`search_products`, `update_cart`, `set_shipping_address`, `confirm_order`, `escalate_to_human`) which are executed server-side
 6. On order confirmation, `invoice.js` generates a branded PDF proforma invoice served at `/invoices/`
-7. Bulk orders (≥ threshold qty) trigger `sendEscalationAlert()` which notifies the owner via WhatsApp + Telegram
+7. Bulk orders (≥ threshold qty) trigger `sendEscalationAlert()` which notifies the owner via WhatsApp
 8. First-contact leads are logged to Google Sheets via `sheets.js`
 9. Session state and leads are persisted to MongoDB or JSON files in `src/data/`
 10. On quota exhaustion, the query is saved to a **persistent retry queue** (JSON/MongoDB) and retried once the quota resets
@@ -90,7 +125,6 @@ This is a WhatsApp AI sales bot for **Theaurax.in** (football jerseys). It runs 
 | `src/services/db.js` | Session + lead + retry queue persistence (MongoDB or JSON files) |
 | `src/services/invoice.js` | PDFKit-based proforma invoice generation |
 | `src/services/sheets.js` | Google Sheets lead logging (first-contact only) |
-| `src/services/telegram.js` | Telegram owner alert notifications |
 | `src/services/faq.js` | FAQ search from `src/data/faq.json` |
 | `src/services/followup.js` | Cold-lead re-engagement (every 30 min, max 2 follow-ups) |
 | `src/config/config.js` | Centralised config with env-var fallbacks |
@@ -191,7 +225,7 @@ runtime LLM/quota failures, which are infra, not teachable) and materialises eac
 **inactive** knowledge draft (`source:'auto', active:false, empty answer, hits` counter,
 auto keywords, guessed language) via `dbService.saveUnansweredDraft()` (dedup by normalized
 question; bumps `hits` on repeat). Because `active:false`, the matcher never serves a blank
-draft. Runs 20s after boot then every 30 min (`alert:true` → owner WhatsApp+Telegram ping on
+draft. Runs 20s after boot then every 30 min (`alert:true` → owner WhatsApp ping on
 NEW gaps via `sendKnowledgeGapAlert`), and on-demand when the Teach tab opens (`alert:false`).
 The sidebar shows a **pending-count badge**. Answering a draft flips it to a live `manual`
 entry; **Dismiss** is a permanent tombstone (`dismissed:true`) so the scan never re-queues it
@@ -215,7 +249,7 @@ entry; **Dismiss** is a permanent tombstone (`dismissed:true`) so the scan never
 **Files:** `src/services/knowledge.js` (matcher) + `src/services/diagnose.js` (auto-queue),
 `dbService` knowledge CRUD + `src/data/knowledge.json` fallback store (MongoDB when
 `MONGODB_URI` set), knowledge hook in `ai.js answerQuery`, API + shared-password auth + review
-+ diagnose endpoints in `src/index.js`, UI in the `admin/` React app (`pages/Knowledge.jsx`).
++ diagnose endpoints in `src/index.js`, UI in the `apps/admin/` React app (`pages/Knowledge.jsx`).
 Endpoints: `POST /api/knowledge-hub/login`, `GET/POST /api/knowledge`, `DELETE /api/knowledge/:id`,
 `GET /api/knowledge/review`, `GET /api/knowledge/pending-count`, `POST /api/knowledge/diagnose`,
 `POST /api/knowledge/:id/dismiss` (all but login require the bearer token).
@@ -223,6 +257,149 @@ Endpoints: `POST /api/knowledge-hub/login`, `GET/POST /api/knowledge`, `DELETE /
 Verified 2026-07-20: a seeded correction changed a live `answerQuery` reply (intent `knowledge`,
 zero LLM); all API auth paths (wrong/right password, missing token, CRUD, review over 60 real
 leads) pass; the React page renders in headless Chrome with zero console errors.
+
+### Knowledge Sources — documents + website (RAG), added 2026-07-28
+
+Matches the three "Knowledge source" types the client used in Wati (Website · Document ·
+Q&A). Q&A was already the Knowledge Hub above; this adds the other two.
+
+**Flow:** `/admin/knowledge` → **🗂 Knowledge sources** tab → crawl a URL or upload a file.
+Text is extracted, chunked (~900 chars, 150 overlap, split on paragraph then sentence
+boundaries), embedded, and stored. At answer time the top-3 relevant chunks are injected
+into the LLM call.
+
+| File | Purpose |
+|------|---------|
+| `src/services/textextract.js` | PDF/DOCX/TXT/MD/HTML → plain text; chunking. Rejects scanned/image-only PDFs with an actionable message |
+| `src/services/crawler.js` | Same-origin BFS crawl, page/depth capped, 400ms polite delay. `detectBlock()` recognises the Cloudflare/security-plugin signature and returns a fix-the-store message |
+| `src/services/embeddings.js` | Two providers: **`local` (default)** = all-MiniLM-L6-v2 @ 384 dims on CPU, or `openai` = `text-embedding-3-small` @ 512 dims. Returns `null` (never throws) on failure |
+| `src/services/retrieval.js` | Indexing orchestration + hybrid search + prompt-context builder |
+
+**Retrieval scoring is hybrid.** With embeddings: `0.75×cosine + 0.25×keyword`, threshold
+**0.33** (retuned from 0.28 on 2026-07-30 for the local model — see below). Without
+embeddings it degrades to keyword-only — but that path is deliberately stricter (≥2
+distinct query terms AND ≥50% of terms matched), because a single incidental word match is
+very noisy on a jersey catalogue: "who won the 1998 world cup" hit crawled pages containing
+"world"/"Cup" until this guard was added.
+
+**Injection point** is `answerQuery` in `ai.js`, right after the Q&A injection and before
+the user message — same rationale as that one (keeps the cacheable system-prompt prefix
+intact, survives token trimming). It runs only on the LLM path, so the deterministic fast
+paths (FAQ, confident Q&A match, size/qty parse, order confirm) stay zero-latency. Costs
+nothing when no sources are indexed.
+
+**Storage:** `knowledge_sources` + `knowledge_chunks` (Mongo or JSON, same dual-branch
+pattern). Deleting a source cascades to its chunks. Toggling a source off removes it from
+retrieval immediately without deleting it. No 1MB cap (Wati's limit) — the admin bar is
+informational.
+
+⚠️ **Re-crawling the same URL creates a DUPLICATE source, it does not replace the old one**
+(corrected 2026-07-29 — this section previously claimed re-indexing "replaces wholesale",
+which is only true *within* one source id). `retrieval.persist()` calls
+`dbService.saveKnowledgeSource()` with no `id`, so `db.js` mints a fresh
+`src_<ts>_<rand>` every run; `replaceKnowledgeChunks(saved.id, …)` then only replaces the
+chunks under that NEW id. The old source and its chunks stay live and both get searched, so
+the retriever sees near-identical duplicate chunks. **Delete the existing source before
+re-crawling a URL you've already indexed.** (A real fix would be to match an existing
+`type:'website'` source by `url` and reuse its id.)
+
+**Endpoints** (all `requireKnowledgeAuth`): `GET /api/knowledge/sources`,
+`POST /api/knowledge/sources/document` (multipart, 20MB, memory storage — uploads are never
+written to disk), `POST /api/knowledge/sources/website`,
+`POST /api/knowledge/sources/:id/toggle`, `DELETE /api/knowledge/sources/:id`.
+
+### Embeddings — local model by default (switched 2026-07-30)
+
+Semantic search previously depended on `OPENAI_API_KEY`, which returns `429 exceeded your
+current quota`, so **everything indexed keyword-only**. Replaced with a local CPU model:
+
+| | value |
+|---|---|
+| Library | `@huggingface/transformers` (the maintained successor to `@xenova/transformers`) |
+| Model | `Xenova/all-MiniLM-L6-v2`, int8 ONNX (`dtype: 'q8'`) |
+| Dimensions | 384 (was 512 on OpenAI) |
+| Cost | **zero** — no key, no quota, no per-call charge, no data leaves the server |
+| Footprint | ~130 MB RSS once loaded; ~22 MB model cached in `.models/` (gitignored) |
+| Speed (measured) | model load 3.9s cold / 0.2s warm · **17 ms per 900-char chunk** · ~5 ms per query |
+
+Select with `EMBEDDING_PROVIDER=local|openai`. `openai` still works for anyone with a
+funded key and falls back to `local` if the key is missing. `EMBEDDING_CACHE_DIR` pins the
+model cache (the library's default lives inside `node_modules`, which is root-owned on a
+`npm ci` deploy while the service runs unprivileged). `EMBEDDING_WARMUP` preloads the model
+~25s after boot so the first customer question doesn't pay the load — automatically skipped
+when no knowledge sources are indexed, so an unused feature costs nothing.
+
+**Model loading is a lazy promise-deduped singleton** — concurrent requests share one load
+instead of each starting their own 130 MB copy.
+
+**Cross-provider safety:** chunks are stamped with `embeddingModel`, and `search()` treats
+any chunk whose vector width ≠ the live query width as un-embedded, routing it to the
+keyword branch and logging a re-index warning. Without this a provider switch would score
+every stale chunk at cosine 0 — which is *worse* than keyword-only, because the chunk still
+looks embedded and so skips the keyword branch entirely.
+
+**Threshold recalibration (why 0.28 → 0.33).** 0.28 was tuned for OpenAI
+`text-embedding-3-small`, whose cosine range is compressed; MiniLM spreads wider, leaving
+0.28 only ~0.03 above the noise floor. Measured against a clean 5-chunk policy corpus:
+on-topic queries **0.407–0.696**, off-topic **0.050–0.248** → any threshold in
+(0.248, 0.407] separates them; 0.33 is the midpoint. Erring high is deliberate: a missed
+retrieval just means the LLM answers as it normally would, whereas a false positive injects
+misleading text into a customer-facing prompt.
+
+⚠️ **A threshold cannot rescue a corpus that lacks the answer.** Re-run against the actual
+2026-07-29 theaurax.in crawl and the two bands **overlap**: "who won the 1998 world cup"
+scores **0.367**, *above* the genuine "what sizes do you have" at **0.231**. That crawl
+indexed product grids, filter sidebars and customer testimonials — no shipping/returns/
+sizing prose (see the crawl-coverage note above). Fixing it means re-indexing real policy
+content, not moving the number.
+
+**Existing sources must be re-indexed to gain vectors** — the 149 chunks from the
+2026-07-29 crawl have `embedding: null` and (separately) exist only in the JSON files, not
+in Mongo.
+
+`npm run test-embeddings` (`src/test_embeddings.js`) is the regression suite: 28 checks
+covering provider selection, vector shape/normalisation, on-topic retrieval, off-topic
+rejection, prompt-context construction, dimension-mismatch handling, and the keyword-only
+degradation path. It builds its own clean corpus in memory, so it tests the code rather
+than whatever happens to be indexed — no DB, no WhatsApp session, no network beyond the
+one-time model download.
+
+**Dependency note:** `@huggingface/transformers` hard-depends on `sharp` for image
+pipelines we never use, and `sharp <0.35.0` inherits four high-severity libvips CVEs
+(GHSA-f88m-g3jw-g9cj). `package.json` carries an `overrides` entry forcing `sharp ^0.35.3`.
+Net new vulnerabilities from this feature: **zero**.
+
+Verified live 2026-07-28: 11/11 API + retrieval tests pass (auth, upload, unsupported-type
+rejection, crawl of theaurax.in, invalid-URL rejection, relevant-hit and off-topic-miss
+retrieval, toggle on/off, delete cascade), plus a real `answerQuery` run where the bot
+answered a 90-day stitching-warranty question using only facts from an uploaded PDF.
+
+**First real website crawl — 2026-07-29 23:29.** `https://theaurax.in` at maxPages 15 /
+depth 2 → 15 pages, **149 chunks, 118.1 KB, 0 embeddings** (keyword-only, per the OpenAI
+quota note above). ⚠️ **Coverage was poor and it's a BFS-ordering problem, not a bug:** the
+15-page budget was consumed almost entirely by `/product-category/*` (alphabetical — 5-slv,
+ac-milan, argentina, arsenal, ball, bayern-munich, brazil, chelsea, clrfs, clrhf,
+fc-barcelona) plus `/wishlist` and `/my-account`. It never reached shipping-policy, returns,
+or about — i.e. the actual policy prose the feature exists to index. Category pages are
+product grids and the account pages are empty logged-out shells, so most of those 149 chunks
+are low-value. Raising maxPages alone won't fix the ratio. **Proposed but NOT yet
+implemented:** a crawler skip-list for `/my-account`, `/wishlist`, `/cart`, `/checkout` and
+`?add-to-cart=`-style URLs, plus deprioritising `/product-category/` so the budget goes to
+content pages.
+
+**Maintenance-mode 503 (hit + resolved 2026-07-29).** Every URL on theaurax.in — `/`,
+`/shop`, `/robots.txt`, `/wp-sitemap.xml`, `www.` — returned an identical 5KB HTTP **503**
+regardless of User-Agent. Not Cloudflare: it was the **"CMP – Coming Soon & Maintenance"**
+WordPress plugin serving its splash page ("⚠️ Stock Update & Maintenance ⚠️") with
+`retry-after: 86400` via Hostinger/LiteSpeed. `crawler.detectBlock()` now sniffs the CMP
+signature in the 503 body and names the plugin + the wp-admin fix, instead of the old vague
+"usually a Cloudflare challenge page or WordPress maintenance mode". The store owner turned
+maintenance mode off the same evening and the crawl then succeeded.
+
+**Admin UX fix 2026-07-29:** the Website URL input's placeholder is now `e.g. https://…`
+(`apps/admin/src/pages/Knowledge.jsx`). `addWebsite()` clears the field on success, and a bare-URL
+placeholder reads as a filled-in value — so people pressed **Crawl & index** again and got
+"Enter a website URL." with no idea why. Admin app rebuilt.
 
 ### Customer Registry
 
@@ -238,26 +415,65 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 
 ### WhatsApp Connection
 
-On first run, open the admin console at `http://localhost:3000/admin`, sign in, and go to the **WhatsApp** section (`/admin/whatsapp`) to scan the QR code. Auth is persisted in `.wwebjs_auth/` (Puppeteer LocalAuth). The bot auto-reconnects on disconnect with a 10-second delay. (The old `/whatsapp-link.html` URL now 302-redirects to `/admin/whatsapp`.)
+On first run, open the admin console (the Vercel URL, or `http://localhost:3000/admin`), sign in, and go to the **WhatsApp** section to scan the QR code. Auth is persisted in `apps/bot/.wwebjs_auth/` (Puppeteer LocalAuth). The bot auto-reconnects on disconnect with a 10-second delay. (The old `/whatsapp-link.html` URL now 302-redirects to `/admin/whatsapp`.)
 
 ### Admin Console (unified Vite + React app)
 
 Added 2026-07-22. The three former standalone pages (`apiwork.html` monitor, `whatsapp-link.html`
-QR link, `knowledge-hub.html`) are consolidated into **one** proper React SPA under `admin/`
+QR link, `knowledge-hub.html`) are consolidated into **one** proper React SPA under `apps/admin`
 (Vite build, react-router, react-chartjs-2) — light/clean/professional theme, mobile + desktop
-responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub**. It is **all behind one login**
+responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub · Tickets**. It is **all behind one login**
 (the existing `KNOWLEDGE_HUB_PASSWORD` bearer-token flow), so the monitor and QR — previously open
 to anyone with the URL — are now protected too (`/api/provider-stats`, `/api/sessions`, `/api/logs`,
 `/api/whatsapp/status`, `/api/retry-stats` all require the token).
 
-- **Source:** `admin/` (its own npm package: `src/{main.jsx,App.jsx,contexts.jsx,api.js,styles.css}`,
-  `src/components/{Login,Layout}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge}.jsx`).
-- **Build:** `cd admin && npm install && npm run build` → outputs `admin/dist/` (committed? see repo).
-  Express serves `admin/dist` at `/admin` (`express.static`) with a `/admin/*` fallback to
-  `index.html` for client-side routes. **After changing anything in `admin/src`, re-run the build**
-  or the served app won't update.
-- **Dev:** `cd admin && npm run dev` (Vite on :5174, proxies `/api` + `/invoices` to the bot on :3000).
+- **Source:** `apps/admin/` (its own npm package, not a workspace: `src/{main.jsx,App.jsx,contexts.jsx,api.js,styles.css}`,
+  `src/components/{Login,Layout}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge,Tickets}.jsx`).
+- **Dev:** `npm run dev-admin` from the root (Vite on :5174, proxies `/api` + `/invoices` to the bot on :3000).
 - The old `.html` URLs 302-redirect to the matching `/admin/*` section; `/` redirects to `/admin`.
+
+### Admin Console deployment — Vercel primary, Express fallback (2026-08-02)
+
+The console is deployed to **Vercel** (Root Directory `apps/admin`), and the bot **also** still
+serves it at `/admin`. Two targets, and they need different `base` values, which is the whole
+reason for the dual build:
+
+| Target | Command | `base` | Output | Committed? |
+|---|---|---|---|---|
+| Vercel (primary) | `npm run build` | `/` | `apps/admin/dist` | No — Vercel builds it per push |
+| Express (fallback) | `npm run build:express` | `/admin/` | `apps/admin/dist-express` | **Yes** — the VPS runs `npm ci --omit=dev` and cannot build |
+
+`build:express` is `vite build --mode express` — Vite's built-in flag, chosen over a
+`cross-env ADMIN_TARGET=...` variable so no extra dependency is needed to set it on Windows.
+
+**Three pieces make the split work:**
+
+1. **`apiUrl()` in `api.js`** prefixes every request with `VITE_API_BASE_URL`. Empty (dev and
+   the Express build) = same-origin; set (Vercel) = absolute to the bot. `makeApi` routes
+   through it, and so must the two raw `fetch` calls that bypass the helper —
+   `Login.jsx` (pre-token) and the `Knowledge.jsx` document upload (multipart, which the
+   JSON-forcing helper would corrupt). **A bare `fetch('/api/…')` is a bug on Vercel:** it hits
+   the Vercel domain, the SPA rewrite returns `index.html`, and the caller dies on
+   `Unexpected token '<'`.
+2. **`BrowserRouter basename={import.meta.env.BASE_URL}`** in `main.jsx`. `BASE_URL` *is* vite's
+   `base`, so the router follows the build target automatically instead of needing a second knob.
+3. **CORS in `apps/bot/src/index.js`**, driven by `ADMIN_ALLOWED_ORIGINS`. Deliberately not `*`
+   — these endpoints expose sessions, logs and customer conversations. Exact origins, or
+   `*.`-prefixed suffix matches for Vercel's per-commit preview hostnames. Preflight is answered
+   in the middleware because `OPTIONS` carries no `Authorization` header and would otherwise 401.
+   No `Allow-Credentials`: auth is a bearer token, not a cookie.
+
+⚠️ **The two deployments drift.** Vercel rebuilds on push; the Express copy only updates when
+someone runs `npm run build-admin` and commits `dist-express`. After changing `apps/admin/src`,
+do both or knowingly leave the fallback stale.
+
+Verified live 2026-08-02: both builds emit the correct asset base; against a running bot,
+`/admin`, the `/admin/*` SPA deep-link fallback and the hashed assets all 200; preflight from an
+exact origin and from a `*.vercel.app` preview both return the allow headers while a
+non-allowlisted origin gets none; cross-origin login returns a token and `/api/sessions`,
+`/api/provider-stats`, `/api/knowledge`, `/api/knowledge/sources`, `/api/tickets/open-count`
+all 200 with it; unauthenticated calls still 401 **with** the CORS header, so the SPA can read
+the error rather than seeing an opaque network failure.
 
 ### Safe Mode
 

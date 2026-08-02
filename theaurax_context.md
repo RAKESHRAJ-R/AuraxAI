@@ -24,7 +24,7 @@
   `npm run migrate-mongo`. Migrated 44 sessions / 66 leads / 27 customers into Atlas; verified
   the bot reads from Mongo.
 - **Knowledge auto-diagnosis queue:** `diagnose.js` turns struggling conversations into inactive
-  "needs answer" drafts (badge count, owner WhatsApp/Telegram alert on new gaps); **Dismiss** is
+  "needs answer" drafts (badge count, owner WhatsApp alert on new gaps); **Dismiss** is
   a permanent tombstone so drafts don't regenerate; answering makes a draft a live entry.
 - `KNOWLEDGE_HUB_PASSWORD` set (hub enabled). `KNOWLEDGE_HUB_PASSWORD`/`SARVAM_API_KEY`/
   `MONGODB_URI` all live in `.env`.
@@ -62,7 +62,7 @@ Customer Message
    Classify via LLM (Groq → OpenAI → OpenRouter → Gemini fallback chain):
    - General/browsing (what jerseys?) → AI searches WooCommerce product cache & suggests
    - Order intent (size/qty/address) → AI guides through order flow
-   - Bulk order (≥ threshold) → Escalate to owner via WhatsApp + Telegram
+   - Bulk order (≥ threshold) → Escalate to owner via WhatsApp
    - Ready to confirm → Create WooCommerce order / PDF invoice
 ```
 
@@ -79,7 +79,7 @@ Customer Message
 | Product Catalog | WooCommerce REST API | Products cached locally in products_cache.json |
 | Invoice | PDFKit | Branded proforma invoice served at /invoices/ |
 | Lead Logging | Google Sheets | First-contact only, via service account |
-| Owner Alerts | WhatsApp + Telegram | Bulk order / wholesale escalations |
+| Owner Alerts | WhatsApp | Bulk order / wholesale escalations |
 | Cold Follow-up | Built-in scheduler | Every 30 min, up to 2 follow-ups per lead |
 
 ---
@@ -141,7 +141,7 @@ Customer Message
 - Node.js Express server with message queue (concurrency 5)
 - Pre-AI FAQ matcher (answers instantly without LLM)
 - WooCommerce product cache + token-scored local search (739KB, 100+ products)
-- Bulk order escalation to owner (WhatsApp + Telegram)
+- Bulk order escalation to owner (WhatsApp)
 - Google Sheets lead logging
 
 ### ✅ Phase 2 — Order Flow + Invoice (Complete)
@@ -199,7 +199,7 @@ Customer Message
 - PDF invoice generation via PDFKit
 - Cold lead follow-up scheduler (every 30 min, max 2 follow-ups)
 - WooCommerce product cache + token-scored local search
-- Bulk order escalation to owner (WhatsApp + Telegram)
+- Bulk order escalation to owner (WhatsApp)
 - Triple LLM fallback chain (Groq → OpenAI → Gemini)
 - Global rate-limit throttling (600ms gap)
 

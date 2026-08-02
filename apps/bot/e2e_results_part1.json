@@ -1,0 +1,77 @@
+[
+  {
+    "feature": "Config validation (WooCommerce + Groq keys present)",
+    "pass": true,
+    "detail": "validateConfig()=true | keys: {\"groq\":5,\"sarvam\":1,\"fireworks\":1,\"openai\":1,\"openrouter\":1,\"gemini\":1} | Mongo=true"
+  },
+  {
+    "feature": "Language detection (Tanglish vs English)",
+    "pass": true,
+    "detail": "✓ \"Do you have Real Madrid jerseys?\" -> english (exp english)\n✓ \"bro barcelona jersey iruka?\" -> tanglish (exp tanglish)\n✓ \"enna price da?\" -> tanglish (exp tanglish)\n✓ \"What is the return policy\" -> english (exp english)\n✓ \"செம்ம jersey venum\" -> tanglish (exp tanglish)"
+  },
+  {
+    "feature": "FAQ matcher (faq.js)",
+    "pass": true,
+    "detail": "\"Do you offer cash on delivery?\" -> 1 hit(s); first A: Yes, we support both Cash on Delivery (COD) and Online Payments (UPI, GPAY, PhonePe, Cards). For online payments, there is no extra charge. For COD, there is a flat extra fee of ₹50 charged by the courier partner. You ca…\n\"how long is shipping time\" -> 1 hit(s)"
+  },
+  {
+    "feature": "Product search relevance (woocommerce.js local)",
+    "pass": false,
+    "detail": "cache=136 products | \"Real Madrid\"->10 (top: REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS) | \"best selling\"->10 | garbage query->5 (should be 0)"
+  },
+  {
+    "feature": "Deterministic size+qty parsing (parseSizeQtyReply)",
+    "pass": true,
+    "detail": "\"M size 2\" -> {\"name\":\"REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS\",\"price\":\"490\",\"size\":\"M\",\"qty\":2}\n\"XL\" -> {\"name\":\"REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS\",\"price\":\"490\",\"size\":\"XL\",\"qty\":1}\n\"tell me about fabric\" -> null (should be null)"
+  },
+  {
+    "feature": "Knowledge Hub matcher + CRUD (save→match confident)",
+    "pass": true,
+    "detail": "saved id=kn_1785050652167_hisgc | match tier=confident score=14 | answer: All Theaurax jerseys carry a 7-day replacement guarantee for manufacturing defects."
+  },
+  {
+    "feature": "DB service (session/lead/customer/retry persistence)",
+    "pass": true,
+    "detail": "session restored state=CONFIRMING_ORDER cartItems=1 addr=\"Test Addr\" | customers=14 | leads=67 | dueRetries=1"
+  },
+  {
+    "feature": "Invoice PDF generation (invoice.js)",
+    "pass": true,
+    "detail": "path=E:\\TheAurax\\public\\invoices\\invoice_E2E-TEST-1785050653915.pdf | exists=true | 24800 bytes | validPDFheader=true"
+  },
+  {
+    "feature": "Diagnose unanswered queue (diagnose.js)",
+    "pass": true,
+    "detail": "diagnose result={\"created\":0,\"pendingCount\":0} | pendingKnowledgeDrafts=0"
+  },
+  {
+    "feature": "WooCommerce REST reachability (getOrder)",
+    "pass": "WARN",
+    "detail": "getOrder(999999999) returned: {\"success\":false,\"error\":\"Request failed with status code 401\"}"
+  },
+  {
+    "feature": "Provider connectivity: Groq (llama-3.3-70b-versatile)",
+    "pass": true,
+    "detail": "253ms | reply: PONG | tokens=44"
+  },
+  {
+    "feature": "Provider connectivity: Sarvam (sarvam-30b)",
+    "pass": "WARN",
+    "detail": "403ms | reply:  | tokens=36"
+  },
+  {
+    "feature": "Provider connectivity: Fireworks (accounts/fireworks/models/deepseek-v4-pro)",
+    "pass": true,
+    "detail": "1130ms | reply: We are asked: \"Reply with exactly: PONG\". So I need to output exactly \"P | tokens=30"
+  },
+  {
+    "feature": "Provider connectivity: OpenAI (gpt-4o-mini)",
+    "pass": false,
+    "detail": "429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors."
+  },
+  {
+    "feature": "Provider connectivity: OpenRouter (meta-llama/llama-3.3-70b-instruct:free)",
+    "pass": false,
+    "detail": "404 This model is unavailable for free. The paid version is available now - use this slug instead: meta-llama/llama-3.3-70b-instruct"
+  }
+]
