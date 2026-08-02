@@ -144,28 +144,38 @@ mongosh --eval 'db.getSiblingDB("theaurax_assistant").sessions.countDocuments()'
 
 ## 5. Deploy the app
 
+The repo is a monorepo: `apps/bot` is this server, `apps/admin` is the React console
+(deployed separately to Vercel — see §9). **Everything below runs from `apps/bot`, not
+the repo root.**
+
 ```bash
 su - theaurax
-git clone <repo-url> /opt/theaurax && cd /opt/theaurax
+git clone <repo-url> /opt/theaurax && cd /opt/theaurax/apps/bot
 npm ci --omit=dev
 cp .env.example .env && nano .env
 ```
 
-Set in `.env`:
+Set in `apps/bot/.env`:
 
 ```
 MONGODB_URI=mongodb://theaurax:PASSWORD@127.0.0.1:27017/theaurax_assistant?authSource=theaurax_assistant
 BASE_URL=https://bot.theaurax.in
 WHATSAPP_WEB_ENABLED=true
+ADMIN_ALLOWED_ORIGINS=https://<your-project>.vercel.app
 ```
 
 Everything else (Groq/Sarvam keys, WooCommerce, `AURAX_TEAM_PASSWORD` /
 `TESTING_TEAM_PASSWORD`) carries over unchanged.
 
-Note `admin/dist` is committed, so `npm start` works without a build. Only re-run
-`npm run build-admin` after changing `admin/src` — and that needs the full dev dependencies,
-which `--omit=dev` skipped. Build on your laptop and commit `admin/dist`, rather than
-installing Vite on the VPS.
+`ADMIN_ALLOWED_ORIGINS` is what lets the Vercel-hosted console talk to this server —
+without it the browser blocks every admin API response. Details in §9.
+
+Note `apps/admin/dist-express` is committed, so `npm start` serves `/admin` without a
+build. That directory is the **self-hosted fallback** build (`base: '/admin/'`), distinct
+from the `dist/` that Vercel builds (`base: '/'`) — they are not interchangeable. Only
+re-run `npm run build-admin` (from the repo root) after changing `apps/admin/src`, and
+that needs the dev dependencies `--omit=dev` skipped. Build on your laptop and commit
+`apps/admin/dist-express`, rather than installing Vite on the VPS.
 
 **Migrating existing data:** dump from Atlas and restore locally — don't re-run
 `npm run migrate-mongo`, which reads the stale local JSON files, not Atlas:
@@ -191,7 +201,7 @@ Requires=mongod.service
 [Service]
 Type=simple
 User=theaurax
-WorkingDirectory=/opt/theaurax
+WorkingDirectory=/opt/theaurax/apps/bot
 ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=10
@@ -206,9 +216,13 @@ systemctl daemon-reload && systemctl enable --now theaurax
 journalctl -u theaurax -f     # watch for "Successfully connected to MongoDB"
 ```
 
-Then open `https://bot.theaurax.in/admin` → **WhatsApp** section and scan the QR **once**.
-Auth persists in `/opt/theaurax/.wwebjs_auth/` — back this directory up too, or you'll
-re-scan after every rebuild.
+`WorkingDirectory` must be `apps/bot`: the server resolves `public/`, `.env`, `.models/`
+and `.wwebjs_auth/` relative to the process CWD, not to the script location.
+
+Then open the admin console → **WhatsApp** section and scan the QR **once** (either the
+Vercel URL from §9, or `https://bot.theaurax.in/admin`). Auth persists in
+`/opt/theaurax/apps/bot/.wwebjs_auth/` — back this directory up too, or you'll re-scan
+after every rebuild.
 
 ## 7. Backups — do not skip this
 
@@ -226,11 +240,11 @@ crontab -e
 ```
 
 Defaults: `/var/backups/theaurax`, 14-day retention, reads `MONGODB_URI` from
-`/opt/theaurax/.env`. Set `OFFSITE_DEST` to something **off Hostinger** (an rclone remote, a
+`/opt/theaurax/apps/bot/.env`. Set `OFFSITE_DEST` to something **off Hostinger** (an rclone remote, a
 cheap object store, another box) — a backup on the same disk as the database is not a backup,
 and a backup at the same provider as the database is barely one.
 
-Also snapshot `/opt/theaurax/.wwebjs_auth/` — losing it means re-scanning the WhatsApp QR,
+Also snapshot `/opt/theaurax/apps/bot/.wwebjs_auth/` — losing it means re-scanning the WhatsApp QR,
 which needs physical access to the owner's phone.
 
 **Test the restore once, now.** An untested backup is an assumption, not a safety net.
@@ -242,7 +256,7 @@ apt install -y nginx certbot python3-certbot-nginx
 ```
 
 Point a `bot.theaurax.in` A record at the VPS IP, proxy it to `127.0.0.1:3000`, then
-`certbot --nginx -d bot.theaurax.in`. Update `BASE_URL` in `.env` to the HTTPS URL so invoice
+`certbot --nginx -d bot.theaurax.in`. Update `BASE_URL` in `apps/bot/.env` to the HTTPS URL so invoice
 and payment links resolve, and restart.
 
 Add basic rate limiting while you're in the nginx config — `/api/knowledge-hub/login` has
@@ -256,6 +270,73 @@ location /api/knowledge-hub/login {
     proxy_pass http://127.0.0.1:3000;
 }
 ```
+
+Nginx must forward the `Origin` header and **must not strip response headers** — the
+admin console's CORS depends on both. `proxy_pass` passes them through by default; only
+an explicit `proxy_hide_header Access-Control-Allow-Origin` would break it.
+
+## 9. Admin console on Vercel
+
+The console (`apps/admin`) is a static React SPA with no server of its own — it talks to
+the bot's API over HTTPS. Hosting it on Vercel gets CDN delivery and per-branch preview
+deploys, and keeps UI changes off the VPS deploy path entirely.
+
+**Vercel project setup** (dashboard → Add New → Project → import the repo):
+
+| Setting | Value |
+|---|---|
+| **Root Directory** | `apps/admin` ← the one setting that must not be missed |
+| Framework Preset | Vite (auto-detected) |
+| Build Command | `npm run build` (from `vercel.json`) |
+| Output Directory | `dist` (from `vercel.json`) |
+
+Then **Settings → Environment Variables**, for Production *and* Preview:
+
+```
+VITE_API_BASE_URL=https://bot.theaurax.in
+```
+
+No trailing slash. This is a build-time value — Vite inlines it into the bundle, so
+**changing it requires a redeploy**, not just a restart. And because it ends up in
+public JS, never put a secret in a `VITE_*` variable; the console authenticates at
+runtime against `/api/knowledge-hub/login`.
+
+**Then allowlist the Vercel origin on the bot** (`apps/bot/.env`) and restart it:
+
+```
+ADMIN_ALLOWED_ORIGINS=https://<your-project>.vercel.app,*.vercel.app
+```
+
+The `*.vercel.app` entry is a suffix match covering preview deploys, whose hostnames are
+generated per commit and can't be listed ahead of time. Drop it if you don't want preview
+builds reaching production data — production-only is the safer default, and previews can
+point at a staging bot instead.
+
+**Custom domain:** add e.g. `admin.theaurax.in` in Vercel → Domains, then put that exact
+origin in `ADMIN_ALLOWED_ORIGINS`. Keep it on a *different* hostname than the bot.
+
+**Verify** after the first deploy — a blank page or a login that never completes is nearly
+always one of these two:
+
+```bash
+# 1. Is the origin allowlisted? Expect: Access-Control-Allow-Origin echoing your origin.
+curl -si -X OPTIONS https://bot.theaurax.in/api/sessions \
+  -H 'Origin: https://<your-project>.vercel.app' \
+  -H 'Access-Control-Request-Method: GET' | grep -i access-control
+
+# 2. Did the build get the API URL? Expect: your bot's URL, not an empty string.
+curl -s https://<your-project>.vercel.app/assets/index-*.js | grep -o 'https://bot\.theaurax\.in'
+```
+
+If (1) is empty the bot needs `ADMIN_ALLOWED_ORIGINS` (and a restart). If (2) is empty
+`VITE_API_BASE_URL` was missing at build time and the SPA is calling the Vercel domain
+for `/api/*`, where the rewrite hands it `index.html` — which surfaces as
+`Unexpected token '<'` in the console.
+
+**The `/admin` route on the bot keeps working** as a fallback, serving the committed
+`apps/admin/dist-express` build. Two independently deployed copies means they can drift:
+after changing `apps/admin/src`, Vercel rebuilds itself on push, but the Express copy only
+updates when you run `npm run build-admin` and commit `dist-express`.
 
 ---
 
@@ -282,7 +363,7 @@ Ordered by how much they actually matter on this box:
    **Set `EMBEDDING_CACHE_DIR` to a path the app user owns**, e.g.:
 
    ```
-   EMBEDDING_CACHE_DIR=/opt/theaurax/.models
+   EMBEDDING_CACHE_DIR=/opt/theaurax/apps/bot/.models
    ```
 
    The library defaults to a directory inside `node_modules`, which is root-owned after

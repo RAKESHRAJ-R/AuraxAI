@@ -1,12 +1,14 @@
 node_modules/
 .env
 .env.*
+!.env.example
 credentials.json
 sheets-credentials.json
 sessions.json
-src/data/sessions.json
-src/data/leads.json
-public/invoices/*.pdf
+apps/bot/src/data/sessions.json
+apps/bot/src/data/leads.json
+apps/bot/src/data/knowledge.json
+apps/bot/public/invoices/*.pdf
 .wwebjs_auth/
 .wwebjs_cache/
 scratch/
@@ -14,6 +16,17 @@ test_gemini_tools.js
 npm-debug.log
 yarn-error.log
 .DS_Store
-src/data/knowledge.json
 # Cached ONNX embedding model (~30MB, re-downloaded from the HF hub on first use)
 .models/
+
+# Admin console build outputs.
+# `dist/` is the Vercel build — Vercel builds it on every deploy, so it is never committed.
+# `dist-express/` IS committed: it is the base:'/admin/' build the bot's Express server
+# serves as the self-hosted fallback, and the deploy box runs `npm ci --omit=dev` with no
+# dev dependencies, so it cannot build it itself.
+apps/admin/dist/
+.vercel/
+
+# SSH deploy keypair — never commit
+Aurax
+Aurax.pub

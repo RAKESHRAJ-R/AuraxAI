@@ -2,38 +2,67 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository Layout
+
+Restructured into a monorepo on 2026-08-02 so the admin console could be deployed to Vercel
+independently of the bot:
+
+```
+TheAurax/
+├── package.json          Thin orchestrator — pass-through scripts only, no dependencies
+├── apps/
+│   ├── bot/              The WhatsApp bot + Express API (everything that was at the root)
+│   │   ├── src/          ← ALL `src/...` paths elsewhere in this file are relative to here
+│   │   ├── public/       Served by express.static; invoice PDFs land in public/invoices
+│   │   ├── .env          Bot config. Loaded from apps/bot/.env, NOT the repo root
+│   │   └── package.json  The real dependency manifest — `npm ci` runs HERE, not at the root
+│   └── admin/            React admin console (Vite SPA)
+│       ├── src/
+│       ├── vercel.json   Vercel build + SPA rewrite + security headers
+│       ├── dist/         Vercel build (base '/')       — gitignored, Vercel builds it
+│       └── dist-express/ Self-hosted build (base '/admin/') — COMMITTED, Express serves it
+├── scripts/              Ops scripts (Mongo backup)
+└── CLAUDE.md, DEPLOY.md, theaurax_context.md, reports/
+```
+
+**Two things bite if forgotten:**
+- The bot resolves `public/`, `.models/` and `.wwebjs_auth/` from the **process CWD**, so it
+  must be started from `apps/bot/` (systemd `WorkingDirectory`, or `npm run bot` from the root).
+- `apps/admin` is not an npm workspace — it installs separately. Keeping it out of the root
+  means `npm ci --omit=dev` on the VPS never pulls React/Vite onto the server.
+
 ## Commands
 
 ```bash
-# Start the server
-npm start
+# ── from the repo root ──
+npm run bot            # Start the server (runs apps/bot's `start` with the right CWD)
+npm run install:all    # Install both apps' dependencies
+npm run dev-admin      # Vite dev server on :5174, proxies /api to the bot on :3000
+npm run build-admin    # Build apps/admin/dist-express (the /admin build Express serves).
+                       # NOT the Vercel build — Vercel runs `npm run build` itself.
 
-# Sync products from WooCommerce API to local cache
-npm run sync
+# ── from apps/bot ──
+npm start              # Start the server
+npm run sync           # Sync products from WooCommerce API to local cache
+npm run test-agent     # AI agent tests (single-turn + multi-turn sales funnel simulation)
+npm run test-whatsapp  # WhatsApp test script
+npm run test-embeddings # Embeddings/retrieval regression suite (28 checks)
+npm run review         # Semi-automated conversation review — flags likely-problem
+                       # conversations (fallback/error reply, repeated question,
+                       # abandoned mid-purchase)
+npm run migrate-mongo  # One-time migrate local JSON data → MongoDB (needs MONGODB_URI)
 
-# Run AI agent tests (single-turn + multi-turn sales funnel simulation)
-npm run test-agent
+node src/test_agent.js "Do you have Barcelona jerseys?"   # single ad-hoc query
 
-# Run a single ad-hoc query through the AI agent
-node src/test_agent.js "Do you have Barcelona jerseys?"
-
-# Run WhatsApp test script
-npm run test-whatsapp
-
-# Semi-automated conversation review — flags likely-problem conversations
-# (fallback/error message appeared, customer repeated same question, abandoned mid-purchase)
-npm run review
-
-# Build the unified admin console (Vite + React → admin/dist, served at /admin)
-npm run build-admin
-
-# One-time migrate local JSON data → MongoDB (needs MONGODB_URI in .env)
-npm run migrate-mongo
+# ── from apps/admin ──
+npm run dev            # Vite dev server
+npm run build          # Vercel build   → dist/         (base '/')
+npm run build:express  # Self-hosted    → dist-express/ (base '/admin/')
 ```
 
 ## Environment Setup
 
-Create a `.env` file in the root with:
+Create `apps/bot/.env` with:
 
 ```
 GROQ_API_KEY=              # Required: Groq API key for LLaMA inference
@@ -57,10 +86,17 @@ ALLOWED_TEST_NUMBERS=      # Comma-separated numbers for safe-mode (only these g
 AURAX_TEAM_PASSWORD=       # Shared admin-console password for the Aurax team
 TESTING_TEAM_PASSWORD=     # Shared admin-console password for the testing team
 KNOWLEDGE_HUB_PASSWORD=    # Legacy single password — ignored once AURAX_TEAM_PASSWORD is set
+ADMIN_ALLOWED_ORIGINS=     # Required for the Vercel-hosted admin console: comma-separated
+                           # origins allowed to call the API cross-origin. `*.`-prefixed
+                           # entries are suffix matches (e.g. *.vercel.app for previews).
 PORT=3000
 ```
 
-Google Sheets requires a `credentials.json` service account file in the project root.
+Google Sheets requires a `credentials.json` service account file in `apps/bot/`.
+
+`apps/admin` has its own build-time env (`apps/admin/.env.example`) — `VITE_API_BASE_URL`
+and `VITE_DEV_API_PROXY`. Vite inlines `VITE_*` into the public bundle, so never put a
+secret there.
 
 ## Architecture
 
@@ -213,7 +249,7 @@ entry; **Dismiss** is a permanent tombstone (`dismissed:true`) so the scan never
 **Files:** `src/services/knowledge.js` (matcher) + `src/services/diagnose.js` (auto-queue),
 `dbService` knowledge CRUD + `src/data/knowledge.json` fallback store (MongoDB when
 `MONGODB_URI` set), knowledge hook in `ai.js answerQuery`, API + shared-password auth + review
-+ diagnose endpoints in `src/index.js`, UI in the `admin/` React app (`pages/Knowledge.jsx`).
++ diagnose endpoints in `src/index.js`, UI in the `apps/admin/` React app (`pages/Knowledge.jsx`).
 Endpoints: `POST /api/knowledge-hub/login`, `GET/POST /api/knowledge`, `DELETE /api/knowledge/:id`,
 `GET /api/knowledge/review`, `GET /api/knowledge/pending-count`, `POST /api/knowledge/diagnose`,
 `POST /api/knowledge/:id/dismiss` (all but login require the bearer token).
@@ -361,7 +397,7 @@ signature in the 503 body and names the plugin + the wp-admin fix, instead of th
 maintenance mode off the same evening and the crawl then succeeded.
 
 **Admin UX fix 2026-07-29:** the Website URL input's placeholder is now `e.g. https://…`
-(`admin/src/pages/Knowledge.jsx`). `addWebsite()` clears the field on success, and a bare-URL
+(`apps/admin/src/pages/Knowledge.jsx`). `addWebsite()` clears the field on success, and a bare-URL
 placeholder reads as a filled-in value — so people pressed **Crawl & index** again and got
 "Enter a website URL." with no idea why. Admin app rebuilt.
 
@@ -379,26 +415,65 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 
 ### WhatsApp Connection
 
-On first run, open the admin console at `http://localhost:3000/admin`, sign in, and go to the **WhatsApp** section (`/admin/whatsapp`) to scan the QR code. Auth is persisted in `.wwebjs_auth/` (Puppeteer LocalAuth). The bot auto-reconnects on disconnect with a 10-second delay. (The old `/whatsapp-link.html` URL now 302-redirects to `/admin/whatsapp`.)
+On first run, open the admin console (the Vercel URL, or `http://localhost:3000/admin`), sign in, and go to the **WhatsApp** section to scan the QR code. Auth is persisted in `apps/bot/.wwebjs_auth/` (Puppeteer LocalAuth). The bot auto-reconnects on disconnect with a 10-second delay. (The old `/whatsapp-link.html` URL now 302-redirects to `/admin/whatsapp`.)
 
 ### Admin Console (unified Vite + React app)
 
 Added 2026-07-22. The three former standalone pages (`apiwork.html` monitor, `whatsapp-link.html`
-QR link, `knowledge-hub.html`) are consolidated into **one** proper React SPA under `admin/`
+QR link, `knowledge-hub.html`) are consolidated into **one** proper React SPA under `apps/admin`
 (Vite build, react-router, react-chartjs-2) — light/clean/professional theme, mobile + desktop
-responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub**. It is **all behind one login**
+responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub · Tickets**. It is **all behind one login**
 (the existing `KNOWLEDGE_HUB_PASSWORD` bearer-token flow), so the monitor and QR — previously open
 to anyone with the URL — are now protected too (`/api/provider-stats`, `/api/sessions`, `/api/logs`,
 `/api/whatsapp/status`, `/api/retry-stats` all require the token).
 
-- **Source:** `admin/` (its own npm package: `src/{main.jsx,App.jsx,contexts.jsx,api.js,styles.css}`,
-  `src/components/{Login,Layout}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge}.jsx`).
-- **Build:** `cd admin && npm install && npm run build` → outputs `admin/dist/` (committed? see repo).
-  Express serves `admin/dist` at `/admin` (`express.static`) with a `/admin/*` fallback to
-  `index.html` for client-side routes. **After changing anything in `admin/src`, re-run the build**
-  or the served app won't update.
-- **Dev:** `cd admin && npm run dev` (Vite on :5174, proxies `/api` + `/invoices` to the bot on :3000).
+- **Source:** `apps/admin/` (its own npm package, not a workspace: `src/{main.jsx,App.jsx,contexts.jsx,api.js,styles.css}`,
+  `src/components/{Login,Layout}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge,Tickets}.jsx`).
+- **Dev:** `npm run dev-admin` from the root (Vite on :5174, proxies `/api` + `/invoices` to the bot on :3000).
 - The old `.html` URLs 302-redirect to the matching `/admin/*` section; `/` redirects to `/admin`.
+
+### Admin Console deployment — Vercel primary, Express fallback (2026-08-02)
+
+The console is deployed to **Vercel** (Root Directory `apps/admin`), and the bot **also** still
+serves it at `/admin`. Two targets, and they need different `base` values, which is the whole
+reason for the dual build:
+
+| Target | Command | `base` | Output | Committed? |
+|---|---|---|---|---|
+| Vercel (primary) | `npm run build` | `/` | `apps/admin/dist` | No — Vercel builds it per push |
+| Express (fallback) | `npm run build:express` | `/admin/` | `apps/admin/dist-express` | **Yes** — the VPS runs `npm ci --omit=dev` and cannot build |
+
+`build:express` is `vite build --mode express` — Vite's built-in flag, chosen over a
+`cross-env ADMIN_TARGET=...` variable so no extra dependency is needed to set it on Windows.
+
+**Three pieces make the split work:**
+
+1. **`apiUrl()` in `api.js`** prefixes every request with `VITE_API_BASE_URL`. Empty (dev and
+   the Express build) = same-origin; set (Vercel) = absolute to the bot. `makeApi` routes
+   through it, and so must the two raw `fetch` calls that bypass the helper —
+   `Login.jsx` (pre-token) and the `Knowledge.jsx` document upload (multipart, which the
+   JSON-forcing helper would corrupt). **A bare `fetch('/api/…')` is a bug on Vercel:** it hits
+   the Vercel domain, the SPA rewrite returns `index.html`, and the caller dies on
+   `Unexpected token '<'`.
+2. **`BrowserRouter basename={import.meta.env.BASE_URL}`** in `main.jsx`. `BASE_URL` *is* vite's
+   `base`, so the router follows the build target automatically instead of needing a second knob.
+3. **CORS in `apps/bot/src/index.js`**, driven by `ADMIN_ALLOWED_ORIGINS`. Deliberately not `*`
+   — these endpoints expose sessions, logs and customer conversations. Exact origins, or
+   `*.`-prefixed suffix matches for Vercel's per-commit preview hostnames. Preflight is answered
+   in the middleware because `OPTIONS` carries no `Authorization` header and would otherwise 401.
+   No `Allow-Credentials`: auth is a bearer token, not a cookie.
+
+⚠️ **The two deployments drift.** Vercel rebuilds on push; the Express copy only updates when
+someone runs `npm run build-admin` and commits `dist-express`. After changing `apps/admin/src`,
+do both or knowingly leave the fallback stale.
+
+Verified live 2026-08-02: both builds emit the correct asset base; against a running bot,
+`/admin`, the `/admin/*` SPA deep-link fallback and the hashed assets all 200; preflight from an
+exact origin and from a `*.vercel.app` preview both return the allow headers while a
+non-allowlisted origin gets none; cross-origin login returns a token and `/api/sessions`,
+`/api/provider-stats`, `/api/knowledge`, `/api/knowledge/sources`, `/api/tickets/open-count`
+all 200 with it; unauthenticated calls still 401 **with** the CORS header, so the SPA can read
+the error rather than seeing an opaque network failure.
 
 ### Safe Mode
 

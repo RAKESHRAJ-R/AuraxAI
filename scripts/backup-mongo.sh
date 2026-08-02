@@ -14,7 +14,7 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/theaurax}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 DB_NAME="${DB_NAME:-theaurax_assistant}"
 # Read the same URI the bot uses so credentials live in exactly one place.
-ENV_FILE="${ENV_FILE:-/opt/theaurax/.env}"
+ENV_FILE="${ENV_FILE:-/opt/theaurax/apps/bot/.env}"
 OFFSITE_DEST="${OFFSITE_DEST:-}"   # e.g. u123456@u123456.your-storagebox.de:backups/
 
 if [[ -z "${MONGODB_URI:-}" && -f "$ENV_FILE" ]]; then
