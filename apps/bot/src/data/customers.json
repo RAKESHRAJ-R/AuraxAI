@@ -198,5 +198,77 @@
     "channel": "whatsapp",
     "updatedAt": "2026-07-27T03:06:53.039Z",
     "createdAt": "2026-07-27T03:06:53.047Z"
+  },
+  {
+    "userId": "test_user_single_349",
+    "name": "Customer",
+    "phone": "349",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-03T17:16:56.396Z",
+    "createdAt": "2026-08-03T17:16:56.408Z"
+  },
+  {
+    "userId": "test_user_single_827",
+    "name": "Customer",
+    "phone": "827",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-03T17:18:00.194Z",
+    "createdAt": "2026-08-03T17:18:00.195Z"
+  },
+  {
+    "userId": "test_user_single_72",
+    "name": "Customer",
+    "phone": "72",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T16:12:00.354Z",
+    "createdAt": "2026-08-04T16:12:00.362Z"
+  },
+  {
+    "userId": "test_user_single_588",
+    "name": "Customer",
+    "phone": "588",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T16:18:58.365Z",
+    "createdAt": "2026-08-04T16:18:58.366Z"
+  },
+  {
+    "userId": "verify_sarvam_1785860685048",
+    "name": "Verify Bot",
+    "phone": "9999999999",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T16:24:45.300Z",
+    "createdAt": "2026-08-04T16:24:45.312Z"
+  },
+  {
+    "userId": "cost_probe_1785866155810",
+    "name": "Cost Probe",
+    "phone": "9876500000",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T17:55:56.000Z",
+    "createdAt": "2026-08-04T17:55:56.009Z"
+  },
+  {
+    "userId": "cost_probe_1785867067442",
+    "name": "Cost Probe",
+    "phone": "9876500000",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T18:11:07.639Z",
+    "createdAt": "2026-08-04T18:11:07.611Z"
+  },
+  {
+    "userId": "eng_check_1785867337749_0.0832531976234342",
+    "name": "Customer",
+    "phone": "1976234342",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T18:15:37.773Z",
+    "createdAt": "2026-08-04T18:15:37.774Z"
+  },
+  {
+    "userId": "eng_check_1785867337792_0.25167332722403757",
+    "name": "Customer",
+    "phone": "2722403757",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T18:15:37.794Z",
+    "createdAt": "2026-08-04T18:15:37.795Z"
   }
 ]
