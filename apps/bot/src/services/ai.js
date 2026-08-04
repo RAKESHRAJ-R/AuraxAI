@@ -1361,6 +1361,29 @@ ${sessionContext}`;
     const q = (userQuery || '').toLowerCase().trim();
     if (!q || q.length > 60) return null;
 
+    // --- "<product no> <size> <qty>" in ONE message, e.g. "2 M 5", "3 size L 2" ---
+    // Two numbers either side of a size token is unambiguous: the FIRST is the product
+    // being picked from the numbered list, the LAST is the quantity. This is the single
+    // most natural way to answer the bot's own "Which one — 1, 2 or 3? What size and how
+    // many?" question, and it used to parse WRONG TWICE: the leading digit was never
+    // recognised as an ordinal (bare digits only counted next to a word like "option"),
+    // so it defaulted to product #1, AND the quantity regex grabbed that same leading
+    // digit before ever reaching the real quantity. "2 M 5" became product #1, qty 2.
+    const combo = q.match(/^([1-9]\d?)\s*[.)\-]?\s*(?:size\s*)?(xxxl|xxl|xl|s|m|l)\b\s*(?:size)?\s*[-x*,]?\s*([1-9]\d?)\b/i);
+    if (combo) {
+      const idx = parseInt(combo[1], 10) - 1;
+      const p = lastShownProducts[idx];
+      const comboSize = combo[2].toUpperCase();
+      const comboQty = parseInt(combo[3], 10);
+      const sizeOk = p && (!p.sizes?.length || p.sizes.some(s => s.toUpperCase().startsWith(comboSize)));
+      if (p && sizeOk && comboQty >= 1 && comboQty <= 50) {
+        return { productId: p.productId, name: p.name, price: p.price, size: comboSize, qty: comboQty };
+      }
+      // Shaped like a combo but the product number or size doesn't exist — don't fall
+      // through and silently guess a different product; let the LLM ask what they meant.
+      return null;
+    }
+
     const sizeMatch = q.match(/\b(xxxl|xxl|xl|s|m|l)\b/i);
     if (!sizeMatch) return null;
     const size = sizeMatch[1].toUpperCase();

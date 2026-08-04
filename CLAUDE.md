@@ -235,7 +235,17 @@ Three of the highest-frequency conversational turns are handled entirely in code
    first in `faq.json`, an unguarded keyword would have returned a canned hello instead of a
    product search. This also closes the same hole on the English side (`"hi do you have real
    madrid jerseys"` used to match Greetings).
-2. **Size + quantity parsing** (`aiService.parseSizeQtyReply()`) — replies like `"M size 2"`, `"1st one, L 3"`, or `"XL"` are regex-parsed against `session.lastShownProducts` (populated whenever `search_products` runs) and go straight to cart via `update_cart` logic. Returns `null` on anything not confidently parseable — including trusting only sizes the matched product actually lists — and falls through to the LLM in that case. Intent tag: `deterministic_cart`.
+2. **Size + quantity parsing** (`aiService.parseSizeQtyReply()`) — replies like `"M size 2"`, `"1st one, L 3"`, `"2 M 5"`, or `"XL"` are regex-parsed against `session.lastShownProducts` (populated whenever `search_products` runs) and go straight to cart via `update_cart` logic. Returns `null` on anything not confidently parseable — including trusting only sizes the matched product actually lists — and falls through to the LLM in that case. Intent tag: `deterministic_cart`.
+
+   **`"<product no> <size> <qty>"` in one message** (`"2 M 5"`, `"3 size L 2"`) is handled by a
+   dedicated branch, because it's the most natural answer to the bot's own *"Which one — 1, 2
+   or 3? What size and how many?"* and it used to parse **wrong twice**: bare digits only
+   counted as an ordinal next to a word like `"option"`, so the leading number was ignored and
+   the product defaulted to #1 — and then the quantity regex grabbed that same leading digit
+   before reaching the real quantity. `"2 M 5"` became *product #1, qty 2*. Two numbers either
+   side of a size token is unambiguous (first = product, last = qty). If the product number or
+   size doesn't exist it returns `null` rather than falling through to guess a different
+   product.
 3. **Order confirmation** (`aiService._confirmOrderNow()`) — a message that IS ENTIRELY a confirmation word/phrase (`"yes"`, `"confirm"`, `"seri"`, `"ok"`, etc. — anchored full-string match, not substring) during `CONFIRMING_ORDER` state creates the order directly. `"yes but change the address"` still goes to the LLM since it isn't purely a confirmation. Intent tag: `deterministic_confirm`.
 
 A fourth optimization saves an LLM call without skipping it entirely: when `search_products` returns exactly one confident match, the reply is templated directly (randomized hype opener + product details) instead of feeding the result back for a second "narration" LLM call. Multiple matches still get narrated normally so the model can help the customer choose.
