@@ -1593,6 +1593,44 @@ ${sessionContext}`;
       return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
     }
 
+    // --- Deterministic "start a new order" reset ---
+    // MUST run before the isIdle gate below, because its whole purpose is to rescue a
+    // session that is NOT idle.
+    //
+    // Every fast path (FAQ, knowledge, size/qty, product selection) is gated on
+    // `cart.length === 0`. Nothing used to clear the cart except completing or abandoning
+    // an order, so a customer who finished one purchase and typed "hi new order" stayed
+    // in COLLECTING_ADDRESS with a stale cart FOREVER. From that point every message went
+    // to the LLM, which — seeing a filled cart and an address-collection state — answered
+    // "1"/"M 5"/"s 3" by re-running search_products and re-printing the same list. That is
+    // the infinite product-list loop reported from production 2026-08-05, reproduced
+    // exactly: turn 2 deterministic_cart, then every later turn agent_handled with
+    // cart=1 / state=COLLECTING_ADDRESS.
+    //
+    // Deliberately narrow: an explicit restart phrase in a SHORT message, and never when
+    // the message looks like a question about an EXISTING order ("where is my new order",
+    // "cancel my order") — those are tracking/cancellation intents, not a restart.
+    if (userQuery && userQuery.trim().length <= 40) {
+      const q = userQuery.trim();
+      const wantsRestart = /\b(?:(?:new|another|fresh|next|one more|1 more)\s+(?:order|jersey|item|purchase)|start\s+(?:over|again|fresh)|restart|reset|clear\s+(?:my\s+)?cart|vera\s+(?:order|jersey)|innoru\s+(?:order|jersey))\b/i.test(q);
+      const isAboutExistingOrder = /\b(where|track|tracking|status|cancel|delivered|arrived|received|refund|return)\b/i.test(q);
+      if (wantsRestart && !isAboutExistingOrder) {
+        const hadCart = session.cart.length > 0;
+        session.cart = [];
+        session.state = 'IDLE';
+        session.pendingProductIndex = null;
+        // Cleared too, so a later bare "1" can't select from the PREVIOUS order's list.
+        session.lastShownProducts = [];
+        const reply = session.language === 'tanglish'
+          ? `Sure bro! 🔥 ${hadCart ? 'Pazhaya cart clear pannaachu. ' : ''}Fresh ah start pannalam — enna team illa player jersey venum? Real Madrid, Barcelona, Ronaldo, Messi… sollunga! ⚽`
+          : `Sure thing! 🔥 ${hadCart ? "Cleared your previous cart. " : ''}Let's start fresh — which team or player are you looking for? Real Madrid, Barcelona, Ronaldo, Messi… just tell me! ⚽`;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: reply });
+        await dbService.saveSession(senderId, session);
+        return { replyText: reply, intent: 'deterministic_reset', requiresEscalation: false, suggestedProductIds: [] };
+      }
+    }
+
     // --- Pre-AI FAQ Matcher ---
     // Answer common FAQ queries directly WITHOUT using any LLM tokens (faster, zero leak risk).
     // CRITICAL: Only run when session is IDLE — NOT during an active order flow where

@@ -14,6 +14,7 @@ class WhatsAppWebBot {
     // admin console. Without this, nobody can tell WHOSE phone the bot is paired to without
     // physically checking every candidate device's "Linked devices" screen.
     this.deviceInfo = null;
+    this.connectedAt = null;
     // Single pending re-init timer. Both the 'disconnected' handler and logout() want to
     // bring the client back up; if each sets its own setTimeout we end up launching TWO
     // Puppeteer/WhatsApp clients against one LocalAuth session, which corrupts it.
@@ -148,6 +149,42 @@ class WhatsAppWebBot {
   }
 
   /**
+   * Read the linked account off `client.info` into `deviceInfo`.
+   *
+   * Called on 'ready' AND lazily from getStatus(), because `client.info` is not reliably
+   * populated at the moment 'ready' fires — observed in production 2026-08-05, where the
+   * console showed a healthy CONNECTED session with "Unknown number"/"Linked since Never"
+   * while the same build filled it in correctly locally. The server resolves LIDs
+   * (`…@lid`) rather than plain phone JIDs, and `info` lands slightly later there. Reading
+   * it again when the admin page polls costs nothing and closes that window.
+   *
+   * Returns the captured object, or null if there's still nothing to read.
+   */
+  captureDeviceInfo(source = 'lazy') {
+    try {
+      const info = this.client?.info;
+      if (!info) return null;
+      // The shape has moved between whatsapp-web.js versions — `me` is the older field.
+      const wid = info.wid || info.me || {};
+      const number = wid.user || wid._serialized?.split('@')[0] || null;
+      if (!number && !info.pushname) return null;
+      this.deviceInfo = {
+        number,
+        name: info.pushname || null,
+        platform: info.platform || null,
+        connectedAt: this.connectedAt || new Date().toISOString(),
+      };
+      if (source === 'ready') {
+        console.log(`[WhatsApp Web Bot] Linked account: +${number || '?'}${info.pushname ? ` (${info.pushname})` : ''}`);
+      }
+      return this.deviceInfo;
+    } catch (err) {
+      console.warn('[WhatsApp Web Bot] Could not read linked-account info:', err.message);
+      return null;
+    }
+  }
+
+  /**
    * Queue a re-initialization, replacing any already-pending one. Every path that wants the
    * client back (disconnect, auth failure, launch failure, admin logout) MUST go through
    * here rather than calling setTimeout(initialize) directly — see reinitTimer above.
@@ -188,6 +225,7 @@ class WhatsAppWebBot {
     this.status = 'DISCONNECTED';
     this.qrDataUrl = null;
     this.deviceInfo = null;
+    this.connectedAt = null;
 
     let cleared = true;
     try {
@@ -266,22 +304,10 @@ class WhatsAppWebBot {
         console.log('[WhatsApp Web Bot] Client is ready and connected!');
         this.status = 'CONNECTED';
         this.qrDataUrl = null;
-        // client.info is only populated once ready. Read defensively — the shape has moved
-        // between whatsapp-web.js versions, and a missing field here must never throw on
-        // the ready path and take the whole connection down.
-        try {
-          const info = this.client?.info || {};
-          this.deviceInfo = {
-            number: info.wid?.user || null,
-            name: info.pushname || null,
-            platform: info.platform || null,
-            connectedAt: new Date().toISOString(),
-          };
-          console.log(`[WhatsApp Web Bot] Linked account: +${this.deviceInfo.number || '?'}${this.deviceInfo.name ? ` (${this.deviceInfo.name})` : ''}`);
-        } catch (err) {
-          this.deviceInfo = { number: null, name: null, platform: null, connectedAt: new Date().toISOString() };
-          console.warn('[WhatsApp Web Bot] Could not read linked-account info:', err.message);
-        }
+        // Record the connect time here even if the account details aren't readable yet —
+        // otherwise "Linked since" shows "Never" on a perfectly healthy connection.
+        this.connectedAt = new Date().toISOString();
+        this.captureDeviceInfo('ready');
       });
 
       this.client.on('authenticated', () => {
@@ -293,6 +319,7 @@ class WhatsAppWebBot {
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
         this.deviceInfo = null;
+        this.connectedAt = null;
         try {
           await this.client?.destroy();
         } catch (err) {
@@ -309,6 +336,7 @@ class WhatsAppWebBot {
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
         this.deviceInfo = null;
+        this.connectedAt = null;
         try {
           await this.client.destroy();
         } catch (err) {
@@ -333,6 +361,7 @@ class WhatsAppWebBot {
         this.status = 'DISCONNECTED';
         this.client = null;
         this.deviceInfo = null;
+        this.connectedAt = null;
         // Auto-reinitialize after 10 seconds on failure
         this.scheduleReinit(10000);
       });
@@ -467,12 +496,21 @@ class WhatsAppWebBot {
   }
 
   getStatus() {
+    // Retry the account read if 'ready' couldn't get it — the admin page polls every 2.5s,
+    // so the panel fills in as soon as client.info becomes available instead of showing
+    // "Unknown number" for the life of the session.
+    if (this.status === 'CONNECTED' && !this.deviceInfo?.number) this.captureDeviceInfo();
+
+    const device = this.status === 'CONNECTED'
+      ? (this.deviceInfo || { number: null, name: null, platform: null, connectedAt: this.connectedAt || null })
+      : null;
+
     return {
       status: this.status,
       qrDataUrl: this.qrDataUrl,
       // Only meaningful while CONNECTED; null otherwise so the console can't show a stale
       // number next to a disconnected badge.
-      device: this.status === 'CONNECTED' ? this.deviceInfo : null,
+      device,
       loggingOut: this.loggingOut,
     };
   }
