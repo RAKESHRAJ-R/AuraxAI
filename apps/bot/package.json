@@ -13,6 +13,7 @@
     "test-embeddings": "node src/test_embeddings.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",
+    "seed-tickets": "node src/seed_tickets.js",
     "migrate-mongo": "node src/migrate_to_mongo.js"
   },
   "overrides": {

@@ -10,6 +10,15 @@ class WhatsAppWebBot {
     this.status = 'DISCONNECTED'; // DISCONNECTED, CONNECTING, QR_READY, CONNECTED
     this.qrDataUrl = null;
     this.client = null;
+    // Which WhatsApp account is currently linked — captured on 'ready' and surfaced in the
+    // admin console. Without this, nobody can tell WHOSE phone the bot is paired to without
+    // physically checking every candidate device's "Linked devices" screen.
+    this.deviceInfo = null;
+    // Single pending re-init timer. Both the 'disconnected' handler and logout() want to
+    // bring the client back up; if each sets its own setTimeout we end up launching TWO
+    // Puppeteer/WhatsApp clients against one LocalAuth session, which corrupts it.
+    this.reinitTimer = null;
+    this.loggingOut = false;
     // Per-sender processing chains: a global concurrency-N pool (the old approach)
     // can dequeue two messages from the SAME customer onto different workers at once,
     // and since answerQuery does a read-modify-write on that customer's session, the
@@ -138,6 +147,77 @@ class WhatsAppWebBot {
     this.senderChains.set(senderId, chain);
   }
 
+  /**
+   * Queue a re-initialization, replacing any already-pending one. Every path that wants the
+   * client back (disconnect, auth failure, launch failure, admin logout) MUST go through
+   * here rather than calling setTimeout(initialize) directly — see reinitTimer above.
+   */
+  scheduleReinit(delayMs) {
+    if (this.reinitTimer) clearTimeout(this.reinitTimer);
+    this.reinitTimer = setTimeout(() => {
+      this.reinitTimer = null;
+      this.initialize();
+    }, delayMs);
+  }
+
+  /**
+   * Unlink the currently paired phone and come back up with a fresh QR.
+   *
+   * client.logout() revokes the session on the phone's side AND clears the LocalAuth folder,
+   * which is the difference that matters: destroy() alone would just close the browser and
+   * the next initialize() would silently re-pair the SAME number, so "logout" wouldn't log
+   * anything out. The client reference is detached first so the 'disconnected' event this
+   * triggers can't double-destroy or double-schedule behind us.
+   */
+  async logout() {
+    if (!config.whatsappWeb.enabled) {
+      return { ok: false, message: 'WhatsApp Web integration is disabled.' };
+    }
+    if (this.loggingOut) {
+      return { ok: false, message: 'A logout is already in progress.' };
+    }
+    const client = this.client;
+    if (!client) {
+      return { ok: false, message: 'No active WhatsApp session to log out.' };
+    }
+
+    this.loggingOut = true;
+    const previous = this.deviceInfo?.number || null;
+    // Detach first: the 'disconnected' handler checks `this.client` and will now no-op.
+    this.client = null;
+    this.status = 'DISCONNECTED';
+    this.qrDataUrl = null;
+    this.deviceInfo = null;
+
+    let cleared = true;
+    try {
+      await client.logout();
+      console.log(`[WhatsApp Web Bot] Logged out${previous ? ` (was +${previous})` : ''}. Session cleared.`);
+    } catch (err) {
+      // logout() can throw if the page is already gone. The session files may then survive,
+      // so say so honestly rather than reporting a clean unlink that didn't happen.
+      cleared = false;
+      console.warn('[WhatsApp Web Bot] logout() failed:', err.message);
+    }
+    try {
+      await client.destroy();
+    } catch {
+      /* best-effort: the browser may already be closed */
+    }
+
+    this.loggingOut = false;
+    // Short delay (not the 10s reconnect one) so the admin gets a new QR promptly.
+    this.scheduleReinit(2000);
+    return {
+      ok: true,
+      cleared,
+      previousNumber: previous,
+      message: cleared
+        ? 'Logged out. A new QR code will appear in a few seconds.'
+        : 'Session closed, but the stored login may not have been fully cleared — if the same number reconnects, delete apps/bot/.wwebjs_auth and restart.',
+    };
+  }
+
   initialize() {
     if (!config.whatsappWeb.enabled) {
       console.log('[WhatsApp Web Bot] Disabled in config. Skipping initialization.');
@@ -186,6 +266,22 @@ class WhatsAppWebBot {
         console.log('[WhatsApp Web Bot] Client is ready and connected!');
         this.status = 'CONNECTED';
         this.qrDataUrl = null;
+        // client.info is only populated once ready. Read defensively — the shape has moved
+        // between whatsapp-web.js versions, and a missing field here must never throw on
+        // the ready path and take the whole connection down.
+        try {
+          const info = this.client?.info || {};
+          this.deviceInfo = {
+            number: info.wid?.user || null,
+            name: info.pushname || null,
+            platform: info.platform || null,
+            connectedAt: new Date().toISOString(),
+          };
+          console.log(`[WhatsApp Web Bot] Linked account: +${this.deviceInfo.number || '?'}${this.deviceInfo.name ? ` (${this.deviceInfo.name})` : ''}`);
+        } catch (err) {
+          this.deviceInfo = { number: null, name: null, platform: null, connectedAt: new Date().toISOString() };
+          console.warn('[WhatsApp Web Bot] Could not read linked-account info:', err.message);
+        }
       });
 
       this.client.on('authenticated', () => {
@@ -196,8 +292,9 @@ class WhatsAppWebBot {
         console.error('[WhatsApp Web Bot] Authentication failed:', msg);
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
+        this.deviceInfo = null;
         try {
-          await this.client.destroy();
+          await this.client?.destroy();
         } catch (err) {
           // ignore
         }
@@ -206,8 +303,12 @@ class WhatsAppWebBot {
 
       this.client.on('disconnected', async (reason) => {
         console.log('[WhatsApp Web Bot] Client disconnected:', reason);
+        // logout() detaches this.client before triggering this event and handles its own
+        // teardown + re-init, so bail out rather than fighting it for the same client.
+        if (!this.client) return;
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
+        this.deviceInfo = null;
         try {
           await this.client.destroy();
         } catch (err) {
@@ -216,9 +317,7 @@ class WhatsAppWebBot {
         this.client = null;
 
         // Auto-reinitialize after 10 seconds
-        setTimeout(() => {
-          this.initialize();
-        }, 10000);
+        this.scheduleReinit(10000);
       });
 
       this.client.on('message', async (msg) => {
@@ -233,10 +332,9 @@ class WhatsAppWebBot {
         console.error('[WhatsApp Web Bot] Failed to initialize client asynchronously:', error.message);
         this.status = 'DISCONNECTED';
         this.client = null;
+        this.deviceInfo = null;
         // Auto-reinitialize after 10 seconds on failure
-        setTimeout(() => {
-          this.initialize();
-        }, 10000);
+        this.scheduleReinit(10000);
       });
     } catch (error) {
       console.error('[WhatsApp Web Bot] Failed to initialize client:', error.message);
@@ -371,7 +469,11 @@ class WhatsAppWebBot {
   getStatus() {
     return {
       status: this.status,
-      qrDataUrl: this.qrDataUrl
+      qrDataUrl: this.qrDataUrl,
+      // Only meaningful while CONNECTED; null otherwise so the console can't show a stale
+      // number next to a disconnected badge.
+      device: this.status === 'CONNECTED' ? this.deviceInfo : null,
+      loggingOut: this.loggingOut,
     };
   }
 }

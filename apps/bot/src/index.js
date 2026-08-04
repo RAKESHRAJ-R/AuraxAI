@@ -97,6 +97,25 @@ app.get('/api/whatsapp/status', requireKnowledgeAuth, (req, res) => {
 });
 
 /**
+ * WhatsApp Web Logout Route
+ * Unlinks the currently paired phone and brings a fresh QR up, so the admin can move the
+ * bot to a different number without needing physical access to the device it's paired to.
+ */
+app.post('/api/whatsapp/logout', requireKnowledgeAuth, async (req, res) => {
+  if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
+    return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
+  }
+  try {
+    const result = await whatsappWebBot.logout();
+    if (!result.ok) return res.status(409).json({ error: result.message });
+    res.json(result);
+  } catch (err) {
+    console.error('[API] WhatsApp logout failed:', err.message);
+    res.status(500).json({ error: 'Logout failed. Check the server logs.' });
+  }
+});
+
+/**
  * Retry Queue Stats Route
  * Shows pending LLM retries (survives restarts via DB persistence).
  * Useful for monitoring quota-exhausted queries waiting to be reprocessed.

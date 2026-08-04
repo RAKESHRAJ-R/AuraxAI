@@ -76,17 +76,22 @@ const config = {
   },
   sarvam: {
     // Indic-specialised provider (Sarvam AI, Indian). OpenAI-compatible endpoint
-    // (baseURL https://api.sarvam.ai/v1, Authorization: Bearer). sarvam-30b/105b are
+    // (baseURL https://api.sarvam.ai/v1, Authorization: Bearer). Sarvam's models are
     // purpose-trained on romanized AND code-mixed Indian-language text (Tamil incl.),
-    // so this is the Tanglish-first provider — better code-mixing than Llama-3.3 and
-    // cheaper than Fireworks (~₹360/mo at 100 convos/day; ₹1,000 signup credit covers
-    // ~12,000 convos). Full OpenAI-style tool calling confirmed. Gated behind
-    // SARVAM_API_KEY — absent = provider simply isn't loaded, no behavior change.
+    // so this is the Tanglish-first provider — better code-mixing than Llama-3.3.
+    // Full OpenAI-style tool calling confirmed. Gated behind SARVAM_API_KEY — absent =
+    // provider simply isn't loaded, no behavior change.
+    //
+    // ⚠️ sarvam-30b (the original default) was DEPRECATED by Sarvam in June 2026 and is
+    // now GONE from the API — GET /v1/models lists only sarvam-105b, and a completion
+    // with model 'sarvam-30b' returns HTTP 400 (verified live 2026-08-04). The vendor's
+    // documented migration target is sarvam-105b (128K ctx), which is what this now
+    // defaults to. Do NOT set SARVAM_MODEL back to a 30b/16k variant — they are retired.
     apiKey: process.env.SARVAM_API_KEY || '',
     apiKeys: (process.env.SARVAM_API_KEY || '').split(',')
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_sarvam')),
-    model: process.env.SARVAM_MODEL || 'sarvam-30b',
+    model: process.env.SARVAM_MODEL || 'sarvam-105b',
   },
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',

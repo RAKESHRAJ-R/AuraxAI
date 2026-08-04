@@ -1,86 +1,101 @@
 [
   {
     "category": "Greetings",
-    "keywords": ["hi", "hello", "hey", "good morning", "good evening", "good afternoon", "hii", "hlo", "helo"],
+    "keywords": ["hi", "hello", "hey", "good morning", "good evening", "good afternoon", "hii", "hlo", "helo", "vanakkam", "vanakam", "vanakkm", "vankam"],
+    "exactOnly": true,
     "question": "Hello! How can I help you?",
-    "answer": "Hey there! 👋 I'm Aura, your assistant at Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥"
+    "answer": "Hey there! 👋 I'm Aura, your assistant at Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥",
+    "answerTanglish": "Vanakkam bro! 👋 Naan Aura, Theaurax.in la unga assistant — premium football jerseys ku best place! Latest 25/26 season jerseys ellam stock la iruku. Enna team illa player jersey venum? Sollunga! ⚽🔥"
   },
   {
     "category": "COD & Payment",
-    "keywords": ["cod", "cash on delivery", "payment methods", "pay", "gpay", "phonepe", "upi"],
+    "keywords": ["cod", "cash on delivery", "payment methods", "pay", "gpay", "phonepe", "upi", "online pay", "pay pannalama", "panam eppadi"],
     "question": "Do you support Cash on Delivery (COD) or online payments?",
-    "answer": "Yes, we support both Cash on Delivery (COD) and Online Payments (UPI, GPAY, PhonePe, Cards). For online payments, there is no extra charge. For COD, there is a flat extra fee of ₹50 charged by the courier partner. You can choose your preferred method at checkout on Theaurax.in."
+    "answer": "Yes, we support both Cash on Delivery (COD) and Online Payments (UPI, GPAY, PhonePe, Cards). For online payments, there is no extra charge. For COD, there is a flat extra fee of ₹50 charged by the courier partner. You can choose your preferred method at checkout on Theaurax.in.",
+    "answerTanglish": "Rendumey iruku bro — COD um Online Payment um (UPI, GPay, PhonePe, Cards). Online pay panna extra charge kidayaathu. COD la courier partner flat ₹50 extra fee vaanguvaanga. Checkout la ungalukku ethu venumo select pannikonga!"
   },
   {
     "category": "Shipping & Delivery",
-    "keywords": ["delivery time", "shipping time", "how long", "when will i get", "shipping charge", "delivery charge", "charges"],
+    "keywords": ["delivery time", "shipping time", "how long", "when will i get", "shipping charge", "delivery charge", "charges", "ethana naal", "ethana naa", "evlo naal", "evvalavu naal", "naal aagum", "eppo varum", "eppo delivery", "delivery evlo", "shipping evlo", "delivery eppo"],
     "question": "What are the shipping charges and delivery timelines?",
-    "answer": "We ship all across India! Shipping is FREE for all online prepaid orders. For Cash on Delivery (COD) orders, a flat fee of ₹50 applies. Delivery takes 3 to 5 business days for metro cities, and 5 to 7 business days for the rest of India. You will receive a tracking link via WhatsApp/SMS once your order is shipped."
+    "answer": "We ship all across India! Shipping is FREE for all online prepaid orders. For Cash on Delivery (COD) orders, a flat fee of ₹50 applies. Delivery takes 3 to 5 business days for metro cities, and 5 to 7 business days for the rest of India. You will receive a tracking link via WhatsApp/SMS once your order is shipped.",
+    "answerTanglish": "India full ah ship pannuvom bro! Online prepaid order ku shipping FREE. COD ku flat ₹50 aagum. Metro cities ku 3-5 business days, matha oorunga ku 5-7 business days la delivery aagidum. Order ship aana odane tracking link WhatsApp/SMS la varum!"
   },
   {
     "category": "Sizing & Fit",
-    "keywords": ["size chart", "sizes", "fit", "jersey size", "dimensions"],
+    "keywords": ["size chart", "sizes", "fit", "jersey size", "dimensions", "size evlo", "size eppadi", "size chart iruka"],
     "question": "What sizes do you have and is there a size chart?",
-    "answer": "Our jerseys are available in sizes S, M, L, XL, and XXL. They are standard athletic/slim fit. We highly recommend checking our size chart on the website (https://theaurax.in/size-chart) to find your perfect fit. If you prefer a loose/relaxed fit, we suggest ordering one size up."
+    "answer": "Our jerseys are available in sizes S, M, L, XL, and XXL. They are standard athletic/slim fit. We highly recommend checking our size chart on the website (https://theaurax.in/size-chart) to find your perfect fit. If you prefer a loose/relaxed fit, we suggest ordering one size up.",
+    "answerTanglish": "Namma jerseys S, M, L, XL, XXL sizes la iruku bro. Standard athletic/slim fit. Perfect size theriyanumna website la size chart paarunga — https://theaurax.in/size-chart. Loose ah venumna oru size periya thu order pannunga!"
   },
   {
     "category": "Customization",
-    "keywords": ["custom", "customize", "print", "customised", "customization", "name and number"],
+    "keywords": ["custom", "customize", "print", "customised", "customization", "name and number", "name print", "number print", "print pannalama", "custom pannalama", "name podalama"],
     "question": "Can I customize the jersey with my own name and number?",
-    "answer": "Yes! Customization (adding your name and favorite number on the back of the jersey) is available for an additional ₹100. During the checkout process on our website, you will see a text box to enter the Name and Number you want printed. Please note that customized jerseys cannot be returned or exchanged unless there is a manufacturing defect."
+    "answer": "Yes! Customization (adding your name and favorite number on the back of the jersey) is available for an additional ₹100. During the checkout process on our website, you will see a text box to enter the Name and Number you want printed. Please note that customized jerseys cannot be returned or exchanged unless there is a manufacturing defect.",
+    "answerTanglish": "Kandippa mudiyum bro! Jersey back la unga name um number um print panna extra ₹100 aagum. Website checkout la oru text box varum — angha name and number type pannunga. Aana customised jersey return illa exchange panna mudiyaathu, manufacturing defect irundha mattum thaan."
   },
   {
     "category": "Return & Exchange",
-    "keywords": ["return", "exchange", "refund", "replace", "wrong size", "damaged"],
+    "keywords": ["return", "exchange", "refund", "replace", "wrong size", "damaged", "return pannalama", "exchange pannalama", "maathi kudukka", "maathi tharuveengala", "maathanum"],
     "question": "What is your return and exchange policy?",
-    "answer": "We offer a 7-day exchange policy for size issues or defects. The jersey must be unused, with all tags intact. Please note custom-printed jerseys (with custom names/numbers) cannot be exchanged or returned. To start an exchange, message us here with your order details, or email support@theaurax.in with your order ID, reason, and photos (if the item is damaged or wrong)."
+    "answer": "We offer a 7-day exchange policy for size issues or defects. The jersey must be unused, with all tags intact. Please note custom-printed jerseys (with custom names/numbers) cannot be exchanged or returned. To start an exchange, message us here with your order details, or email support@theaurax.in with your order ID, reason, and photos (if the item is damaged or wrong).",
+    "answerTanglish": "Size problem illa defect irundha 7-day exchange iruku bro. Jersey use pannaama, tags ellam intact ah irukanum. Custom name/number print panna jersey exchange illa return panna mudiyaathu. Exchange venumna inga order details message pannunga, illa support@theaurax.in ku order ID, reason, photo anuppunga."
   },
   {
     "category": "Jersey Quality",
-    "keywords": ["quality", "material", "fabric", "original", "copy", "first copy", "master copy", "polyester"],
+    "keywords": ["quality", "material", "fabric", "original", "copy", "first copy", "master copy", "polyester", "quality eppadi", "quality nallairuka", "original va", "duplicate va"],
     "question": "What is the fabric quality and material of the jerseys?",
-    "answer": "Our jerseys are premium master quality (1:1 replicated player/fan version jerseys). They are made of 100% high-grade polyester fabric with sweat-wicking dry-fit technology, complete with high-density embroidered brand logos and team crests. They look and feel exactly like the ones worn by players on the pitch."
+    "answer": "Our jerseys are premium master quality (1:1 replicated player/fan version jerseys). They are made of 100% high-grade polyester fabric with sweat-wicking dry-fit technology, complete with high-density embroidered brand logos and team crests. They look and feel exactly like the ones worn by players on the pitch.",
+    "answerTanglish": "Namma jerseys premium master quality bro (1:1 replica player/fan version). 100% high-grade polyester fabric, sweat-wicking dry-fit technology, high-density embroidered logos and team crests. Players ground la potrukra maathiri exact ah irukum!"
   },
   {
     "category": "Wholesale / Bulk Orders",
-    "keywords": ["bulk", "wholesale", "50 pieces", "many pieces", "wholesale price", "team kit", "discount"],
+    "keywords": ["bulk", "wholesale", "50 pieces", "many pieces", "wholesale price", "team kit", "discount", "niraya venum", "nariya venum", "bulk ah venum"],
     "question": "Do you offer discounts for wholesale or bulk orders?",
-    "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Share the quantity you're looking for, or reach our wholesale team directly on 9884442049 for the best quote."
+    "answer": "Yes! We specialize in team kits and wholesale orders. For orders of 20 or more jerseys, we offer special wholesale pricing. Share the quantity you're looking for, or reach our wholesale team directly on 9884442049 for the best quote.",
+    "answerTanglish": "Kandippa bro! Team kits and wholesale orders namma speciality. 20 jerseys mela order panna special wholesale price kodupom. Ethana pieces venum sollunga, illa direct ah wholesale team ah 9884442049 la contact pannunga — best quote kidaikum!"
   },
   {
     "category": "Order Tracking",
-    "keywords": ["track", "tracking", "where is my order", "order status", "has it shipped", "order update"],
+    "keywords": ["track", "tracking", "where is my order", "order status", "has it shipped", "order update", "order enga", "en order enga", "order status enna", "order vandhurucha"],
     "question": "How can I track my order?",
-    "answer": "Once your order ships, you'll get an update here on WhatsApp. If you'd like a status check anytime before that, just message us your order number and our team will look it up and update you directly."
+    "answer": "Once your order ships, you'll get an update here on WhatsApp. If you'd like a status check anytime before that, just message us your order number and our team will look it up and update you directly.",
+    "answerTanglish": "Order ship aana odane inga WhatsApp la update varum bro. Atha munnaadi status check pannanumna, unga order number ah message pannunga — namma team paathu direct ah sollidum!"
   },
   {
     "category": "Shipping Coverage",
-    "keywords": ["international", "internationally", "outside india", "ship abroad", "usa", "uk", "other country", "worldwide"],
+    "keywords": ["international", "internationally", "outside india", "ship abroad", "usa", "uk", "other country", "worldwide", "veliya country", "veliya naadu", "foreign ku"],
     "question": "Do you ship outside India?",
-    "answer": "Right now we only ship within India. We don't currently support international orders, but keep an eye out — that may change in the future!"
+    "answer": "Right now we only ship within India. We don't currently support international orders, but keep an eye out — that may change in the future!",
+    "answerTanglish": "Ippothaikku India kulla mattum thaan ship pannuvom bro. International orders ippo support pannala — aana future la varalaam, paarunga!"
   },
   {
     "category": "Jersey Care",
-    "keywords": ["wash", "washing", "care instructions", "how to wash", "iron", "maintain"],
+    "keywords": ["wash", "washing", "care instructions", "how to wash", "iron", "maintain", "eppadi wash", "wash pannanum", "kaluvanum", "wash eppadi pannanum"],
     "question": "How should I wash and care for my jersey?",
-    "answer": "For best results: cold hand wash or gentle machine wash (inside-out), no bleach, no wringing, and air dry in shade rather than direct sunlight. Avoid ironing directly over any printed name/number or crest — iron inside-out on low heat if needed. This keeps the print and fabric looking fresh for way longer!"
+    "answer": "For best results: cold hand wash or gentle machine wash (inside-out), no bleach, no wringing, and air dry in shade rather than direct sunlight. Avoid ironing directly over any printed name/number or crest — iron inside-out on low heat if needed. This keeps the print and fabric looking fresh for way longer!",
+    "answerTanglish": "Best result ku: cold water la hand wash illa gentle machine wash (inside-out ah thirupi), bleach venaam, pizhiya koodaathu, veyil la vaikaama nizhal la air dry pannunga. Print panna name/number mela direct ah iron panna koodaathu — inside-out ah low heat la pannunga. Print um fabric um romba naal fresh ah irukum!"
   },
   {
     "category": "Order Cancellation",
-    "keywords": ["cancel", "cancel order", "cancel my order"],
+    "keywords": ["cancel", "cancel order", "cancel my order", "cancel pannalama", "cancel pannanum", "vendaam"],
     "question": "Can I cancel my order?",
-    "answer": "Message us as soon as possible with your order number! If it hasn't been packed/shipped yet, we'll do our best to cancel it for you. Once it's shipped, our standard 7-day exchange policy applies instead."
+    "answer": "Message us as soon as possible with your order number! If it hasn't been packed/shipped yet, we'll do our best to cancel it for you. Once it's shipped, our standard 7-day exchange policy applies instead.",
+    "answerTanglish": "Seekiram unga order number ah message pannunga bro! Innum pack/ship aagala na kandippa cancel panna try pannuvom. Ship aayiducha, appuram namma standard 7-day exchange policy thaan apply aagum."
   },
   {
     "category": "Kids Jerseys",
-    "keywords": ["kids", "kid", "children", "youth", "child size"],
+    "keywords": ["kids", "kid", "children", "youth", "child size", "kuzhandhai", "kuzhanthai", "chinna pasanga", "chinna paiyan", "kids size iruka"],
     "question": "Do you have jerseys for kids?",
-    "answer": "Yes! We carry kids/youth versions for a lot of our popular player jerseys. Just let us know the team or player you're looking for and we'll check what's available in kids sizing."
+    "answer": "Yes! We carry kids/youth versions for a lot of our popular player jerseys. Just let us know the team or player you're looking for and we'll check what's available in kids sizing.",
+    "answerTanglish": "Iruku bro! Popular player jerseys la niraya kids/youth version iruku. Enna team illa player venum sollunga — kids sizing la enna available nu check panni solren!"
   },
   {
     "category": "Contact & Support",
-    "keywords": ["support email", "email id", "contact number", "customer care", "helpline", "wholesale number", "contact details", "support number"],
+    "keywords": ["support email", "email id", "contact number", "customer care", "helpline", "wholesale number", "contact details", "support number", "number kudunga", "contact pannanum"],
     "question": "How do I contact Theaurax support?",
-    "answer": "We're right here to help on WhatsApp — just tell us your issue and order number and we'll sort it out. 📩 For emails: support@theaurax.in. 🛒 Wholesale/bulk orders: 9884442049. Share your order ID and any photos (for damaged/wrong items) and we'll get you a resolution."
+    "answer": "We're right here to help on WhatsApp — just tell us your issue and order number and we'll sort it out. 📩 For emails: support@theaurax.in. 🛒 Wholesale/bulk orders: 9884442049. Share your order ID and any photos (for damaged/wrong items) and we'll get you a resolution.",
+    "answerTanglish": "Naanga inga WhatsApp la ready ah irukom bro — unga issue um order number um sollunga, sort pannidalam. 📩 Email: support@theaurax.in. 🛒 Wholesale/bulk orders: 9884442049. Order ID um photo um (damage illa wrong item na) anuppunga, resolution kidaikum!"
   }
 ]

@@ -1,7 +1,50 @@
 # Theaurax AI Sales Assistant — Project Context
 
 ## Last Updated
-2026-07-22
+2026-08-04
+
+---
+
+## Session 2026-08-04 — summary
+- **Sarvam 30b is dead — migrated to `sarvam-105b`.** Sarvam deprecated `sarvam-30b` in June
+  2026 and has now removed it: `GET /v1/models` lists only `sarvam-105b`, and a completion with
+  `sarvam-30b` returns HTTP 400. Since Sarvam is tried FIRST for Tanglish, every Tanglish
+  message was failing its primary provider and silently running on Fireworks. Default changed in
+  `config.js` + the three hardcoded fallbacks in `ai.js`. Verified live through the real
+  `answerQuery` path: Sarvam selected, tool-called, correct products, natural Tanglish, 2.8s.
+- **No cheaper Sarvam option exists** — 105b is their entire chat lineup now (`sarvam-m`,
+  `sarvam-30b`, `-16k`/`-32k` all retired). Price: ₹4/1M in, ₹2.5/1M cached in, ₹16/1M out.
+  Measured real call = **₹0.017**, with **83% of input billed at the cached rate**. ~90% of cost
+  is input, so future savings must come from the system prompt + tool schema, not reply length.
+- **`/no_think` re-validated on 105b and KEPT.** 105b no longer truncates without it, but with
+  the tag: 254 output tok / 3.7s vs 455 tok / 6.3s without — same answer. ~45% fewer output
+  tokens and ~2x faster.
+- **Second Sarvam key added** (comma-separated, both verified live).
+- **⚠️ System prompt has grown to 12,458 chars** — the 2026-07-20 optimisation got it to 5,735.
+  It has roughly doubled since and is now the single biggest per-call cost. Not yet re-audited.
+- **Cost work — measured, not estimated.** A full 7-turn Tanglish conversation was
+  instrumented end-to-end through `answerQuery`: **₹0.143, 6 LLM calls**, only 15% of input
+  cached. Two fixes took it to **₹0.1096, 5 calls, 38% cached (−23%)**:
+  - *Tanglish FAQ coverage* — the FAQ fast path was English-only in keywords AND answers, so
+    Tanglish customers paid for every turn. Added Tanglish keywords + `answerTanglish` per
+    entry, selected by `session.language`. Greetings made `exactOnly` to stop
+    "Vanakkam bro, <question>" being hijacked by the canned hello.
+  - *Per-conversation key affinity* — `rotateEntries()` now hashes `senderId` instead of using
+    a global round-robin cursor, so a conversation stays on one key and reuses its cached
+    prompt prefix. (Prompt caching is per-key; round-robin was defeating it.)
+  - Runway: ₹1000 → **~9,100 conversations / ~91 days at 100/day / ~₹329 per month.**
+  - ⚠️ Still open: the system prompt is **12,458 chars** (was 5,735 after the 2026-07-20 pass).
+    ~85% of every request is prompt + tool schema. Shrinking it is the biggest remaining lever
+    (~35%) and is also the most likely fix for Groq's 95% `tool_use_failed` rate, which
+    currently makes the "free backstop" unusable for English.
+  - ⚠️ Noticed while testing: `faq.json` says COD ₹50 and delivery 3-5/5-7 days, but
+    theaurax.in/shipping-delivery says COD ₹100 and 7-10 business days. Someone needs to
+    decide which is true — the bot and the website currently contradict each other.
+- **Admin: linked-account panel + remote WhatsApp logout.** The WhatsApp section now shows which
+  number/device the bot is paired to and offers a "Log out this number" button
+  (`POST /api/whatsapp/logout`). Previously nobody could tell whose phone held the session, and
+  re-pairing required SSH-ing in to delete `.wwebjs_auth/`. Guarded against the logout-vs-
+  `disconnected`-event race that would otherwise start two Puppeteer clients on one session.
 
 ---
 

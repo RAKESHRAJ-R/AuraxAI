@@ -72,7 +72,7 @@ GEMINI_API_KEY=            # Optional: Gemini fallback (Gemini 2.0 Flash)
 FIREWORKS_API_KEY=         # Optional: Fireworks paid fallback (comma-sep for multiple keys)
 FIREWORKS_MODEL=           # Optional: defaults to accounts/fireworks/models/deepseek-v4-pro
 SARVAM_API_KEY=            # Optional: Sarvam (Indic-native) paid provider — Tanglish-first (comma-sep for multiple keys)
-SARVAM_MODEL=              # Optional: defaults to sarvam-30b
+SARVAM_MODEL=              # Optional: defaults to sarvam-105b (sarvam-30b is RETIRED — 400s)
 WOOCOMMERCE_URL=           # Required: https://theaurax.in
 WOOCOMMERCE_CONSUMER_KEY=
 WOOCOMMERCE_CONSUMER_SECRET=
@@ -138,14 +138,14 @@ Groq (LLaMA 3.3-70B)           → Primary provider (fast, free)
   ↓ quota or error
 Fireworks (deepseek-v4-pro)    → First paid fallback (no shared free-tier ceiling)
   ↓ quota or error
-Sarvam (sarvam-30b)            → Second paid fallback
+Sarvam (sarvam-105b)           → Second paid fallback
   ↓ quota or error
 OpenAI → OpenRouter → Gemini   → Further fallbacks
   ↓ all fail
 Friendly error message + persistent retry scheduling
 
 Tanglish sessions:
-Sarvam (sarvam-30b)            → Tried FIRST — Indic-native, purpose-trained on romanized/code-mixed Tamil
+Sarvam (sarvam-105b)           → Tried FIRST — Indic-native, purpose-trained on romanized/code-mixed Tamil
   ↓ quota or error
 Fireworks (deepseek-v4-pro)    → Paid backup (also strong at code-mixing)
   ↓ quota or error
@@ -154,24 +154,47 @@ Groq (LLaMA 3.3-70B)           → Fast free backstop, then OpenAI → OpenRoute
 
 **Sarvam provider (added 2026-07-20):** Indic-specialised paid provider (Sarvam AI, India),
 OpenAI-compatible (`baseURL: https://api.sarvam.ai/v1`, `Authorization: Bearer` — wired exactly
-like Fireworks). Uses `sarvam-30b` (64K ctx; `sarvam-105b` also available via `SARVAM_MODEL`).
-`sarvam-30b`/`105b` are purpose-trained on native-script, romanized AND code-mixed Indian-language
-text (Tamil included), so this takes the **Tanglish-first** slot ahead of Fireworks — the specific
-weakness Llama-3.3 has. **`sarvam-30b` IS a reasoning model (verified live 2026-07-22 — the earlier
-"not a reasoning model" note from the vendor docs was wrong).** By default it spends the entire
-`max_tokens` budget on an internal chain-of-thought (returned in a separate `reasoning_content`
-field) and leaves the visible `content` null/truncated — at `max_tokens` 800 AND 1500 `content` came
-back null (`finish_reason: 'length'`); only ~2500 let it finish, at ~1400 tok/reply. **Fix in
-`ai.js`: append the `/no_think` control tag to the system message for Sarvam only** — this disables
-the reasoning pass entirely and returns the same clean Tanglish answer AND full tool-calling in
-~100-180 tokens, so the normal `max_tokens` (800) budget is kept. Full OpenAI-style tool calling
-confirmed live in the agentic loop. ~₹360/mo at 100 convos/day (cheaper than Fireworks), with a
-₹1,000 signup credit covering ~12,000 convos before any payment. Gated behind `SARVAM_API_KEY` —
-absent = provider simply isn't loaded, chain degrades cleanly to Fireworks/Groq. **Activated
-2026-07-22:** key is in `.env`; live Tanglish call, tool-calling, and full `answerQuery` flow all
-verified. Chosen per the 2026-07-15 provider research report
+like Fireworks). Sarvam's models are purpose-trained on native-script, romanized AND code-mixed
+Indian-language text (Tamil included), so this takes the **Tanglish-first** slot ahead of
+Fireworks — the specific weakness Llama-3.3 has. Full OpenAI-style tool calling confirmed live
+in the agentic loop. Gated behind `SARVAM_API_KEY` — absent = provider simply isn't loaded,
+chain degrades cleanly to Fireworks/Groq. Chosen per the 2026-07-15 provider research report
 (`reports/LLM_Provider_Research_2026-07-15.pdf`), which recommended Sarvam over
 Fireworks/Cerebras/NVIDIA-NIM for the Tanglish requirement.
+
+⚠️ **Migrated sarvam-30b → sarvam-105b (2026-08-04) — forced, not optional.** Sarvam deprecated
+`sarvam-30b` in June 2026 and it is now **gone from the API**: `GET /v1/models` returns
+`sarvam-105b` only, and a completion with `model: 'sarvam-30b'` returns **HTTP 400**. Every
+Tanglish message was therefore failing its first provider and silently falling through to
+Fireworks. `sarvam-105b` (128K ctx) is the vendor's documented migration target and is now the
+default in `config.js`; `sarvam-m` and the `-16k`/`-32k` variants are retired too. There is no
+smaller/cheaper Sarvam chat model any more — **105b is the entire chat lineup.**
+
+**Sarvam models are reasoning models and `/no_think` still matters.** The original `sarvam-30b`
+spent its ENTIRE `max_tokens` budget on internal chain-of-thought (returned in a separate
+`reasoning_content` field), leaving visible `content` null at `max_tokens` 800 AND 1500. `105b`
+no longer truncates, but the tag is still clearly honoured and still worth keeping — measured
+2026-08-04 against this bot's real prompt (12.5k chars) + a 6-product tool result:
+
+| | completion tokens | reasoning | latency |
+|---|---|---|---|
+| with `/no_think` | 254 | 315 chars | 3.7s |
+| without | 455 | 1061 chars | 6.3s |
+| without, `max_tokens` 1500 | 1072 | 3119 chars | 12.7s |
+
+Same answer quality either way, so the tag is ~45% fewer output tokens (the expensive kind) and
+~2x faster. `ai.js` appends it to the system message for Sarvam only; `max_tokens` stays 800.
+
+**Cost (verified 2026-08-04):** ₹4 / 1M input, **₹2.5 / 1M cached input**, ₹16 / 1M output —
+105b is the only model, so this is the whole price list. A real measured Tanglish agent call
+(`in=5416 cached=4480 out=104`) costs **₹0.017**. Prompt caching is doing real work: **83% of
+input was billed at the cached rate**, which is what the 2026-07-20 cache-friendly prompt
+ordering was for — keep dynamic session state at the END of the system prompt. ~90% of the
+per-call cost is INPUT, so token-reduction work should target the system prompt + tool schema,
+not the reply length. New accounts get ₹100 in free credits (~6,000 calls).
+
+**Two keys are configured** (comma-separated in `SARVAM_API_KEY`) and round-robin through the
+existing per-key rotation and per-key quota tracking.
 
 **Fireworks provider (added 2026-07-17):** Client-supplied paid key, OpenAI-compatible
 (`baseURL: https://api.fireworks.ai/inference/v1`), wired exactly like OpenRouter. Uses
@@ -196,6 +219,22 @@ The cart holds only one product at a time (replaced on each `update_cart` call).
 Three of the highest-frequency conversational turns are handled entirely in code — no LLM call, no rate-limit exposure, no hallucination risk:
 
 1. **FAQ matching** (`faq.js` + pre-check in `ai.js`) — common questions (COD, shipping, sizing, returns, customization, bulk, tracking, cancellation, kids sizes, jersey care, international shipping) answered instantly from `faq.json`. Only runs when session is `IDLE` with an empty cart.
+
+   **Bilingual since 2026-08-04.** The FAQ was English-only in both directions, which quietly
+   cancelled this whole optimisation for Tanglish customers: keywords were `hi/hello`,
+   `delivery time`, `how long` — so `"Vanakkam bro"` and `"Delivery ethana naal aagum?"` (the two
+   most common Tanglish turns) missed every entry and paid for a full LLM call. Measured on a
+   7-turn Tanglish conversation: 6 LLM calls where 5 were needed. Each entry now carries Tanglish
+   keywords **and** an `answerTanglish` variant, picked by `faqService.answerFor(faq,
+   session.language)` — adding keywords alone would have replied to a Tanglish customer in
+   English, contradicting the locked `session.language`.
+
+   ⚠️ **Greeting entries are `exactOnly`.** They match only when the message, minus filler
+   (`bro`, `ji`, `anna`, `sir`, `there`…) and emoji, IS the greeting. Tanglish customers greet
+   and ask in one breath — `"Vanakkam bro, Barcelona jersey irukka?"` — and since Greetings sits
+   first in `faq.json`, an unguarded keyword would have returned a canned hello instead of a
+   product search. This also closes the same hole on the English side (`"hi do you have real
+   madrid jerseys"` used to match Greetings).
 2. **Size + quantity parsing** (`aiService.parseSizeQtyReply()`) — replies like `"M size 2"`, `"1st one, L 3"`, or `"XL"` are regex-parsed against `session.lastShownProducts` (populated whenever `search_products` runs) and go straight to cart via `update_cart` logic. Returns `null` on anything not confidently parseable — including trusting only sizes the matched product actually lists — and falls through to the LLM in that case. Intent tag: `deterministic_cart`.
 3. **Order confirmation** (`aiService._confirmOrderNow()`) — a message that IS ENTIRELY a confirmation word/phrase (`"yes"`, `"confirm"`, `"seri"`, `"ok"`, etc. — anchored full-string match, not substring) during `CONFIRMING_ORDER` state creates the order directly. `"yes but change the address"` still goes to the LLM since it isn't purely a confirmation. Intent tag: `deterministic_confirm`.
 
@@ -417,6 +456,33 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 
 On first run, open the admin console (the Vercel URL, or `http://localhost:3000/admin`), sign in, and go to the **WhatsApp** section to scan the QR code. Auth is persisted in `apps/bot/.wwebjs_auth/` (Puppeteer LocalAuth). The bot auto-reconnects on disconnect with a 10-second delay. (The old `/whatsapp-link.html` URL now 302-redirects to `/admin/whatsapp`.)
 
+**Linked-account panel + remote logout (added 2026-08-04).** While `CONNECTED`, the WhatsApp
+section shows **which number the bot is actually paired to** (number, account name, device
+platform, linked-since) plus a **Log out this number** button. Previously nothing in the product
+recorded whose phone held the session, so finding it meant checking "Linked devices" on every
+candidate handset; and moving the bot to a different number meant SSH-ing in to delete
+`.wwebjs_auth/`.
+
+- `client.info` is captured on the `ready` event into `whatsappWebBot.deviceInfo` and returned by
+  `getStatus()` as `device` — but **only while `CONNECTED`**, so a stale number can never appear
+  next to a disconnected badge.
+- `POST /api/whatsapp/logout` (auth) → `whatsappWebBot.logout()` calls `client.logout()`, which
+  revokes the session on the phone AND clears the LocalAuth folder. `destroy()` alone would not:
+  the next `initialize()` would silently re-pair the same number, so "logout" would log nothing
+  out. It then re-initializes after 2s so a fresh QR appears without a restart.
+- ⚠️ `logout()` detaches `this.client` **before** awaiting, because `client.logout()` fires the
+  `disconnected` event — which has its own destroy + 10s reconnect. Both paths now route through
+  `scheduleReinit()` (single shared timer) and the `disconnected` handler bails out when
+  `this.client` is already null. Without both guards a logout races into **two Puppeteer clients
+  on one LocalAuth session**, which corrupts it.
+- If `client.logout()` throws (page already gone), the response says so — `cleared: false` plus
+  instructions to delete `.wwebjs_auth` — rather than reporting a clean unlink that didn't happen.
+
+Verified 2026-08-04 (12 checks, `logout()` driven against a stubbed client): refuses cleanly with
+no session, hides stale device info, detaches the client, clears device state, reports the
+previous number, runs exactly one re-init when a late `disconnected` races it, and degrades
+honestly when the unlink fails.
+
 ### Admin Console (unified Vite + React app)
 
 Added 2026-07-22. The three former standalone pages (`apiwork.html` monitor, `whatsapp-link.html`
@@ -483,13 +549,14 @@ If `ALLOWED_TEST_NUMBERS` is set, the bot only responds to those phone numbers �
 
 | Route | Description |
 |---|---|
-| `GET /api/whatsapp/status` | WhatsApp Web connection state + QR code |
+| `GET /api/whatsapp/status` | WhatsApp Web connection state + QR code + linked-account info |
+| `POST /api/whatsapp/logout` | Unlink the paired phone and bring up a fresh QR (auth required) |
 | `GET /api/retry-stats` | Pending retry queue, provider status, active provider |
 
 ### Rate-Limit Protection
 
 - **Throttle**: Per-(provider, key) min gap, not just per-provider — each of the 5 Groq keys has its own timer (`AIService.minApiGapMs` / `lastApiCallTimes` keyed by `provider#keyIndex`), so multiple keys give real parallel throughput instead of sharing one timer.
-- **Key rotation**: Round-robin starting key per provider (`rotateEntries()`) so concurrent requests spread across keys instead of every request hammering key[0] first.
+- **Key rotation**: The starting key per provider (`rotateEntries()`) is chosen by hashing the customer's `senderId`, so concurrent requests still spread across keys instead of hammering key[0] — but **one conversation stays pinned to one key**. Prompt caching is per-key: the old global round-robin cursor made consecutive turns of the same conversation alternate keys and hit a cold prefix every time. Measured on a 6-call Tanglish conversation with 2 Sarvam keys: **15% of input cached under round-robin vs 38% under affinity** (83% on a single-key run). ~85% of every request is the byte-identical system prompt + tool schema, and cached input bills at ₹2.5/M vs ₹4/M on Sarvam. Falls back to the round-robin cursor when there's no affinity key (retry-queue replays, background jobs).
 - **Retry**: 4 attempts with exponential backoff for 429/500/503 *and* Groq's `tool_use_failed` (malformed tool-call generation, usually transient).
 - **Quota**: Daily quota exhaustion is tracked **per key** (`keyExhaustedUntil`), not per provider — one exhausted Groq key no longer benches its sibling keys. Persistent retry queue (DB-backed) survives restarts; entries are only kept alive across a restart if the retry itself re-exhausts quota, otherwise they're always cleared (this used to leak on send failure and replay forever — fixed).
 - **Concurrency**: WhatsApp messages are chained **per sender** (not a flat concurrency-N pool) — same customer's messages are processed strictly in order to avoid session read-modify-write races (e.g. "size M" then "qty 3" sent seconds apart used to be able to clobber each other); different customers still run fully in parallel.

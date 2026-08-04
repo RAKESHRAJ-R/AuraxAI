@@ -611,7 +611,7 @@ ${sessionContext}`;
       : provider === 'fireworks'
       ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
       : provider === 'sarvam'
-      ? (config.sarvam?.model || 'sarvam-30b')
+      ? (config.sarvam?.model || 'sarvam-105b')
       : provider === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
       ? config.groq.tanglishModel
       : (config.groq?.model || 'llama-3.3-70b-versatile');
@@ -627,14 +627,21 @@ ${sessionContext}`;
     // ceiling here (paid tier), so give it comfortable headroom.
     const isFireworks = provider === 'fireworks';
 
-    // sarvam-30b is ALSO a reasoning model (contrary to the vendor docs used when it was
-    // first wired). By default it spends the ENTIRE max_tokens budget on an internal
-    // chain-of-thought — returned in a separate `reasoning_content` field — and leaves the
-    // visible `content` null/truncated. Verified live 2026-07-22: at max_tokens 800 AND 1500
-    // `content` came back null (finish_reason 'length'); only ~2500 let it finish, at
-    // ~1400 tokens/reply. The `/no_think` control tag disables that reasoning pass entirely:
-    // same clean Tanglish answer AND full tool-calling, in ~100-180 tokens. So for Sarvam we
-    // append `/no_think` to the system message (below) and keep the normal 800 budget.
+    // Sarvam's models are reasoning models (contrary to the vendor docs used when this was
+    // first wired). By default they spend the max_tokens budget on an internal
+    // chain-of-thought — returned in a separate `reasoning_content` field — which on the old
+    // sarvam-30b consumed the ENTIRE budget and left the visible `content` null/truncated
+    // (verified 2026-07-22: null at max_tokens 800 AND 1500). The `/no_think` control tag
+    // suppresses that reasoning pass, so for Sarvam we append it to the system message
+    // (below) and keep the normal 800 budget.
+    //
+    // Re-verified on sarvam-105b (2026-08-04, after sarvam-30b was retired — see config.js):
+    // 105b no longer truncates without the tag, but `/no_think` is still clearly honoured and
+    // still worth keeping — on this bot's real 12.5k-char prompt + a 6-product tool result:
+    //   with    /no_think → 254 completion tokens, 315 chars reasoning, 3.7s
+    //   without /no_think → 455 completion tokens, 1061 chars reasoning, 6.3s
+    // (and at max_tokens 1500 it expands to fill it: 1072 tokens, 12.7s, same answer).
+    // So the tag is ~45% fewer output tokens and ~2x faster for identical Tanglish quality.
     const isSarvam = provider === 'sarvam';
 
     // Qwen's free tier caps at 8000 TPM/key for prompt+max_tokens COMBINED — much
@@ -920,30 +927,61 @@ ${sessionContext}`;
    * If a provider is rate-limited or unavailable, transparently switches to the next.
    */
   /**
-   * Build the ordered key list for one provider, rotated by a round-robin cursor.
-   * Without this, every request tries keyIndex 0 first and only reaches the other
-   * keys on an actual error — under concurrent load that means all traffic piles
-   * onto key 0 (starving it fast) instead of spreading across the available keys.
+   * Stable per-conversation hash, used to pick a starting key. Same customer → same
+   * number every turn; different customers spread evenly across the key list.
    */
-  rotateEntries(name, clients, type) {
+  static affinityIndex(affinityKey, length) {
+    let h = 0;
+    const s = String(affinityKey);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h % length;
+  }
+
+  /**
+   * Build the ordered key list for one provider.
+   *
+   * Without any rotation, every request tries keyIndex 0 first and only reaches the
+   * other keys on an actual error — under concurrent load all traffic piles onto key 0
+   * (starving it fast) instead of spreading across the available keys.
+   *
+   * The starting key is chosen by hashing `affinityKey` (the customer's senderId)
+   * rather than by a global round-robin cursor. Both spread load evenly across keys,
+   * but ONLY affinity keeps one conversation on one key — and prompt caching is
+   * per-key. Round-robin made consecutive turns of the SAME conversation alternate
+   * keys, so each call hit a cold prefix: measured 15% cached across a 6-call
+   * conversation, versus 83% when a single key served it. Since ~85% of every request
+   * is the byte-identical system prompt + tool schema, and cached input bills at
+   * ₹2.5/M instead of ₹4/M on Sarvam, that difference is real money.
+   *
+   * Falls back to the round-robin cursor when there's no affinity key (background
+   * jobs, retry-queue replays), preserving the old spreading behaviour.
+   */
+  rotateEntries(name, clients, type, affinityKey = null) {
     const entries = clients.map((client, i) => ({ name, client, type, keyIndex: i }));
     if (entries.length <= 1) return entries;
-    const cursor = AIService.roundRobinIndex[name] || 0;
-    AIService.roundRobinIndex[name] = (cursor + 1) % entries.length;
+    let cursor;
+    if (affinityKey) {
+      cursor = AIService.affinityIndex(affinityKey, entries.length);
+    } else {
+      cursor = AIService.roundRobinIndex[name] || 0;
+      AIService.roundRobinIndex[name] = (cursor + 1) % entries.length;
+    }
     return [...entries.slice(cursor), ...entries.slice(0, cursor)];
   }
 
-  async callLLMWithFallback(messages, language = 'english') {
+  async callLLMWithFallback(messages, language = 'english', affinityKey = null) {
     // Build a flat list of all API clients across all providers for key rotation.
+    // affinityKey (the senderId) pins one conversation to one key so the cached
+    // prompt prefix actually gets reused — see rotateEntries.
     const entries = [];
-    const groqEntries = this.rotateEntries('groq', this.groqClients, 'openai');
-    const geminiEntries = this.rotateEntries('gemini', this.geminiClients, 'gemini');
-    const openrouterEntries = this.rotateEntries('openrouter', this.openrouterClients, 'openai');
-    const fireworksEntries = this.rotateEntries('fireworks', this.fireworksClients, 'openai');
-    const sarvamEntries = this.rotateEntries('sarvam', this.sarvamClients, 'openai');
+    const groqEntries = this.rotateEntries('groq', this.groqClients, 'openai', affinityKey);
+    const geminiEntries = this.rotateEntries('gemini', this.geminiClients, 'gemini', affinityKey);
+    const openrouterEntries = this.rotateEntries('openrouter', this.openrouterClients, 'openai', affinityKey);
+    const fireworksEntries = this.rotateEntries('fireworks', this.fireworksClients, 'openai', affinityKey);
+    const sarvamEntries = this.rotateEntries('sarvam', this.sarvamClients, 'openai', affinityKey);
 
     if (language === 'tanglish') {
-      // Sarvam (sarvam-30b) is purpose-trained on romanized/code-mixed Tamil — best
+      // Sarvam (sarvam-105b) is purpose-trained on romanized/code-mixed Tamil — best
       // Tanglish quality and cheapest, so it's tried FIRST. Fireworks (deepseek-v4-pro)
       // is the paid backup below it (also strong at code-mixing), then Groq/Llama-3.3 as
       // the fast free backstop. Gemini's old Tanglish-first slot is dead (free tier
@@ -1037,7 +1075,7 @@ ${sessionContext}`;
           : entry.name === 'fireworks'
           ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
           : entry.name === 'sarvam'
-          ? (config.sarvam?.model || 'sarvam-30b')
+          ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
@@ -1090,7 +1128,7 @@ ${sessionContext}`;
           : entry.name === 'fireworks'
           ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
           : entry.name === 'sarvam'
-          ? (config.sarvam?.model || 'sarvam-30b')
+          ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
@@ -1588,7 +1626,9 @@ ${sessionContext}`;
 
       const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? [] : faqService.searchFAQs(userQuery);
       if (faqMatches.length > 0) {
-        const answer = faqMatches[0].answer;
+        // Language-matched reply — session.language is already locked, and answering a
+        // Tanglish customer in English here would contradict the whole conversation.
+        const answer = faqService.answerFor(faqMatches[0], session.language);
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: answer });
         await dbService.saveSession(senderId, session);
@@ -1760,7 +1800,7 @@ ${sessionContext}`;
     while (keepLooping && loops < 5) {
       loops++;
       try {
-        const completion = await this.callLLMWithFallback(messages, session.language);
+        const completion = await this.callLLMWithFallback(messages, session.language, senderId);
 
         const responseMessage = completion.choices[0].message;
         

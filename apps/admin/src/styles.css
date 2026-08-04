@@ -231,6 +231,14 @@ label .hint { font-weight: 400; color: var(--muted); }
 .spinner { width: 42px; height: 42px; border: 4px solid #e4e7ec; border-top-color: var(--accent); border-radius: 50%; animation: rot .8s linear infinite; }
 @keyframes rot { to { transform: rotate(360deg); } }
 .check { font-size: 68px; color: var(--accent); }
+/* Linked-account panel — which number/device the bot is currently paired to. */
+.wa-device { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 16px; margin-top: 20px; }
+.wa-device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.wa-device-row:last-child { border-bottom: 0; }
+.wa-device-row .k { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.wa-device-row .v { font-weight: 700; text-align: right; word-break: break-word; }
+.wa-device-row .v.num { font-variant-numeric: tabular-nums; letter-spacing: .2px; color: var(--accent); }
+
 .steps { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-top: 20px; }
 .steps .t { font-weight: 700; font-size: 13.5px; margin-bottom: 10px; }
 .steps ol { list-style: none; counter-reset: s; }
