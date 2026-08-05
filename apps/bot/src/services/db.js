@@ -18,6 +18,12 @@ const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
 // (each carries an embedding vector).
 const KNOWLEDGE_SOURCES_FILE = path.join(DATA_DIR, 'knowledge_sources.json');
 const KNOWLEDGE_CHUNKS_FILE = path.join(DATA_DIR, 'knowledge_chunks.json');
+// Missed-message catch-up: `meta` holds the watermark (the newest message timestamp we
+// have definitely handled), `catchup_queue` holds chats that were missed and are waiting
+// to be answered at a safe drip rate. Both MUST be persistent — the whole point is that a
+// restart does not lose customers, so a queue held only in memory would defeat the feature.
+const META_FILE = path.join(DATA_DIR, 'meta.json');
+const CATCHUP_QUEUE_FILE = path.join(DATA_DIR, 'catchup_queue.json');
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -65,6 +71,12 @@ class DatabaseService {
     }
     if (!fs.existsSync(KNOWLEDGE_CHUNKS_FILE)) {
       fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(META_FILE)) {
+      fs.writeFileSync(META_FILE, JSON.stringify({}), 'utf-8');
+    }
+    if (!fs.existsSync(CATCHUP_QUEUE_FILE)) {
+      fs.writeFileSync(CATCHUP_QUEUE_FILE, JSON.stringify([]), 'utf-8');
     }
 
     // Callers await this before serving traffic, so the store is decided once and
@@ -931,6 +943,227 @@ class DatabaseService {
       return JSON.parse(fs.readFileSync(RETRY_QUEUE_FILE, 'utf-8'));
     } catch (err) {
       return [];
+    }
+  }
+
+  // --- Meta (small key/value store) ---
+  //
+  // Currently holds only the catch-up watermark, but a generic pair beats another
+  // single-purpose file the next time something needs one value persisted.
+
+  async getMeta(key, fallback = null) {
+    if (this.useMongo) {
+      try {
+        const doc = await this.db.collection('meta').findOne({ _id: key });
+        return doc ? doc.value : fallback;
+      } catch (err) {
+        console.error('[Database Service] MongoDB getMeta error:', err.message);
+        return fallback;
+      }
+    }
+
+    try {
+      const meta = JSON.parse(fs.readFileSync(META_FILE, 'utf-8'));
+      return key in meta ? meta[key] : fallback;
+    } catch (err) {
+      console.error('[Database Service] Local JSON getMeta error:', err.message);
+      return fallback;
+    }
+  }
+
+  async setMeta(key, value) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('meta').updateOne(
+          { _id: key },
+          { $set: { value, updatedAt: new Date().toISOString() } },
+          { upsert: true }
+        );
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB setMeta error:', err.message);
+      }
+    }
+
+    try {
+      let meta = {};
+      try { meta = JSON.parse(fs.readFileSync(META_FILE, 'utf-8')); } catch { meta = {}; }
+      meta[key] = value;
+      fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[Database Service] Local JSON setMeta error:', err.message);
+    }
+  }
+
+  // --- Catch-up queue (missed customers awaiting a reply) ---
+
+  /**
+   * Add missed chats to the queue, skipping any already queued.
+   * Deduped on messageId so repeated sweeps (every reconnect) can't queue a customer twice.
+   * @returns {number} how many were newly added
+   */
+  async queueCatchupItems(items) {
+    if (!items || !items.length) return 0;
+
+    if (this.useMongo) {
+      try {
+        const ops = items.map((item) => ({
+          updateOne: {
+            filter: { _id: item.messageId },
+            // $setOnInsert only: a chat already waiting must keep its original queuedAt
+            // and attempt count rather than being reset by the next sweep.
+            update: { $setOnInsert: { ...item, queuedAt: Date.now(), attempts: 0 } },
+            upsert: true,
+          },
+        }));
+        const res = await this.db.collection('catchup_queue').bulkWrite(ops, { ordered: false });
+        return res.upsertedCount || 0;
+      } catch (err) {
+        console.error('[Database Service] MongoDB queueCatchupItems error:', err.message);
+        return 0;
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      const known = new Set(queue.map((e) => e.messageId));
+      let added = 0;
+      for (const item of items) {
+        if (known.has(item.messageId)) continue;
+        queue.push({ ...item, queuedAt: Date.now(), attempts: 0 });
+        known.add(item.messageId);
+        added++;
+      }
+      if (added) fs.writeFileSync(CATCHUP_QUEUE_FILE, JSON.stringify(queue, null, 2), 'utf-8');
+      return added;
+    } catch (err) {
+      console.error('[Database Service] Local JSON queueCatchupItems error:', err.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Next items to answer: recent customers (tierRank 0) ahead of old backlog (1), and
+   * within each tier the one who has waited longest goes first.
+   *
+   * Tier must outrank age. A plain oldest-first sort would put a still-waiting customer from
+   * an hour ago BEHIND a thousand month-old messages — so a crash mid-sweep would bury the
+   * people most likely to still buy.
+   */
+  async getCatchupBatch(limit = 5) {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('catchup_queue')
+          .find({}).sort({ tierRank: 1, timestamp: 1 }).limit(limit).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getCatchupBatch error:', err.message);
+        return [];
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      return queue
+        .sort((a, b) => ((a.tierRank ?? 1) - (b.tierRank ?? 1)) || (a.timestamp - b.timestamp))
+        .slice(0, limit);
+    } catch (err) {
+      console.error('[Database Service] Local JSON getCatchupBatch error:', err.message);
+      return [];
+    }
+  }
+
+  async deleteCatchupItem(messageId) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('catchup_queue').deleteOne({ _id: messageId });
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteCatchupItem error:', err.message);
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      fs.writeFileSync(
+        CATCHUP_QUEUE_FILE,
+        JSON.stringify(queue.filter((e) => e.messageId !== messageId), null, 2),
+        'utf-8'
+      );
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteCatchupItem error:', err.message);
+    }
+  }
+
+  /**
+   * Drop every queued item for a chat. Called as soon as a customer messages LIVE: they are
+   * now in a real conversation, so answering their older queued message afterwards would send
+   * a second, out-of-context reply to someone the bot is already talking to.
+   */
+  async deleteCatchupByChat(chatId) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('catchup_queue').deleteMany({ chatId });
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteCatchupByChat error:', err.message);
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      const filtered = queue.filter((e) => e.chatId !== chatId);
+      if (filtered.length !== queue.length) {
+        fs.writeFileSync(CATCHUP_QUEUE_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteCatchupByChat error:', err.message);
+    }
+  }
+
+  /** Record a failed attempt so a permanently-broken item can't block the queue forever. */
+  async bumpCatchupAttempt(messageId) {
+    if (this.useMongo) {
+      try {
+        await this.db.collection('catchup_queue').updateOne(
+          { _id: messageId }, { $inc: { attempts: 1 } }
+        );
+        return;
+      } catch (err) {
+        console.error('[Database Service] MongoDB bumpCatchupAttempt error:', err.message);
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      const item = queue.find((e) => e.messageId === messageId);
+      if (item) {
+        item.attempts = (item.attempts || 0) + 1;
+        fs.writeFileSync(CATCHUP_QUEUE_FILE, JSON.stringify(queue, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Database Service] Local JSON bumpCatchupAttempt error:', err.message);
+    }
+  }
+
+  async getCatchupStats() {
+    if (this.useMongo) {
+      try {
+        const col = this.db.collection('catchup_queue');
+        const pending = await col.countDocuments({});
+        const oldest = await col.find({}).sort({ timestamp: 1 }).limit(1).toArray();
+        return { pending, oldestTimestamp: oldest[0]?.timestamp || null };
+      } catch (err) {
+        console.error('[Database Service] MongoDB getCatchupStats error:', err.message);
+        return { pending: 0, oldestTimestamp: null };
+      }
+    }
+
+    try {
+      const queue = JSON.parse(fs.readFileSync(CATCHUP_QUEUE_FILE, 'utf-8'));
+      const oldest = queue.reduce((min, e) => (min === null || e.timestamp < min ? e.timestamp : min), null);
+      return { pending: queue.length, oldestTimestamp: oldest };
+    } catch (err) {
+      return { pending: 0, oldestTimestamp: null };
     }
   }
 }

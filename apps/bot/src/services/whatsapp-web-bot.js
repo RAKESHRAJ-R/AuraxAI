@@ -2,6 +2,7 @@ import pkg from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import config from '../config/config.js';
 import aiService from './ai.js';
+import catchupService from './catchup.js';
 
 const { Client, LocalAuth, MessageMedia } = pkg;
 
@@ -308,6 +309,18 @@ class WhatsAppWebBot {
         // otherwise "Linked since" shows "Never" on a perfectly healthy connection.
         this.connectedAt = new Date().toISOString();
         this.captureDeviceInfo('ready');
+
+        // Find everyone who messaged while we were away. whatsapp-web.js never fires
+        // 'message' for those, so without this sweep they are silently never answered.
+        // Delayed so the initial chat sync has settled — getChats() straight off 'ready'
+        // can return a partial list, which would mean missing exactly the customers this
+        // is meant to rescue. Deliberately not awaited: a slow sweep must not hold up
+        // live message handling.
+        catchupService.start(this);
+        setTimeout(() => {
+          catchupService.sweep().catch((err) =>
+            console.error('[WhatsApp Web Bot] Catch-up sweep failed:', err.message));
+        }, 15000);
       });
 
       this.client.on('authenticated', () => {
@@ -391,6 +404,11 @@ class WhatsAppWebBot {
 
       const senderId = msg.from; // e.g. "919940954744@c.us"
       const normalizedSender = senderId.replace(/[^0-9]/g, '');
+
+      // This customer is talking to us live now, so anything of theirs still sitting in the
+      // catch-up queue is stale — answering it later would be a second, out-of-context reply
+      // dropped into an active conversation.
+      catchupService.forgetChat(senderId);
       console.log(`[DEBUG] Received raw message from: ${senderId} (Normalized: ${normalizedSender})`);
 
       // Retrieve customer contact details (name and real phone number)
@@ -488,6 +506,9 @@ class WhatsAppWebBot {
       await this.humanizeDelay(receivedAt, agentResponse.replyText);
       await this.sendText(senderId, agentResponse.replyText);
       console.log(`📤 [WhatsApp] Sent reply to ${normalizedSender} (${Date.now() - receivedAt}ms turnaround)`);
+      // Advance the catch-up watermark so the next sweep — after a restart or reconnect —
+      // knows this message is dealt with and starts from here.
+      catchupService.noteHandled(msg.timestamp);
     } catch (err) {
       console.error(`❌ [WhatsApp Bot Error]:`, err.message);
     } finally {

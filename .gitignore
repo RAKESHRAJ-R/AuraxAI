@@ -8,6 +8,11 @@ sessions.json
 apps/bot/src/data/sessions.json
 apps/bot/src/data/leads.json
 apps/bot/src/data/knowledge.json
+# Catch-up runtime state: the watermark and the queue of missed customers. Per-deployment
+# state, never source — committing it would hand another machine's watermark to this one
+# and silently skip a real backlog.
+apps/bot/src/data/meta.json
+apps/bot/src/data/catchup_queue.json
 apps/bot/public/invoices/*.pdf
 .wwebjs_auth/
 .wwebjs_cache/

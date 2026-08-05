@@ -270,5 +270,85 @@
     "channel": "whatsapp",
     "updatedAt": "2026-08-04T18:15:37.794Z",
     "createdAt": "2026-08-04T18:15:37.795Z"
+  },
+  {
+    "userId": "repro_loop_1785871882165",
+    "name": "Repro",
+    "phone": "9000000001",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:31:22.330Z",
+    "createdAt": "2026-08-04T19:31:22.343Z"
+  },
+  {
+    "userId": "repro_loop_1785871993078",
+    "name": "Repro",
+    "phone": "9000000001",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:33:13.122Z",
+    "createdAt": "2026-08-04T19:33:13.124Z"
+  },
+  {
+    "userId": "guard_1785872041277_0.9869545594890469",
+    "name": "Customer",
+    "phone": "5594890469",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.308Z",
+    "createdAt": "2026-08-04T19:34:01.310Z"
+  },
+  {
+    "userId": "guard_1785872041315_0.6973330597050479",
+    "name": "Customer",
+    "phone": "0597050479",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.318Z",
+    "createdAt": "2026-08-04T19:34:01.319Z"
+  },
+  {
+    "userId": "guard_1785872041335_0.3364499919350089",
+    "name": "Customer",
+    "phone": "9919350089",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.337Z",
+    "createdAt": "2026-08-04T19:34:01.338Z"
+  },
+  {
+    "userId": "guard_1785872041340_0.7141881372963862",
+    "name": "Customer",
+    "phone": "1372963862",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.342Z",
+    "createdAt": "2026-08-04T19:34:01.343Z"
+  },
+  {
+    "userId": "guard_1785872041346_0.41189855780750273",
+    "name": "Customer",
+    "phone": "5780750273",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.348Z",
+    "createdAt": "2026-08-04T19:34:01.350Z"
+  },
+  {
+    "userId": "guard_1785872041353_0.9852230714475085",
+    "name": "Customer",
+    "phone": "0714475085",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.354Z",
+    "createdAt": "2026-08-04T19:34:01.355Z"
+  },
+  {
+    "userId": "guard_1785872041360_0.9784763377258306",
+    "name": "Customer",
+    "phone": "3377258306",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:34:01.361Z",
+    "createdAt": "2026-08-04T19:34:01.362Z"
+  },
+  {
+    "userId": "combo_e2e_1785873063036",
+    "name": "Combo",
+    "phone": "9000000002",
+    "channel": "whatsapp",
+    "updatedAt": "2026-08-04T19:51:03.209Z",
+    "createdAt": "2026-08-04T19:51:03.218Z"
   }
 ]

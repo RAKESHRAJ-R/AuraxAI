@@ -146,6 +146,39 @@ const config = {
     replyDelayPerCharMs: parseFloat(process.env.WA_REPLY_DELAY_PER_CHAR_MS || '12'),
     maxReplyDelayMs: parseInt(process.env.WA_MAX_REPLY_DELAY_MS || '4000', 10),
   },
+  // --- Missed-message catch-up ---
+  // whatsapp-web.js only emits 'message' for messages that arrive LIVE while the client is
+  // connected (Client.js guards every emit with `if (!msg.isNewMsg) return`). Anything that
+  // was already on the phone when we paired, or that arrived while the server was down, is
+  // loaded as history and never fires an event — so without this sweep those customers are
+  // silently never answered. The requirement is that NOTHING is missed, so the sweep queues
+  // every unanswered chat and drains it at a deliberately slow rate: replying to a large
+  // backlog at full speed is exactly the pattern that gets an unofficial client banned.
+  catchup: {
+    enabled: process.env.CATCHUP_ENABLED !== 'false',
+    // Tier 1. A customer who wrote within this window is still actively waiting, so their
+    // reply goes out immediately at normal pace on reconnect.
+    freshHours: parseInt(process.env.CATCHUP_FRESH_HOURS || '12', 10),
+    // Tier 2. Everything older is still answered, just dripped out. 0 = no age limit at all
+    // (handle the entire backlog however far back it goes).
+    maxAgeDays: parseInt(process.env.CATCHUP_MAX_AGE_DAYS || '0', 10),
+    // Drip rate for tier 2, per hour. 120/h ≈ one every 30s — a ~1000-chat backlog clears in
+    // about 8 hours without ever looking like a broadcast. Raise only with evidence.
+    drainPerHour: parseInt(process.env.CATCHUP_DRAIN_PER_HOUR || '120', 10),
+    // How many tier-2 items may go out in a single tick, so the drip isn't perfectly periodic.
+    drainBatch: parseInt(process.env.CATCHUP_DRAIN_BATCH || '2', 10),
+    tickMs: parseInt(process.env.CATCHUP_TICK_MS || '60000', 10),
+    // Hard ceiling on how many chats one sweep will look at, so a pathological account
+    // can't hang the boot sequence.
+    maxChatsScanned: parseInt(process.env.CATCHUP_MAX_CHATS_SCANNED || '5000', 10),
+    // Tell the owner on WhatsApp when a sweep finds missed customers, and again when the
+    // backlog finishes draining.
+    alertOwner: process.env.CATCHUP_ALERT_OWNER !== 'false',
+    // Sweep and report, but send NOTHING and queue nothing. The safe way to see what a
+    // catch-up would do on a real account before letting it message anybody — and the only
+    // way to verify the sweep against live customer data without contacting them.
+    dryRun: process.env.CATCHUP_DRY_RUN === 'true',
+  },
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
   knowledgeHub: {
     // Single shared password protecting the /knowledge-hub admin page + its APIs.

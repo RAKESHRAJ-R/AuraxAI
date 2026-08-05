@@ -11,6 +11,7 @@
     "test-whatsapp": "node src/test_whatsapp.js",
     "test-search": "node test_product_search.js",
     "test-embeddings": "node src/test_embeddings.js",
+    "test-catchup": "node src/test_catchup.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",
     "seed-tickets": "node src/seed_tickets.js",

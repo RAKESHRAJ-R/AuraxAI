@@ -81,6 +81,12 @@ OWNER_WHATSAPP_NUMBER=     # Owner's WhatsApp for escalation alerts
 BULK_ORDER_THRESHOLD=10    # Qty threshold for bulk order escalation (default)
 GOOGLE_SHEETS_ID=          # Optional: for lead logging
 MONGODB_URI=               # Optional: MongoDB for persistent sessions (JSON fallback used if absent)
+CATCHUP_ENABLED=true       # Missed-message catch-up (default on). false = missed customers NOT answered
+CATCHUP_FRESH_HOURS=12     # Answered immediately on reconnect; older goes to the slow drip
+CATCHUP_MAX_AGE_DAYS=0     # 0 = no age limit, the whole backlog is eventually answered
+CATCHUP_DRAIN_PER_HOUR=120 # Backlog drip rate — raising this raises ban risk
+CATCHUP_ALERT_OWNER=true   # WhatsApp summary to the owner per sweep
+CATCHUP_DRY_RUN=false      # true = sweep + report only, message nobody (validate before going live)
 BASE_URL=http://localhost:3000
 ALLOWED_TEST_NUMBERS=      # Comma-separated numbers for safe-mode (only these get replies)
 AURAX_TEAM_PASSWORD=       # Shared admin-console password for the Aurax team
@@ -449,6 +455,91 @@ maintenance mode off the same evening and the crawl then succeeded.
 (`apps/admin/src/pages/Knowledge.jsx`). `addWebsite()` clears the field on success, and a bare-URL
 placeholder reads as a filled-in value — so people pressed **Crawl & index** again and got
 "Enter a website URL." with no idea why. Admin app rebuilt.
+
+### Missed-message catch-up (added 2026-08-05)
+
+**The bug this closes:** `whatsapp-web.js` only emits `message` for messages that arrive LIVE.
+Every emit path in `Client.js` is behind `Msg.on('add', …)` → `if (!msg.isNewMsg) return`
+(verified in 1.34.7 — both `onAddMessageEvent` callers, lines 1133 and 1159, are inside that
+guard). So two whole classes of customer never reached the bot at all, with **no error and no
+log line**:
+
+1. Chats already unread on the phone when the number was first paired.
+2. Anything sent while the server was down, restarting, or disconnected.
+
+`src/services/catchup.js` sweeps for them on every `ready` (delayed 15s so the initial chat
+sync has settled — `getChats()` straight off `ready` can return a partial list, which would
+miss exactly the customers this rescues).
+
+⚠️ **Do NOT use `client.getChats()` — it is all-or-nothing and it failed live.** That helper
+maps every chat through `WWebJS.getChatModel` inside one `Promise.all`, and that builder does
+a network `groupMetadata.update()` per group plus `WAWebLidMigrationUtils.toPn()` per
+participant (`Utils.js:920–1000`). **One bad chat rejects the whole batch.** On the real
+LID-based account it died instantly with a minified `[Catch-up] Could not list chats: r`,
+silently skipping every waiting customer — the feature looked enabled and did nothing.
+
+`listChatSummaries()` reads the same `WAWebCollections.Chat` store via `pupPage.evaluate` but
+extracts only the ~10 fields the sweep needs, **with try/catch around each chat**, so one
+unreadable conversation costs exactly one conversation. No metadata fetches, no contact
+resolution, no Chat/Message construction. `listChatsFallback()` keeps the library helper as a
+last resort. Measured on the live account: **661 chats read in one pass.**
+
+**Detection is the chat's last message, not `fetchMessages()`.** If it is `fromMe`, the
+conversation is already answered — including by a human on the shop phone. If it is from the
+customer and newer than the watermark, that IS the message to reply to.
+
+**Unhydrated chats are the subtle trap.** WhatsApp does not load messages for every chat
+(397 of 661 on the live account). A chat with no readable message AND no unread badge is
+genuinely idle → skip. A chat with no readable message but `unreadCount > 0` means a customer
+IS waiting and we just cannot see their text → flagged `needsFetch` and rescued by
+`fetchLatestInbound()` at reply time, one chat at a time at the drip rate. Live measurement:
+**0 such chats on this account**, but the path is covered by the test suite because it only
+fires on real data.
+
+**`CATCHUP_DRY_RUN=true`** sweeps and reports without sending, queueing, or alerting — the
+only safe way to validate against live customer data. It logs the per-filter breakdown
+(`already replied to / handled earlier / groups / idle-unhydrated / rescued`) plus a sample of
+who would be answered. Use it before pointing catch-up at a real backlog.
+
+**Two tiers, because the client's requirement was "miss nobody" but a 1000-reply burst is the
+most bannable thing an unofficial client can do:**
+
+| Tier | Age | Handling |
+|---|---|---|
+| 1 (`tierRank 0`) | ≤ `CATCHUP_FRESH_HOURS` (12) | Answered immediately, normal send pace |
+| 2 (`tierRank 1`) | older | Persisted, dripped at `CATCHUP_DRAIN_PER_HOUR` (120/h ≈ 1000 chats in ~8h) |
+
+`CATCHUP_MAX_AGE_DAYS=0` (default) means **no age limit** — the entire backlog is eventually
+answered. Messages ≥24h old get a prefix telling the agent to open by apologising for the
+delay, so a month-old message isn't answered as though it just arrived.
+
+**Four invariants worth not breaking:**
+- **Persist before answering.** `queueCatchupItems()` runs before any send, so a crash
+  mid-catch-up loses nobody. Items are deleted only after a successful send.
+- **`tierRank` outranks age in `getCatchupBatch()`.** A plain oldest-first sort puts a
+  still-waiting customer from an hour ago *behind* a thousand month-old messages.
+- **The drip yields to live traffic** — `drainTick()` returns early while
+  `bot.senderChains.size > 0`, so real-time customers always win.
+- ⚠️ **`drainFresh()` takes the sweep's own array, never a re-read of the queue.** Reading it
+  back returns the OLDEST items — the tier-2 backlog — and answers the whole thing at full
+  speed. This shipped once and was caught by the test suite; the check that guards it is
+  "answers once the line is clear".
+
+The watermark (`meta` key `catchup:lastSeenTs`) advances on every handled message, live or
+caught up. `forgetChat()` drops queued items the moment a customer messages live, so a stale
+queued reply can't land in an active conversation. Safe mode applies to the catch-up path too.
+
+Owner gets a WhatsApp summary per sweep (`📥 Missed messages found`) and one when the backlog
+finishes draining. `catchupService.getStatus()` exists for a future admin panel but is not yet
+wired to an endpoint.
+
+`npm run test-catchup` (`src/test_catchup.js`) is the regression suite — 23 checks against a
+stubbed client and stubbed AI, no network, no LLM spend, no WhatsApp session. It resets the
+watermark and queue on entry and exit. Covers both read paths (direct + fallback), the
+unhydrated-chat rescue, tier ordering, drip yielding, and the double-answer guards.
+
+New state files `src/data/meta.json` + `src/data/catchup_queue.json` (Mongo collections `meta`
+and `catchup_queue` when `MONGODB_URI` is set). Both gitignored — per-deployment state.
 
 ### Customer Registry
 
