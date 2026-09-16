@@ -124,6 +124,9 @@ const config = {
   },
   whatsappWeb: {
     enabled: process.env.WHATSAPP_WEB_ENABLED === 'true',
+    // Browser identity reported to WhatsApp. Empty = derived from the Chrome build Puppeteer
+    // actually runs (see whatsapp-web-bot.js). Only set this to pin a specific string.
+    userAgent: process.env.WHATSAPP_USER_AGENT || null,
     // --- Outbound send pacing (WhatsApp ban-risk protection) ---
     // whatsapp-web.js is an UNOFFICIAL client: WhatsApp bans numbers that behave like
     // bots, and the loudest signal is a burst of instant, evenly-spaced replies to many

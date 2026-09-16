@@ -1,3 +1,4 @@
+import { createRequire } from 'module';
 import pkg from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import config from '../config/config.js';
@@ -5,6 +6,31 @@ import aiService from './ai.js';
 import catchupService from './catchup.js';
 
 const { Client, LocalAuth, MessageMedia } = pkg;
+const require = createRequire(import.meta.url);
+
+/**
+ * whatsapp-web.js defaults to claiming "Chrome/101 on macOS 10.14" (a 2022 browser) while
+ * Puppeteer really runs a current Chrome on Linux — whose client-hint headers and JS report
+ * the real version. That self-contradicting fingerprint is an easy automation tell, and was
+ * live on production (Chrome 146 claiming 101) when the phone started refusing to link
+ * ("Couldn't link device. Try again later."). Report the real major version and host OS.
+ * Returns undefined (library default) if the Chrome version can't be determined.
+ */
+function realChromeUserAgent() {
+  if (config.whatsappWeb.userAgent) return config.whatsappWeb.userAgent;
+  let major = null;
+  try {
+    major = String(require('puppeteer').PUPPETEER_REVISIONS.chrome).split('.')[0];
+  } catch {
+    return undefined;
+  }
+  if (!/^\d+$/.test(major)) return undefined;
+  const os = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : 'X11; Linux x86_64';
+  // Chrome's reduced UA format: only the major version is real, the rest is always 0.0.0.
+  return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
 
 class WhatsAppWebBot {
   constructor() {
@@ -347,7 +373,10 @@ class WhatsAppWebBot {
     this.status = 'CONNECTING';
 
     try {
+      const userAgent = realChromeUserAgent();
+      if (userAgent) console.log(`[WhatsApp Web Bot] User agent: ${userAgent}`);
       const client = new Client({
+        ...(userAgent ? { userAgent } : {}),
         authStrategy: new LocalAuth({
           clientId: 'theaurax-bot'
         }),

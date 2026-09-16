@@ -597,6 +597,11 @@ the server, not the account.
   unpaired client and builds a new one with `pairWithPhoneNumber` (`restartForLinking()`). Status
   becomes `CODE_READY`; `getStatus()` returns `pairingPhone`/`pairingCode`. The library re-requests
   a code every 180s. `ready` clears the pairing state so later reconnects restore the session normally.
+- **Real browser identity.** whatsapp-web.js's default `userAgent` claims *Chrome 101 on macOS
+  10.14*; production actually ran Chrome 146 on Linux (seen in `ps` on the VPS, 2026-09-16), so
+  the UA contradicted the browser's own client-hint headers — an obvious automation fingerprint
+  and a suspect for the linking refusal. `realChromeUserAgent()` now builds the UA from
+  `puppeteer.PUPPETEER_REVISIONS.chrome` + the host OS. Override with `WHATSAPP_USER_AGENT`.
 - ⚠️ Every client event handler and the `initialize().catch` now check `this.client !== client`.
   Destroying a client mid-launch rejects its `initialize()`, and without the guard that late
   rejection nulls out and re-inits over the **replacement** client.
