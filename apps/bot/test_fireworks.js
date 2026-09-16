@@ -29,7 +29,7 @@ const client = new OpenAI({
 // Confirmed available on this account: gpt-oss-120b, deepseek-v4-pro.
 const CANDIDATES = [
   'accounts/fireworks/models/gpt-oss-120b',
-  'accounts/fireworks/models/deepseek-v4-pro',
+  'accounts/fireworks/models/deepseek-v4-pro-0813',
 ];
 
 // gpt-oss / deepseek are REASONING models: the final answer may sit in

@@ -609,7 +609,7 @@ ${sessionContext}`;
       : provider === 'openrouter'
       ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
       : provider === 'fireworks'
-      ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+      ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
       : provider === 'sarvam'
       ? (config.sarvam?.model || 'sarvam-105b')
       : provider === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
@@ -1073,7 +1073,7 @@ ${sessionContext}`;
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
           : entry.name === 'fireworks'
-          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
           : entry.name === 'sarvam'
           ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'
@@ -1126,7 +1126,7 @@ ${sessionContext}`;
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
           : entry.name === 'fireworks'
-          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro')
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
           : entry.name === 'sarvam'
           ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'

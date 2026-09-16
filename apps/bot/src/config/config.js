@@ -72,7 +72,14 @@ const config = {
     apiKeys: (process.env.FIREWORKS_API_KEY || '').split(',')
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_fireworks')),
-    model: process.env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-pro',
+    // ⚠️ The un-dated 'deepseek-v4-pro' was a preview that Fireworks DEPRECATED on
+    // 2026-08-27 (model record: supportsServerless:false). It still appears in
+    // GET /v1/models but every completion returns 404 "Model not found, inaccessible,
+    // and/or not deployed" — so Fireworks silently failed on every call and traffic fell
+    // through to Sarvam. '-0813' is the official release that superseded it (verified
+    // live 2026-09-17: tool-calling + Tanglish OK). Dated ids get retired too — if
+    // Fireworks starts 404ing again, check the model's deprecationDate first.
+    model: process.env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-pro-0813',
   },
   sarvam: {
     // Indic-specialised provider (Sarvam AI, Indian). OpenAI-compatible endpoint

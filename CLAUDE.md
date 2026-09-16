@@ -70,7 +70,7 @@ GROQ_MODEL=                # Optional: defaults to llama-3.3-70b-versatile
 OPENAI_API_KEY=            # Optional: OpenAI fallback (GPT-4o-mini)
 GEMINI_API_KEY=            # Optional: Gemini fallback (Gemini 2.0 Flash)
 FIREWORKS_API_KEY=         # Optional: Fireworks paid fallback (comma-sep for multiple keys)
-FIREWORKS_MODEL=           # Optional: defaults to accounts/fireworks/models/deepseek-v4-pro
+FIREWORKS_MODEL=           # Optional: defaults to accounts/fireworks/models/deepseek-v4-pro-0813
 SARVAM_API_KEY=            # Optional: Sarvam (Indic-native) paid provider — Tanglish-first (comma-sep for multiple keys)
 SARVAM_MODEL=              # Optional: defaults to sarvam-105b (sarvam-30b is RETIRED — 400s)
 WOOCOMMERCE_URL=           # Required: https://theaurax.in
@@ -140,11 +140,11 @@ This is a WhatsApp AI sales bot for **Theaurax.in** (football jerseys). It runs 
 
 ```
 English sessions:
-Groq (LLaMA 3.3-70B)           → Primary provider (fast, free)
+Fireworks (deepseek-v4-pro-0813) → Primary (Groq was demoted 2026-07-27: tool_use_failed on this prompt)
   ↓ quota or error
-Fireworks (deepseek-v4-pro)    → First paid fallback (no shared free-tier ceiling)
+Sarvam (sarvam-105b)           → Second
   ↓ quota or error
-Sarvam (sarvam-105b)           → Second paid fallback
+Groq (LLaMA 3.3-70B)           → Free backstop
   ↓ quota or error
 OpenAI → OpenRouter → Gemini   → Further fallbacks
   ↓ all fail
@@ -153,7 +153,7 @@ Friendly error message + persistent retry scheduling
 Tanglish sessions:
 Sarvam (sarvam-105b)           → Tried FIRST — Indic-native, purpose-trained on romanized/code-mixed Tamil
   ↓ quota or error
-Fireworks (deepseek-v4-pro)    → Paid backup (also strong at code-mixing)
+Fireworks (deepseek-v4-pro-0813) → Paid backup (also strong at code-mixing)
   ↓ quota or error
 Groq (LLaMA 3.3-70B)           → Fast free backstop, then OpenAI → OpenRouter → Gemini
 ```
@@ -204,13 +204,26 @@ existing per-key rotation and per-key quota tracking.
 
 **Fireworks provider (added 2026-07-17):** Client-supplied paid key, OpenAI-compatible
 (`baseURL: https://api.fireworks.ai/inference/v1`), wired exactly like OpenRouter. Uses
-`deepseek-v4-pro` — a reasoning model that returns the final answer cleanly in `content`
+`deepseek-v4-pro-0813` (see migration note below) — a reasoning model that returns the final answer cleanly in `content`
 (no `reasoning_format` flag needed) but needs headroom, so `max_tokens` is 1500 for
 Fireworks vs 800 for non-reasoning providers. Verified live: tool-calling works in the full
 agentic loop, Tanglish quality clearly beats Llama-3.3, ~₹0.01–0.02/reply. Fireworks takes
 the Tanglish-first slot that dead Gemini (`limit:0`) used to hold. Gated behind
 `FIREWORKS_API_KEY` — absent = provider simply isn't loaded, no behavior change. A standalone
 smoke test lives at `test_fireworks.js` (probes auth, available models, tool-calling, Tanglish).
+
+⚠️ **Migrated deepseek-v4-pro → deepseek-v4-pro-0813 (2026-09-17) — forced, same story as
+Sarvam-30b.** Fireworks deprecated the un-dated preview `deepseek-v4-pro` on **2026-08-27**
+(model record: `deprecationDate 2026-08-27`, `supportsServerless: false`). It **still appears in
+`GET /v1/models`**, which is what makes it easy to miss, but every completion returns
+`404 Model not found, inaccessible, and/or not deployed`. For ~3 weeks every English message
+failed its primary provider and fell through to Sarvam (production log 2026-09-16:
+`fireworks failed, trying next... 404` on every call). `-0813` is the official release that
+superseded it; verified against this bot's real system prompt + tool schema (English and
+Tanglish both emit `search_products` in ~2-3s) and on standalone Tanglish replies. The key itself
+was fine — `gpt-oss-120b` answered on it. **If Fireworks 404s again, check the model's
+`deprecationDate` at `GET https://api.fireworks.ai/v1/accounts/fireworks/models/<id>` first.**
+Also check the server `.env` for a `FIREWORKS_MODEL` override, which beats the code default.
 
 ### Session State Machine
 
