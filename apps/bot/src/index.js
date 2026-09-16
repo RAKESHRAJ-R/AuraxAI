@@ -116,6 +116,39 @@ app.post('/api/whatsapp/logout', requireKnowledgeAuth, async (req, res) => {
 });
 
 /**
+ * WhatsApp phone-number linking — the alternative to scanning the QR. The admin enters the
+ * number, the bot shows an 8-character code, and it is typed into the phone under
+ * Linked devices → Link a device → "Link with phone number instead".
+ */
+app.post('/api/whatsapp/pair', requireKnowledgeAuth, async (req, res) => {
+  if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
+    return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
+  }
+  try {
+    const result = await whatsappWebBot.startPhonePairing(req.body?.phoneNumber);
+    if (!result.ok) return res.status(400).json({ error: result.message });
+    res.json(result);
+  } catch (err) {
+    console.error('[API] WhatsApp phone pairing failed:', err.message);
+    res.status(500).json({ error: 'Could not start phone-number linking. Check the server logs.' });
+  }
+});
+
+app.post('/api/whatsapp/pair/cancel', requireKnowledgeAuth, async (req, res) => {
+  if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
+    return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
+  }
+  try {
+    const result = await whatsappWebBot.cancelPhonePairing();
+    if (!result.ok) return res.status(409).json({ error: result.message });
+    res.json(result);
+  } catch (err) {
+    console.error('[API] WhatsApp pairing cancel failed:', err.message);
+    res.status(500).json({ error: 'Could not switch back to QR. Check the server logs.' });
+  }
+});
+
+/**
  * Retry Queue Stats Route
  * Shows pending LLM retries (survives restarts via DB persistence).
  * Useful for monitoring quota-exhausted queries waiting to be reprocessed.

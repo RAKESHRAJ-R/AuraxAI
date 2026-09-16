@@ -8,7 +8,7 @@ const { Client, LocalAuth, MessageMedia } = pkg;
 
 class WhatsAppWebBot {
   constructor() {
-    this.status = 'DISCONNECTED'; // DISCONNECTED, CONNECTING, QR_READY, CONNECTED
+    this.status = 'DISCONNECTED'; // DISCONNECTED, CONNECTING, QR_READY, CODE_READY, CONNECTED
     this.qrDataUrl = null;
     this.client = null;
     // Which WhatsApp account is currently linked — captured on 'ready' and surfaced in the
@@ -21,6 +21,13 @@ class WhatsAppWebBot {
     // Puppeteer/WhatsApp clients against one LocalAuth session, which corrupts it.
     this.reinitTimer = null;
     this.loggingOut = false;
+    // Phone-number linking (the phone's "Link with phone number instead"). When pairingPhone
+    // is set, the next client is built with `pairWithPhoneNumber`, which makes WhatsApp Web
+    // hand out an 8-character code instead of a QR. It has to be a fresh client: the library
+    // decides QR vs code once, during initialize().
+    this.pairingPhone = null;
+    this.pairingCode = null;
+    this.pairingCodeAt = null;
     // Per-sender processing chains: a global concurrency-N pool (the old approach)
     // can dequeue two messages from the SAME customer onto different workers at once,
     // and since answerQuery does a read-modify-write on that customer's session, the
@@ -221,6 +228,7 @@ class WhatsAppWebBot {
 
     this.loggingOut = true;
     const previous = this.deviceInfo?.number || null;
+    this.clearPairing();
     // Detach first: the 'disconnected' handler checks `this.client` and will now no-op.
     this.client = null;
     this.status = 'DISCONNECTED';
@@ -257,6 +265,73 @@ class WhatsAppWebBot {
     };
   }
 
+  clearPairing() {
+    this.pairingPhone = null;
+    this.pairingCode = null;
+    this.pairingCodeAt = null;
+  }
+
+  /**
+   * Tear down the current (unpaired) client and bring a new one up — used to switch between
+   * QR linking and phone-number linking. Only allowed while nothing is linked, so it can
+   * never drop a live customer session.
+   */
+  async restartForLinking() {
+    const client = this.client;
+    this.client = null;
+    this.status = 'CONNECTING';
+    this.qrDataUrl = null;
+    this.pairingCode = null;
+    this.pairingCodeAt = null;
+    if (client) {
+      try {
+        await client.destroy();
+      } catch {
+        /* best-effort: the browser may already be closed */
+      }
+    }
+    this.scheduleReinit(1000);
+  }
+
+  /**
+   * Switch to phone-number linking. Accepts the number with or without +, spaces or dashes;
+   * a bare 10-digit number is treated as Indian (+91), since that's this store's market.
+   */
+  async startPhonePairing(rawPhone) {
+    if (!config.whatsappWeb.enabled) {
+      return { ok: false, message: 'WhatsApp Web integration is disabled.' };
+    }
+    if (this.status === 'CONNECTED') {
+      return { ok: false, message: 'A number is already linked. Log it out first.' };
+    }
+    if (this.loggingOut) {
+      return { ok: false, message: 'A logout is in progress — try again in a few seconds.' };
+    }
+    let digits = String(rawPhone || '').replace(/\D/g, '');
+    if (digits.length === 10) digits = '91' + digits;
+    if (digits.length < 11 || digits.length > 15) {
+      return { ok: false, message: 'Enter the full WhatsApp number with country code, e.g. +91 98765 43210.' };
+    }
+
+    console.log(`[WhatsApp Web Bot] Switching to phone-number linking for +${digits}.`);
+    this.pairingPhone = digits;
+    await this.restartForLinking();
+    return { ok: true, phoneNumber: digits, message: 'Generating a linking code — it will appear in a few seconds.' };
+  }
+
+  async cancelPhonePairing() {
+    if (this.status === 'CONNECTED') {
+      return { ok: false, message: 'A number is already linked.' };
+    }
+    if (!this.pairingPhone) {
+      return { ok: true, message: 'Already in QR mode.' };
+    }
+    console.log('[WhatsApp Web Bot] Phone-number linking cancelled — back to QR.');
+    this.clearPairing();
+    await this.restartForLinking();
+    return { ok: true, message: 'Back to QR code — a new one will appear in a few seconds.' };
+  }
+
   initialize() {
     if (!config.whatsappWeb.enabled) {
       console.log('[WhatsApp Web Bot] Disabled in config. Skipping initialization.');
@@ -272,10 +347,18 @@ class WhatsAppWebBot {
     this.status = 'CONNECTING';
 
     try {
-      this.client = new Client({
+      const client = new Client({
         authStrategy: new LocalAuth({
           clientId: 'theaurax-bot'
         }),
+        ...(this.pairingPhone ? {
+          pairWithPhoneNumber: {
+            phoneNumber: this.pairingPhone,
+            showNotification: true,
+            // WhatsApp expires a code after a few minutes; the library re-requests on this interval.
+            intervalMs: 180000,
+          },
+        } : {}),
         puppeteer: {
           headless: true,
           args: [
@@ -290,8 +373,11 @@ class WhatsAppWebBot {
           ]
         }
       });
+      this.client = client;
 
       this.client.on('qr', async (qr) => {
+        // A client being torn down for a QR ↔ phone-number switch can still emit late.
+        if (this.client !== client) return;
         console.log('[WhatsApp Web Bot] QR code received. Generating data URL...');
         this.status = 'QR_READY';
         try {
@@ -301,10 +387,21 @@ class WhatsAppWebBot {
         }
       });
 
+      this.client.on('code', (code) => {
+        if (this.client !== client) return;
+        console.log(`[WhatsApp Web Bot] Linking code received for +${this.pairingPhone}.`);
+        this.status = 'CODE_READY';
+        this.qrDataUrl = null;
+        this.pairingCode = code;
+        this.pairingCodeAt = new Date().toISOString();
+      });
+
       this.client.on('ready', () => {
         console.log('[WhatsApp Web Bot] Client is ready and connected!');
         this.status = 'CONNECTED';
         this.qrDataUrl = null;
+        // Linked — later reconnects restore the saved session and must not ask for a code again.
+        this.clearPairing();
         // Record the connect time here even if the account details aren't readable yet —
         // otherwise "Linked since" shows "Never" on a perfectly healthy connection.
         this.connectedAt = new Date().toISOString();
@@ -329,6 +426,7 @@ class WhatsAppWebBot {
 
       this.client.on('auth_failure', async (msg) => {
         console.error('[WhatsApp Web Bot] Authentication failed:', msg);
+        if (this.client !== client) return;
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
         this.deviceInfo = null;
@@ -343,9 +441,9 @@ class WhatsAppWebBot {
 
       this.client.on('disconnected', async (reason) => {
         console.log('[WhatsApp Web Bot] Client disconnected:', reason);
-        // logout() detaches this.client before triggering this event and handles its own
-        // teardown + re-init, so bail out rather than fighting it for the same client.
-        if (!this.client) return;
+        // logout() and restartForLinking() detach this.client before tearing it down and handle
+        // their own re-init, so bail out rather than fighting them for the same client.
+        if (this.client !== client) return;
         this.status = 'DISCONNECTED';
         this.qrDataUrl = null;
         this.deviceInfo = null;
@@ -370,6 +468,9 @@ class WhatsAppWebBot {
       });
 
       this.client.initialize().catch((error) => {
+        // Destroying a client mid-launch (QR ↔ phone-number switch) rejects its initialize();
+        // that client is already replaced, so don't null out or re-init over the new one.
+        if (this.client !== client) return;
         console.error('[WhatsApp Web Bot] Failed to initialize client asynchronously:', error.message);
         this.status = 'DISCONNECTED';
         this.client = null;
@@ -533,6 +634,10 @@ class WhatsAppWebBot {
       // number next to a disconnected badge.
       device,
       loggingOut: this.loggingOut,
+      // Phone-number linking: which number the code is for, and the code once WhatsApp issues it.
+      pairingPhone: this.status === 'CONNECTED' ? null : this.pairingPhone,
+      pairingCode: this.status === 'CODE_READY' ? this.pairingCode : null,
+      pairingCodeAt: this.status === 'CODE_READY' ? this.pairingCodeAt : null,
     };
   }
 }

@@ -584,6 +584,23 @@ no session, hides stale device info, detaches the client, clears device state, r
 previous number, runs exactly one re-init when a late `disconnected` races it, and degrades
 honestly when the unlink fails.
 
+**Phone-number linking (added 2026-09-16).** The WhatsApp section has a **Link with phone number
+instead** button: the admin enters the number, the console shows WhatsApp's 8-character code, and
+it's typed on the phone under Linked devices → Link a device → *Link with phone number instead*.
+Added because the phone refused the server's QR with *"Couldn't link device. Try again later."*
+while the same phone linked web.whatsapp.com on a laptop fine — i.e. the refusal was specific to
+the server, not the account.
+
+- `POST /api/whatsapp/pair` `{phoneNumber}` → `startPhonePairing()`; a bare 10-digit number gets
+  `91` prefixed. `POST /api/whatsapp/pair/cancel` → back to QR. Both refuse while `CONNECTED`.
+- whatsapp-web.js picks QR vs code **once, inside `initialize()`**, so switching mode tears down the
+  unpaired client and builds a new one with `pairWithPhoneNumber` (`restartForLinking()`). Status
+  becomes `CODE_READY`; `getStatus()` returns `pairingPhone`/`pairingCode`. The library re-requests
+  a code every 180s. `ready` clears the pairing state so later reconnects restore the session normally.
+- ⚠️ Every client event handler and the `initialize().catch` now check `this.client !== client`.
+  Destroying a client mid-launch rejects its `initialize()`, and without the guard that late
+  rejection nulls out and re-inits over the **replacement** client.
+
 ### Admin Console (unified Vite + React app)
 
 Added 2026-07-22. The three former standalone pages (`apiwork.html` monitor, `whatsapp-link.html`
@@ -652,6 +669,8 @@ If `ALLOWED_TEST_NUMBERS` is set, the bot only responds to those phone numbers �
 |---|---|
 | `GET /api/whatsapp/status` | WhatsApp Web connection state + QR code + linked-account info |
 | `POST /api/whatsapp/logout` | Unlink the paired phone and bring up a fresh QR (auth required) |
+| `POST /api/whatsapp/pair` | Switch to phone-number linking; body `{phoneNumber}` (auth required) |
+| `POST /api/whatsapp/pair/cancel` | Leave phone-number linking and go back to the QR (auth required) |
 | `GET /api/retry-stats` | Pending retry queue, provider status, active provider |
 
 ### Rate-Limit Protection
