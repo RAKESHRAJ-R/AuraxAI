@@ -1,17 +1,24 @@
+import config from '../config/config.js';
 import dbService from './db.js';
 import whatsappWebBot from './whatsapp-web-bot.js';
 
-const INACTIVE_HOURS = 3;
-const MAX_FOLLOW_UPS = 2;
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 class FollowUpService {
   start() {
+    if (!config.followUp.enabled) {
+      console.log('[FollowUp] Disabled by config — cold leads will NOT be re-engaged.');
+      return;
+    }
     setInterval(() => this.runFollowUpCheck(), CHECK_INTERVAL_MS);
-    console.log('[FollowUp] Cold lead follow-up scheduler started (every 30 min).');
+    console.log(
+      `[FollowUp] Cold lead follow-up scheduler started (every 30 min, ` +
+      `max ${config.followUp.maxPerRun} per run).`
+    );
   }
 
   async runFollowUpCheck() {
+    if (!config.followUp.enabled) return;
     if (!whatsappWebBot.client || whatsappWebBot.status !== 'CONNECTED') {
       console.log('[FollowUp] WhatsApp not connected, skipping check.');
       return;
@@ -28,11 +35,23 @@ class FollowUpService {
       const hoursInactive = (now - lastUpdate) / (1000 * 60 * 60);
       const followUpCount = lead.followUpCount || 0;
 
-      if (hoursInactive >= INACTIVE_HOURS && followUpCount < MAX_FOLLOW_UPS) {
+      if (hoursInactive >= config.followUp.inactiveHours && followUpCount < config.followUp.maxPerLead) {
+        // Unsolicited messages are the first thing to give way when the account has already
+        // contacted a lot of people this hour — a cold lead can always be nudged next run.
+        const budget = whatsappWebBot.chatBudget?.();
+        if (budget && !budget.hasRoom) {
+          console.log(`[FollowUp] Account already messaged ${budget.used}/${budget.max} chats this hour — holding off.`);
+          break;
+        }
         await this.sendFollowUp(lead);
         contacted++;
-        // Stagger messages to avoid WhatsApp spam detection
-        await new Promise(r => setTimeout(r, 5000));
+        // Stop well short of walking the whole lead list in one pass. A run that contacts
+        // every cold lead it can find is a broadcast no matter how it is spaced; the
+        // remainder are simply picked up by the next run 30 minutes later.
+        if (contacted >= config.followUp.maxPerRun) {
+          console.log(`[FollowUp] Per-run cap (${config.followUp.maxPerRun}) reached — the rest wait for the next run.`);
+          break;
+        }
       }
     }
 

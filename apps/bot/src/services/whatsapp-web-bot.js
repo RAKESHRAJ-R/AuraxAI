@@ -79,6 +79,30 @@ class WhatsAppWebBot {
     this.lastSendAt = 0;
     // Rolling 60s window of send timestamps, for the per-minute ceiling.
     this.sendWindow = [];
+    // Rolling 60-MINUTE window of { at, chat }, for the distinct-chats-per-hour ceiling.
+    // The per-minute cap cannot see a slow, steady broadcast: 8/min is also 480/hour, and
+    // 480 different people contacted by one handset in an hour is a bulk campaign however
+    // politely it is spaced. This window is what the bulk paths (catch-up drip, cold-lead
+    // follow-ups) check before deciding to send.
+    this.chatWindow = [];
+  }
+
+  /**
+   * How many DISTINCT chats this account has messaged in the last hour, and whether there is
+   * room for one more under `maxNewChatsPerHour`.
+   *
+   * Deliberately a question the caller asks rather than a wait inside awaitSendSlot(). The
+   * send chain is global, so blocking in there to enforce an HOURLY budget would park a live
+   * customer's reply behind the backlog for up to an hour — trading a ban risk for the exact
+   * failure (unanswered customers) the catch-up feature exists to prevent. Bulk senders can
+   * afford to wait for the next tick; a real customer mid-conversation cannot.
+   */
+  chatBudget() {
+    const cutoff = Date.now() - 3600 * 1000;
+    this.chatWindow = this.chatWindow.filter(e => e.at > cutoff);
+    const used = new Set(this.chatWindow.map(e => e.chat)).size;
+    const max = config.whatsappWeb.maxNewChatsPerHour;
+    return { used, max, hasRoom: max <= 0 || used < max };
   }
 
   /**
@@ -92,7 +116,7 @@ class WhatsAppWebBot {
   sendText(to, content, options = undefined) {
     const run = this.sendChain.then(async () => {
       if (!this.client) throw new Error('WhatsApp client not initialised');
-      await this.awaitSendSlot();
+      await this.awaitSendSlot(to);
       return options ? this.client.sendMessage(to, content, options)
                      : this.client.sendMessage(to, content);
     });
@@ -106,7 +130,7 @@ class WhatsAppWebBot {
    * Blocks until it's safe to send the next message. Called only from inside the
    * serialised sendChain, so the timestamps it reads and writes can't race.
    */
-  async awaitSendSlot() {
+  async awaitSendSlot(to) {
     const cfg = config.whatsappWeb;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -133,6 +157,10 @@ class WhatsAppWebBot {
 
     this.lastSendAt = Date.now();
     this.sendWindow.push(this.lastSendAt);
+    if (to) {
+      this.chatWindow.push({ at: this.lastSendAt, chat: to });
+      if (this.chatWindow.length > 5000) this.chatWindow.splice(0, this.chatWindow.length - 5000);
+    }
   }
 
   /**
@@ -378,7 +406,12 @@ class WhatsAppWebBot {
       const client = new Client({
         ...(userAgent ? { userAgent } : {}),
         authStrategy: new LocalAuth({
-          clientId: 'theaurax-bot'
+          // Which folder under .wwebjs_auth/ holds the session. Overridable so a developer
+          // can run locally against a throwaway number (WHATSAPP_CLIENT_ID=local-test)
+          // without restoring — or corrupting — the paired shop session. Two machines
+          // sharing one LocalAuth folder is the same hazard as two clients sharing one, and
+          // recovering from it means re-linking the live number.
+          clientId: config.whatsappWeb.clientId
         }),
         ...(this.pairingPhone ? {
           pairWithPhoneNumber: {

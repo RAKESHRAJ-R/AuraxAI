@@ -45,7 +45,7 @@ function isNeedsAnswer(e) {
   return e.source === 'auto' && !(e.answer && e.answer.trim());
 }
 
-function EntryCard({ e, onEdit, onDelete, onDismiss }) {
+function EntryCard({ e, onEdit, onDelete, onDismiss, canEdit }) {
   const needs = isNeedsAnswer(e);
   return (
     <div className={'entry fade' + (needs ? ' need' : '')}>
@@ -62,18 +62,21 @@ function EntryCard({ e, onEdit, onDelete, onDismiss }) {
         {e.source === 'auto' && !needs && <span className="chip src">auto-found</span>}
         {e.active === false && !needs && <span className="chip off">inactive</span>}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className={'btn sm' + (needs ? ' gold' : ' ghost')} onClick={() => onEdit(e)}>{needs ? '✏️ Answer' : 'Edit'}</button>
-        {needs
-          ? <button className="btn danger sm" onClick={() => onDismiss(e.id)}>Dismiss</button>
-          : <button className="btn danger sm" onClick={() => onDelete(e.id)}>Delete</button>}
-      </div>
+      {canEdit && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className={'btn sm' + (needs ? ' gold' : ' ghost')} onClick={() => onEdit(e)}>{needs ? '✏️ Answer' : 'Edit'}</button>
+          {needs
+            ? <button className="btn danger sm" onClick={() => onDismiss(e.id)}>Dismiss</button>
+            : <button className="btn danger sm" onClick={() => onDelete(e.id)}>Delete</button>}
+        </div>
+      )}
     </div>
   );
 }
 
 function TeachTab({ draft, setDraft }) {
-  const { api } = useAuth();
+  const { api, can } = useAuth();
+  const canEdit = can('knowledge.edit');
   const toast = useToast();
   const [entries, setEntries] = useState(null);
 
@@ -89,11 +92,14 @@ function TeachTab({ draft, setDraft }) {
   useEffect(() => {
     // Refresh the auto-diagnosis queue when the tab opens (no owner alert — that's the
     // scheduler's job), then load the list including any newly-queued drafts.
+    // Diagnosis writes drafts, so only roles that can edit run it; the 30-min scheduler covers everyone else.
     (async () => {
-      try { await api('/api/knowledge/diagnose', { method: 'POST', body: '{}' }); } catch { /* non-fatal */ }
+      if (canEdit) {
+        try { await api('/api/knowledge/diagnose', { method: 'POST', body: '{}' }); } catch { /* non-fatal */ }
+      }
       load();
     })();
-  }, [api, load]);
+  }, [api, load, canEdit]);
 
   const save = async () => {
     if (!draft.answer.trim()) return toast('Please write an answer.', true);
@@ -141,14 +147,16 @@ function TeachTab({ draft, setDraft }) {
 
   return (
     <div>
-      <TeachForm draft={draft} setDraft={setDraft} onSave={save} />
+      {canEdit
+        ? <TeachForm draft={draft} setDraft={setDraft} onSave={save} />
+        : <div className="view-only">👀 <strong>View only.</strong> Your role can see the bot's answers but can't change them.</div>}
       <div className="section-head">
         <strong style={{ fontSize: 15 }}>Saved answers</strong>
         <span className="count">{entries ? entries.length : '…'}</span>
       </div>
       {entries === null ? <div className="empty">Loading…</div>
         : entries.length === 0 ? <div className="empty">No answers yet. Add your first one above ☝️</div>
-        : entries.map((e) => <EntryCard key={e.id} e={e} onEdit={edit} onDelete={del} onDismiss={dismiss} />)}
+        : entries.map((e) => <EntryCard key={e.id} e={e} onEdit={edit} onDelete={del} onDismiss={dismiss} canEdit={canEdit} />)}
     </div>
   );
 }
@@ -160,7 +168,7 @@ function fmtBytes(n) {
   return (n / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
-function SourceCard({ s, onToggle, onDelete }) {
+function SourceCard({ s, onToggle, onDelete, canManage }) {
   const off = s.active === false;
   return (
     <div className={'entry fade' + (s.status === 'error' ? ' flag' : '')}>
@@ -176,16 +184,19 @@ function SourceCard({ s, onToggle, onDelete }) {
         <span className={'chip' + (s.embedded ? ' lang' : '')}>{s.embedded ? 'semantic search' : 'keyword only'}</span>
         {off && <span className="chip off">inactive</span>}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn ghost sm" onClick={() => onToggle(s)}>{off ? 'Turn on' : 'Turn off'}</button>
-        <button className="btn danger sm" onClick={() => onDelete(s.id)}>Delete</button>
-      </div>
+      {canManage && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn ghost sm" onClick={() => onToggle(s)}>{off ? 'Turn on' : 'Turn off'}</button>
+          <button className="btn danger sm" onClick={() => onDelete(s.id)}>Delete</button>
+        </div>
+      )}
     </div>
   );
 }
 
 function SourcesTab() {
-  const { api, token } = useAuth();
+  const { api, token, can } = useAuth();
+  const canManage = can('knowledge.sources');
   const toast = useToast();
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState('');
@@ -272,6 +283,11 @@ function SourcesTab() {
         </div>
       )}
 
+      {!canManage && (
+        <div className="view-only">👀 <strong>View only.</strong> Your role can see the knowledge sources but can't add, turn off or delete them.</div>
+      )}
+
+      {canManage && <>
       <div className="card pad fade" style={{ marginBottom: 20 }}>
         <strong style={{ fontSize: 15 }}>🌐 Website</strong>
         <p className="hint" style={{ margin: '4px 0 12px' }}>
@@ -311,6 +327,7 @@ function SourcesTab() {
           {busy === 'document' ? 'Indexing…' : '📄 Upload & index'}
         </button>
       </div>
+      </>}
 
       <div className="card pad fade" style={{ marginBottom: 20 }}>
         <div className="tok-meta">
@@ -330,13 +347,14 @@ function SourcesTab() {
       </div>
       {data === null ? <div className="empty">Loading…</div>
         : data.sources.length === 0 ? <div className="empty">No sources yet. Add a website or upload a document above ☝️</div>
-        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} />)}
+        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} canManage={canManage} />)}
     </div>
   );
 }
 
 function ReviewTab({ onTeach }) {
-  const { api } = useAuth();
+  const { api, can } = useAuth();
+  const canEdit = can('knowledge.edit');
   const toast = useToast();
   const [data, setData] = useState(null);
 
@@ -369,9 +387,11 @@ function ReviewTab({ onTeach }) {
                     <span className="who">{t.role === 'user' ? '👤' : '🤖'}</span><span>{t.content}</span>
                   </div>
                 ))}
-                <div style={{ marginTop: 10 }}>
-                  <button className="btn gold sm" onClick={() => onTeach(lastUser ? lastUser.content : '')}>✏️ Teach the right answer</button>
-                </div>
+                {canEdit && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn gold sm" onClick={() => onTeach(lastUser ? lastUser.content : '')}>✏️ Teach the right answer</button>
+                  </div>
+                )}
               </div>
             );
           })}

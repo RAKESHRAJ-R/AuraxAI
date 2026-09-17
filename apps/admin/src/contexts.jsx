@@ -1,9 +1,10 @@
-import { createContext, useContext, useState, useCallback, useMemo } from 'react';
-import { makeApi } from './api.js';
+import { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import { makeApi, apiUrl } from './api.js';
 
 const TOKEN_KEY = 'theaurax_admin_token';
-const TEAM_KEY = 'theaurax_admin_team';
-const LABEL_KEY = 'theaurax_admin_team_label';
+const USER_KEY = 'theaurax_admin_user';
+// Left behind by the old shared-team-password login. Cleared so a stale value can't linger.
+['theaurax_admin_team', 'theaurax_admin_team_label'].forEach((k) => localStorage.removeItem(k));
 
 const AuthCtx = createContext(null);
 const ToastCtx = createContext(() => {});
@@ -15,41 +16,70 @@ export function useToast() {
   return useContext(ToastCtx);
 }
 
-// Single provider that supplies auth (token + bound api helper) and a toast
-// function to the whole tree, and renders the toast element itself.
+function readStoredUser() {
+  try { return JSON.parse(localStorage.getItem(USER_KEY)) || null; } catch { return null; }
+}
+
+// Single provider that supplies auth (token, signed-in user, permission check, bound api
+// helper) and a toast function to the whole tree, and renders the toast element itself.
 export function AppProviders({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
-  const [team, setTeam] = useState(() => localStorage.getItem(TEAM_KEY) || '');
-  const [teamLabel, setTeamLabel] = useState(() => localStorage.getItem(LABEL_KEY) || '');
+  const [user, setUser] = useState(readStoredUser);
   const [toast, setToast] = useState(null);
 
   const showToast = useCallback((msg, err = false) => {
     setToast({ msg, err });
-    setTimeout(() => setToast(null), 2400);
+    setTimeout(() => setToast(null), err ? 4000 : 2400);
+  }, []);
+
+  const saveUser = useCallback((u) => {
+    localStorage.setItem(USER_KEY, JSON.stringify(u));
+    setUser(u);
+  }, []);
+
+  // Local only — used when the server has already rejected the token.
+  const clearSession = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    setToken('');
+    setUser(null);
   }, []);
 
   const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(TEAM_KEY);
-    localStorage.removeItem(LABEL_KEY);
-    setToken('');
-    setTeam('');
-    setTeamLabel('');
-  }, []);
+    // Best effort: end the session server-side too, so the token is dead even if copied.
+    if (token) {
+      fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { Authorization: 'Bearer ' + token } }).catch(() => {});
+    }
+    clearSession();
+  }, [token, clearSession]);
 
-  const login = useCallback((t, tm = '', label = '') => {
+  const login = useCallback((t, u) => {
     localStorage.setItem(TOKEN_KEY, t);
-    localStorage.setItem(TEAM_KEY, tm);
-    localStorage.setItem(LABEL_KEY, label);
     setToken(t);
-    setTeam(tm);
-    setTeamLabel(label);
-  }, []);
+    saveUser(u);
+  }, [saveUser]);
 
-  const api = useMemo(() => makeApi(token, logout), [token, logout]);
+  const api = useMemo(() => makeApi(token, clearSession), [token, clearSession]);
+
+  // Re-read the account on load and every minute, so a role change made by the owner shows
+  // up without signing out — and a disabled account is sent back to the sign-in page.
+  useEffect(() => {
+    if (!token) return undefined;
+    let alive = true;
+    const load = () => api('/api/auth/me').then((u) => alive && saveUser(u)).catch(() => {});
+    load();
+    const id = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(id); };
+  }, [token, api, saveUser]);
+
+  const can = useCallback(
+    (perm) => !!user?.permissions && (user.permissions.includes('*') || user.permissions.includes(perm)),
+    [user]
+  );
+
   const auth = useMemo(
-    () => ({ token, team, teamLabel, api, login, logout }),
-    [token, team, teamLabel, api, login, logout]
+    () => ({ token, user, can, api, login, logout }),
+    [token, user, can, api, login, logout]
   );
 
   return (

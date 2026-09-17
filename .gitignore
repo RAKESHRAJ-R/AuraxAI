@@ -13,6 +13,12 @@ apps/bot/src/data/knowledge.json
 # and silently skip a real backlog.
 apps/bot/src/data/meta.json
 apps/bot/src/data/catchup_queue.json
+# Admin console accounts: password hashes, sign-in token hashes, and who-did-what. Secrets
+# per deployment — never commit.
+apps/bot/src/data/admin_users.json
+apps/bot/src/data/admin_roles.json
+apps/bot/src/data/admin_sessions.json
+apps/bot/src/data/admin_activity.json
 apps/bot/public/invoices/*.pdf
 .wwebjs_auth/
 .wwebjs_cache/

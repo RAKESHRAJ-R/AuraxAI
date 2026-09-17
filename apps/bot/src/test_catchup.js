@@ -17,9 +17,29 @@
  *
  * Writes to the real data store, so it resets the watermark and queue on entry AND exit.
  */
-process.env.CATCHUP_DRAIN_PER_HOUR = '4';   // tiny, so the ceiling is observable
-process.env.CATCHUP_DRAIN_BATCH = '2';
-process.env.CATCHUP_TICK_MS = '999999';     // we call drainTick() manually
+const config = (await import('./config/config.js')).default;
+
+// Pin every setting this suite depends on, ON THE CONFIG OBJECT rather than through the
+// environment. config.js loads .env and then .env.local with `override: true`, so a shell
+// variable or a `process.env.X = ...` set before the import cannot win against either file
+// — a developer's .env.local (safe mode on, catch-up in dry run, owner alerts off) would
+// otherwise make this suite report zero sends and fail in ways that look like real bugs.
+Object.assign(config.catchup, {
+  enabled: true,
+  dryRun: false,             // .env.local turns this ON for real local runs
+  drainPerHour: 4,           // tiny, so the hourly ceiling is observable
+  drainBatch: 2,
+  freshHours: 12,
+  freshMaxImmediate: 5,
+  alertOwner: true,
+  // Cases 1-8 deliberately use a zero watermark with month-old fixtures, which is exactly
+  // what the cold-start guard and the age limit suppress. Both are switched off here and
+  // exercised directly in cases 9 and 10.
+  coldStartHours: 0,
+  maxAgeDays: 0,
+});
+config.owner.whatsappNumber = '910000000000';   // stub bot captures the alert, nothing is sent
+config.wati.allowedTestNumbers = [];            // safe mode would drop every stubbed customer
 
 const dbService = (await import('./services/db.js')).default;
 const aiService = (await import('./services/ai.js')).default;
@@ -205,6 +225,59 @@ pageReadFails = false;
 line('8. Diagnostics explain WHY chats were passed over');
 must('counted the chat we had already replied to', sweep3.skipped.weRepliedLast, 1);
 must('counted the group chat', sweep3.skipped.group, 1);
+
+// --- 9. cold start: a freshly paired phone must not answer its whole history -----------
+// This is the case that got the client's live number restricted on 2026-09-17. The account
+// had ~660 chats going back months; with a zero watermark every one where the customer
+// spoke last counted as "missed", and the recent slice went out as an uninterrupted burst.
+line('9. Cold start only looks back coldStartHours, not forever');
+await reset();
+catchup.announcedEmpty = true;
+config.catchup.coldStartHours = 24;   // the shipped default; the suite disables it up top
+const sweep4 = await catchup.sweep();
+must('month-old and 40h-old chats left alone on a first sweep', sweep4.backlog, 0);
+must('genuinely recent customers are still answered', sweep4.fresh, 3);
+must('the old chats were passed over, not silently lost', sweep4.skipped.alreadyHandled, 2);
+
+// The guard must apply ONLY to the first sweep. Once a watermark exists it is authoritative,
+// otherwise a server that was down for two days would permanently ignore those two days.
+await reset();
+catchup.announcedEmpty = true;
+await dbService.setMeta('catchup:lastSeenTs', nowSec - 24 * 40 * 3600); // 40 days back
+const sweep5 = await catchup.sweep();
+must('a real watermark still sweeps past the cold-start window', sweep5.backlog, 2);
+config.catchup.coldStartHours = 0;
+
+// --- 10. the burst cap: tier 1 is answered promptly, but never all at once -------------
+line('10. A large recent backlog is answered in batches, not as one burst');
+await reset();
+catchup.announcedEmpty = true;
+catchup.sentThisHour = [];
+const askedBeforeBurst = asked.length;
+// 12 customers who all wrote in the last few hours - a realistic unread backlog on a shop
+// phone that gets paired mid-afternoon.
+const burst = Array.from({ length: 12 }, (_, i) => mkChat(`92${String(i).padStart(2, '0')}`, 1 + i * 0.1, `burst ${i}`));
+chats.push(...burst);
+config.catchup.freshMaxImmediate = 5;
+const sweep6 = await catchup.sweep();
+chats.length = chats.length - burst.length;   // leave the shared fixture as we found it
+must('all of them were found', sweep6.fresh, 15);
+must('only freshMaxImmediate answered straight away', asked.length - askedBeforeBurst, 5);
+// 10 deferred tier-1 + the 2 tier-2 chats from the base fixture.
+must('the rest are queued, not dropped', (await dbService.getCatchupStats()).pending, 12);
+must('queued ones keep tier-1 priority', (await dbService.getCatchupBatch(1))[0].tierRank, 0);
+
+// --- 11. the account-wide hourly chat budget stops the drip ----------------------------
+line('11. The drip yields to the account-wide chats-per-hour budget');
+const budgetBefore = asked.length;
+bot.chatBudget = () => ({ used: 30, max: 30, hasRoom: false });
+catchup.sentThisHour = [];
+await catchup.drainTick();
+must('nobody contacted while the hourly budget is spent', asked.length, budgetBefore);
+bot.chatBudget = () => ({ used: 0, max: 30, hasRoom: true });
+await catchup.drainTick();
+must('the drip resumes once the budget frees up', asked.length > budgetBefore, true);
+delete bot.chatBudget;
 
 await reset();
 

@@ -51,6 +51,8 @@ npm run review         # Semi-automated conversation review — flags likely-pro
                        # conversations (fallback/error reply, repeated question,
                        # abandoned mid-purchase)
 npm run migrate-mongo  # One-time migrate local JSON data → MongoDB (needs MONGODB_URI)
+npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
+npm run admin-user -- --email x@y.z --password "..."   # Create/recover an Owner login
 
 node src/test_agent.js "Do you have Barcelona jerseys?"   # single ad-hoc query
 
@@ -89,9 +91,13 @@ CATCHUP_ALERT_OWNER=true   # WhatsApp summary to the owner per sweep
 CATCHUP_DRY_RUN=false      # true = sweep + report only, message nobody (validate before going live)
 BASE_URL=http://localhost:3000
 ALLOWED_TEST_NUMBERS=      # Comma-separated numbers for safe-mode (only these get replies)
-AURAX_TEAM_PASSWORD=       # Shared admin-console password for the Aurax team
-TESTING_TEAM_PASSWORD=     # Shared admin-console password for the testing team
-KNOWLEDGE_HUB_PASSWORD=    # Legacy single password — ignored once AURAX_TEAM_PASSWORD is set
+ADMIN_OWNER_EMAIL=         # Creates the FIRST Owner console account (only when no accounts exist)
+ADMIN_OWNER_PASSWORD=      # Its password; falls back to the legacy AURAX_TEAM_PASSWORD
+ADMIN_SESSION_TTL_HOURS=168 # Console sign-in lifetime
+BREVO_API_KEY=             # Optional: emails staff their console login (Brevo transactional API)
+MAIL_FROM_EMAIL=           # Verified Brevo sender, e.g. no-reply@theaurax.in
+MAIL_FROM_NAME=Aurax Admin
+ADMIN_CONSOLE_URL=         # Sign-in link in those emails (the Vercel URL); defaults to BASE_URL/admin
 ADMIN_ALLOWED_ORIGINS=     # Required for the Vercel-hosted admin console: comma-separated
                            # origins allowed to call the API cross-origin. `*.`-prefixed
                            # entries are suffix matches (e.g. *.vercel.app for previews).
@@ -279,8 +285,8 @@ page, and corrections go live immediately — **no code change, no deploy, no de
 `MONGODB_URI` to use Mongo — no code change either way).
 
 **Flow:** (now a section of the unified admin console — `/admin/knowledge`, see "Admin Console")
-1. Owner opens `/admin`, logs in with `KNOWLEDGE_HUB_PASSWORD` (single shared password →
-   in-memory bearer token), and goes to the **Knowledge Hub** section.
+1. Owner opens `/admin`, signs in with their own account (see "Admin accounts, roles &
+   activity log"), and goes to the **Knowledge Hub** section.
 2. **Teach tab:** add/edit/delete answers — `{ keywords[], question, answer, language, active }`.
    Auto-diagnosed "needs answer" drafts (see below) surface here at the top.
 3. **Review tab:** surfaces likely-problem conversations (same heuristics as `npm run review`:
@@ -316,11 +322,12 @@ entry; **Dismiss** is a permanent tombstone (`dismissed:true`) so the scan never
 
 **Files:** `src/services/knowledge.js` (matcher) + `src/services/diagnose.js` (auto-queue),
 `dbService` knowledge CRUD + `src/data/knowledge.json` fallback store (MongoDB when
-`MONGODB_URI` set), knowledge hook in `ai.js answerQuery`, API + shared-password auth + review
+`MONGODB_URI` set), knowledge hook in `ai.js answerQuery`, API + review
 + diagnose endpoints in `src/index.js`, UI in the `apps/admin/` React app (`pages/Knowledge.jsx`).
-Endpoints: `POST /api/knowledge-hub/login`, `GET/POST /api/knowledge`, `DELETE /api/knowledge/:id`,
+Endpoints: `GET/POST /api/knowledge`, `DELETE /api/knowledge/:id`,
 `GET /api/knowledge/review`, `GET /api/knowledge/pending-count`, `POST /api/knowledge/diagnose`,
-`POST /api/knowledge/:id/dismiss` (all but login require the bearer token).
+`POST /api/knowledge/:id/dismiss` (all require a signed-in account with the matching `knowledge.*`
+permission).
 
 Verified 2026-07-20: a seeded correction changed a live `answerQuery` reply (intent `knowledge`,
 zero LLM); all API auth paths (wrong/right password, missing token, CRUD, review over 60 real
@@ -554,6 +561,66 @@ unhydrated-chat rescue, tier ordering, drip yielding, and the double-answer guar
 New state files `src/data/meta.json` + `src/data/catchup_queue.json` (Mongo collections `meta`
 and `catchup_queue` when `MONGODB_URI` is set). Both gitignored — per-deployment state.
 
+### ⚠️ WhatsApp account restriction — 2026-09-17 (READ BEFORE TOUCHING ANY SEND PATH)
+
+The client paired a shop phone to try the bot and WhatsApp restricted the number within
+minutes: *"Recent activity on your account may be a sign of spam, automated or bulk
+messaging — you won't be able to start new chats."* ~5h30m timer, replies still allowed.
+
+**Cause, confirmed in code — it was the catch-up sweep on a cold pairing, not the bot's
+normal conversation handling.** Three defaults compounded:
+
+1. **A freshly paired phone has no watermark.** `sweep()` read `catchup:lastSeenTs` as `0`,
+   so *every* chat in the account's history where the customer spoke last counted as
+   "missed" — 661 chats on this handset, going back months.
+2. **`drainFresh()` had no ceiling.** Everything inside `CATCHUP_FRESH_HOURS` (12h) was
+   answered in one uninterrupted loop. The global send pacer only *spaced* those sends; 60
+   first-contact messages 2s apart is still 60 new conversations in two minutes.
+3. **`maxSendsPerMinute` was 30.** That is a fast human inside ONE chat. Across 30
+   *different* chats it is a broadcast — and WhatsApp measures per account, per recipient.
+
+`CATCHUP_MAX_AGE_DAYS=0` (no age limit) and the 120/h drip made it worse: unprompted replies
+to months-old chats read as outreach, not as answers.
+
+**Fixes shipped the same day** (`config.js`, `catchup.js`, `followup.js`, `whatsapp-web-bot.js`):
+
+| Guard | Where | Default |
+|---|---|---|
+| `catchup.coldStartHours` — a zero watermark looks back only this far | `catchup.js sweep()` | 24h |
+| `catchup.freshMaxImmediate` — cap on the tier-1 burst; the rest join the drip | `drainFresh()` | 5 |
+| `catchup.maxAgeDays` — never answer older than this | sweep filter | 7 (was 0 = unlimited) |
+| `catchup.drainPerHour` | drip | 20 (was 120) |
+| `whatsappWeb.maxSendsPerMinute` | `awaitSendSlot()` | 8 (was 30) |
+| `whatsappWeb.minSendGapMs` / `sendJitterMs` | `awaitSendSlot()` | 4000 / 3000 (was 1200 / 900) |
+| `whatsappWeb.maxNewChatsPerHour` — distinct chats per rolling hour | `chatBudget()` | 30 |
+| `followUp.enabled` / `maxPerRun` — kill switch + per-run cap | `followup.js` | true / 8 |
+
+Tier-1 sends now also count against `sentThisHour`, so a burst of recent customers correctly
+slows the backlog instead of being free.
+
+⚠️ **`chatBudget()` is a question the caller asks, never a wait inside `awaitSendSlot()`.**
+The send chain is global, so enforcing an HOURLY budget in there would park a live customer's
+reply behind the backlog for up to an hour — trading a ban risk for the exact failure
+(unanswered customers) catch-up exists to prevent. Bulk paths consult it and defer to the
+next tick; live replies are never blocked by it.
+
+⚠️ **The cold-start guard applies only when the watermark is 0.** Once a real watermark
+exists it is authoritative, otherwise a server that was down for two days would permanently
+ignore those two days. Both halves are covered in `npm run test-catchup` (case 9).
+
+**Operational rules that matter more than the code:**
+- **Always run `CATCHUP_DRY_RUN=true` the first time the bot is pointed at a real phone.** It
+  prints exactly who would be answered and messages nobody. This incident is what it was
+  built for, and it was not used.
+- **A number must be warmed up before it carries bot traffic.** A SIM with no outbound
+  history that suddenly starts dozens of conversations is the strongest signal there is;
+  account age and prior two-way history are weighted heavily.
+- **Never clear `.wwebjs_auth/` or the data dir on a live number without also setting
+  `CATCHUP_COLD_START_HOURS`** — wiping state resets the watermark to 0, which reproduces
+  exactly this incident.
+- Customer **blocks and "report" taps are the dominant input** to the classifier. Pacing
+  reduces exposure; it does not help if the replies themselves are unwanted.
+
 ### Customer Registry
 
 Every customer interaction upserts a record in `src/data/customers.json` (or MongoDB `customers` collection). Use `dbService.getAllCustomers()` to retrieve all contacts for product launch campaigns or bulk messaging.
@@ -624,15 +691,77 @@ the server, not the account.
 Added 2026-07-22. The three former standalone pages (`apiwork.html` monitor, `whatsapp-link.html`
 QR link, `knowledge-hub.html`) are consolidated into **one** proper React SPA under `apps/admin`
 (Vite build, react-router, react-chartjs-2) — light/clean/professional theme, mobile + desktop
-responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub · Tickets**. It is **all behind one login**
-(the existing `KNOWLEDGE_HUB_PASSWORD` bearer-token flow), so the monitor and QR — previously open
-to anyone with the URL — are now protected too (`/api/provider-stats`, `/api/sessions`, `/api/logs`,
-`/api/whatsapp/status`, `/api/retry-stats` all require the token).
+responsive, with a sidebar: **Monitor · WhatsApp · Knowledge Hub · Tickets · Users & Roles · Activity Log**.
+Every page and API is behind a per-person sign-in with role-based permissions (next section).
 
-- **Source:** `apps/admin/` (its own npm package, not a workspace: `src/{main.jsx,App.jsx,contexts.jsx,api.js,styles.css}`,
-  `src/components/{Login,Layout}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge,Tickets}.jsx`).
+- **Source:** `apps/admin/` (its own npm package, not a workspace: `src/{main.jsx,App.jsx,contexts.jsx,api.js,sections.js,styles.css}`,
+  `src/components/{Login,Layout,Modal}.jsx`, `src/pages/{Monitor,WhatsApp,Knowledge,Tickets,Users,Activity}.jsx`).
 - **Dev:** `npm run dev-admin` from the root (Vite on :5174, proxies `/api` + `/invoices` to the bot on :3000).
 - The old `.html` URLs 302-redirect to the matching `/admin/*` section; `/` redirects to `/admin`.
+
+### Admin accounts, roles & activity log (added 2026-09-17)
+
+Replaced the shared team passwords (`AURAX_TEAM_PASSWORD` / `TESTING_TEAM_PASSWORD`), which gave
+every holder full access with no way to remove one person. Now each person has their own email +
+password, and a **role** decides which pages they can open and what they can change. The client
+asked for this so testers get limited, professional access instead of the master password.
+
+**Files:** `src/services/adminAuth.js` (permission catalog, scrypt hashing, sessions, account rules,
+`requirePermission()` guard, `record()` for the activity log), `src/routes/admin.js` (mounted at
+`/api`: `auth/login|me|logout`, `admin/users`, `admin/roles`, `admin/activity`), `src/services/mail.js`
+(Brevo), `src/admin_user.js` (Owner recovery CLI), `src/test_admin_auth.js` (regression suite).
+Storage follows the dual pattern: `admin_users`, `admin_roles`, `admin_sessions`, `admin_activity`
+(Mongo collections or `src/data/admin_*.json`, all gitignored).
+
+**Permissions** (`PERMISSIONS` in adminAuth.js): `monitor.view`, `whatsapp.view`, `whatsapp.manage`,
+`knowledge.view`, `knowledge.edit`, `knowledge.sources`, `tickets.view`, `tickets.manage`,
+`users.manage`, `activity.view`. Anything on a page implies that page's view permission
+(`normalizePermissions`). The Owner role is `['*']`, locked, and is the only thing that satisfies the
+pseudo-permission `'owner'` (used for `POST /api/provider-stats/reset`, which has no UI). Built-in
+roles seeded on an empty store: Owner, Tester, Viewer. The console's `sections.js` uses the same keys.
+
+**Enforcement is server-side on every route** (`requirePermission('…')` in index.js). The console
+hiding a page or button is cosmetic only.
+
+- **Passwords:** the owner chooses (or generates) the password and it is final — no temporary
+  password, no forced change, no self-service change or "forgot password" yet (client decision
+  2026-09-17). Hashed with Node's built-in `crypto.scrypt`; params stored in the hash string.
+- **Sessions** are persisted (`{ id: sha256(token), userId, expiresAt }`, 7-day default), so a
+  restart no longer logs everyone out, and a leaked sessions file can't be replayed. `authenticate()`
+  caches for 15s but **every account/role write calls `invalidate()`**, so a role change, disable or
+  password reset takes effect on the person's very next request — the suite checks this.
+- **Guard rails:** can't disable/delete/demote yourself; the last active Owner can't be removed;
+  only an Owner can assign the Owner role or touch an Owner's account; a non-Owner with
+  `users.manage` can't grant permissions their own role lacks or edit their own role; a role in
+  use can't be deleted. 5 wrong passwords lock an account for 15 min (owner can Unlock), plus a
+  30-attempts/15-min per-IP limit.
+- ⚠️ **`/api/whatsapp/status` strips `qrDataUrl` and `pairingCode` without `whatsapp.manage`.**
+  Either code lets whoever sees it link their own phone as the bot's number, so a view-only tester
+  must never receive them.
+- **Email (Brevo):** creating a user or setting a password emails the login (sign-in link, email,
+  password) via `POST https://api.brevo.com/v3/smtp/email`. Sending never throws — the account change
+  stands and the API returns `mail: { sent:false, error }`; the console then shows the details once
+  on screen with a copy button. Unset `BREVO_API_KEY` = same fallback. Passwords are never logged
+  (server logs are visible on the Monitor page), but **Brevo's own transactional log keeps the email
+  body**, password included, for anyone with access to the Brevo account.
+- **Activity log** records sign-ins, failed/locked sign-ins, and every change (users, roles,
+  knowledge answers + sources, ticket status, WhatsApp link/unlink/pair, stats reset). Page views
+  are not recorded. The JSON store is capped at 5000 entries; Mongo keeps everything.
+- **First Owner:** on a boot with zero accounts, `ADMIN_OWNER_EMAIL` + `ADMIN_OWNER_PASSWORD`
+  (falling back to `AURAX_TEAM_PASSWORD`) create it. Without `ADMIN_OWNER_EMAIL` nobody can sign in
+  — boot logs a warning. Recovery: `npm run admin-user -- --email … --password …` (creates or
+  resets an active Owner and ends its sessions; the running server picks it up within 60s).
+- `db.js` honours `AURAX_DATA_DIR`, used only by the test suite to stay off live data. The account
+  helpers there **throw** on storage errors instead of silently falling back to JSON — a failed read
+  that returned `[]` would look like "no accounts" and re-run Owner seeding.
+- The console's `Modal` is portalled to `<body>`: page roots carry the `.fade` transform animation,
+  which traps `position:fixed` children (the backdrop covered only the page body).
+
+Verified 2026-09-17: `npm run test-admin-auth` all checks pass; a headless-Chrome run against the
+real router covered owner sign-in, creating a tester with a generated password (email payload
+matched), the tester seeing only Monitor/WhatsApp/Knowledge/Tickets, `/users` redirecting, WhatsApp
+showing no QR or link controls, the no-email credentials notice, and a 390px phone layout with no
+page overflow — zero console errors besides the deliberate wrong-password 401.
 
 ### Admin Console deployment — Vercel primary, Express fallback (2026-08-02)
 
@@ -689,6 +818,9 @@ If `ALLOWED_TEST_NUMBERS` is set, the bot only responds to those phone numbers �
 | `POST /api/whatsapp/logout` | Unlink the paired phone and bring up a fresh QR (auth required) |
 | `POST /api/whatsapp/pair` | Switch to phone-number linking; body `{phoneNumber}` (auth required) |
 | `POST /api/whatsapp/pair/cancel` | Leave phone-number linking and go back to the QR (auth required) |
+| `POST /api/auth/login` | Console sign-in `{email, password}` → `{token, user}` |
+| `GET /api/admin/users` · `GET /api/admin/roles` | Accounts and roles (`users.manage`) |
+| `GET /api/admin/activity` | Who changed what (`activity.view`); `?limit=&before=` |
 | `GET /api/retry-stats` | Pending retry queue, provider status, active provider |
 
 ### Rate-Limit Protection

@@ -11,8 +11,9 @@ import retrievalService from './services/retrieval.js';
 import textExtractService from './services/textextract.js';
 import embeddingService from './services/embeddings.js';
 import { diagnoseUnanswered } from './services/diagnose.js';
+import adminAuth, { requirePermission } from './services/adminAuth.js';
+import { createAdminRouter } from './routes/admin.js';
 import multer from 'multer';
-import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -62,13 +63,16 @@ app.use((req, res, next) => {
   res.setHeader('Vary', 'Origin');
 
   // Preflight is answered here rather than falling through to the route, because
-  // OPTIONS carries no Authorization header and requireKnowledgeAuth would 401 it.
+  // OPTIONS carries no Authorization header and requirePermission would 401 it.
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 });
 
 app.use(express.json());
 app.use(express.static('public'));
+
+// Admin console sign-in, users, roles and activity log (/api/auth/*, /api/admin/*).
+app.use('/api', createAdminRouter());
 
 // Unified admin console (Vite + React SPA, built to admin/dist). Static assets
 // are served under /admin; a client-routing fallback (near app.listen) serves
@@ -89,11 +93,18 @@ validateConfig();
  * WhatsApp Web Status Route
  * Used by the pairing web interface to fetch the connection QR code and state.
  */
-app.get('/api/whatsapp/status', requireKnowledgeAuth, (req, res) => {
+app.get('/api/whatsapp/status', requirePermission('whatsapp.view'), (req, res) => {
   if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
     return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
   }
-  res.json(whatsappWebBot.getStatus());
+  const status = whatsappWebBot.getStatus();
+  // The QR and the phone-linking code ARE the keys to the bot's number: whoever scans or
+  // types them links their own phone. View-only roles see the state, never the codes.
+  if (!req.admin.can('whatsapp.manage')) {
+    res.json({ ...status, qrDataUrl: null, pairingCode: null, codesHidden: true });
+    return;
+  }
+  res.json(status);
 });
 
 /**
@@ -101,13 +112,15 @@ app.get('/api/whatsapp/status', requireKnowledgeAuth, (req, res) => {
  * Unlinks the currently paired phone and brings a fresh QR up, so the admin can move the
  * bot to a different number without needing physical access to the device it's paired to.
  */
-app.post('/api/whatsapp/logout', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/whatsapp/logout', requirePermission('whatsapp.manage'), async (req, res) => {
   if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
     return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
   }
   try {
     const result = await whatsappWebBot.logout();
     if (!result.ok) return res.status(409).json({ error: result.message });
+    await adminAuth.record(req, 'whatsapp.logout',
+      `Logged out the bot's WhatsApp number${result.previousNumber ? ` (+${result.previousNumber})` : ''}`);
     res.json(result);
   } catch (err) {
     console.error('[API] WhatsApp logout failed:', err.message);
@@ -120,13 +133,14 @@ app.post('/api/whatsapp/logout', requireKnowledgeAuth, async (req, res) => {
  * number, the bot shows an 8-character code, and it is typed into the phone under
  * Linked devices → Link a device → "Link with phone number instead".
  */
-app.post('/api/whatsapp/pair', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/whatsapp/pair', requirePermission('whatsapp.manage'), async (req, res) => {
   if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
     return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
   }
   try {
     const result = await whatsappWebBot.startPhonePairing(req.body?.phoneNumber);
     if (!result.ok) return res.status(400).json({ error: result.message });
+    await adminAuth.record(req, 'whatsapp.pair', `Started linking WhatsApp by phone number (+${result.phoneNumber})`);
     res.json(result);
   } catch (err) {
     console.error('[API] WhatsApp phone pairing failed:', err.message);
@@ -134,13 +148,14 @@ app.post('/api/whatsapp/pair', requireKnowledgeAuth, async (req, res) => {
   }
 });
 
-app.post('/api/whatsapp/pair/cancel', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/whatsapp/pair/cancel', requirePermission('whatsapp.manage'), async (req, res) => {
   if (!config.whatsappWeb || !config.whatsappWeb.enabled) {
     return res.status(400).json({ error: 'WhatsApp Web Integration is disabled.' });
   }
   try {
     const result = await whatsappWebBot.cancelPhonePairing();
     if (!result.ok) return res.status(409).json({ error: result.message });
+    await adminAuth.record(req, 'whatsapp.pair_cancel', 'Switched WhatsApp linking back to the QR code');
     res.json(result);
   } catch (err) {
     console.error('[API] WhatsApp pairing cancel failed:', err.message);
@@ -158,7 +173,7 @@ app.post('/api/whatsapp/pair/cancel', requireKnowledgeAuth, async (req, res) => 
  * Shows per-provider usage counters, error rates, quota exhaustion, and active provider.
  * Useful for monitoring which LLM providers are handling the load and detecting issues.
  */
-app.get('/api/provider-stats', requireKnowledgeAuth, (req, res) => {
+app.get('/api/provider-stats', requirePermission('monitor.view'), (req, res) => {
   try {
     const stats = aiService.getProviderStats();
     res.json(stats);
@@ -171,9 +186,11 @@ app.get('/api/provider-stats', requireKnowledgeAuth, (req, res) => {
 /**
  * Reset Provider Analytics Stats Route
  */
-app.post('/api/provider-stats/reset', requireKnowledgeAuth, (req, res) => {
+// Owner-only: no console page exposes it, so no role can be granted it.
+app.post('/api/provider-stats/reset', requirePermission('owner'), (req, res) => {
   try {
     aiService.resetProviderStats();
+    adminAuth.record(req, 'monitor.reset', 'Reset the provider statistics');
     res.json({ status: 'ok', message: 'Provider analytics stats reset.' });
   } catch (err) {
     console.error('[Server] /api/provider-stats/reset error:', err.message);
@@ -181,7 +198,7 @@ app.post('/api/provider-stats/reset', requireKnowledgeAuth, (req, res) => {
   }
 });
 
-app.get('/api/retry-stats', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/retry-stats', requirePermission('monitor.view'), async (req, res) => {
   try {
     const allRetries = await dbService.getAllPendingRetries();
     const now = Date.now();
@@ -216,7 +233,7 @@ app.get('/api/retry-stats', requireKnowledgeAuth, async (req, res) => {
  * Active Sessions Route
  * Returns a list of all active user sessions for monitoring.
  */
-app.get('/api/sessions', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/sessions', requirePermission('monitor.view'), async (req, res) => {
   try {
     const sessions = await dbService.getAllSessions();
     const mapped = sessions.map(s => ({
@@ -242,7 +259,7 @@ app.get('/api/sessions', requireKnowledgeAuth, async (req, res) => {
  * Support Tickets Route
  * After-sales tickets raised by the support agent (complaints, returns, tracking issues).
  */
-app.get('/api/tickets', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/tickets', requirePermission('tickets.view'), async (req, res) => {
   try {
     res.json(await dbService.getAllTickets());
   } catch (err) {
@@ -252,7 +269,7 @@ app.get('/api/tickets', requireKnowledgeAuth, async (req, res) => {
 });
 
 // Open-ticket count for the admin sidebar badge (cheap poll).
-app.get('/api/tickets/open-count', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/tickets/open-count', requirePermission('tickets.view'), async (req, res) => {
   try {
     const tickets = await dbService.getAllTickets();
     res.json({ count: tickets.filter(t => (t.status || 'open') === 'open').length });
@@ -262,9 +279,11 @@ app.get('/api/tickets/open-count', requireKnowledgeAuth, async (req, res) => {
 });
 
 // Update a ticket's status (open / resolved) from the admin console.
-app.post('/api/tickets/:id/status', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/tickets/:id/status', requirePermission('tickets.manage'), async (req, res) => {
   try {
     await dbService.updateTicketStatus(req.params.id, req.body?.status);
+    await adminAuth.record(req, 'tickets.status',
+      `${req.body?.status === 'resolved' ? 'Resolved' : 'Reopened'} ticket ${req.params.id}`);
     res.json({ ok: true });
   } catch (err) {
     console.error('[Server] POST /api/tickets/:id/status error:', err.message);
@@ -276,7 +295,7 @@ app.post('/api/tickets/:id/status', requireKnowledgeAuth, async (req, res) => {
  * Server Logs Route
  * Serves the rolling console output history for diagnostics.
  */
-app.get('/api/logs', requireKnowledgeAuth, (req, res) => {
+app.get('/api/logs', requirePermission('monitor.view'), (req, res) => {
   try {
     res.json(serverLogs || []);
   } catch (err) {
@@ -286,40 +305,9 @@ app.get('/api/logs', requireKnowledgeAuth, (req, res) => {
 
 /**
  * ── Knowledge Hub ──────────────────────────────────────────────────────────
- * A protected admin page (/knowledge-hub.html) where the store owner teaches the bot
- * corrections/answers without any code change. Single shared-password auth: log in once,
- * get a bearer token (kept in memory — a restart just requires re-login).
+ * The admin console section where the store owner teaches the bot corrections/answers
+ * without any code change. Sign-in, users and roles live in routes/admin.js.
  */
-// token -> { team, label, at } (in-memory). Restarting the server invalidates all sessions.
-const knowledgeTokens = new Map();
-
-// The credential table: one shared password per team. Whichever password matches
-// decides which team the session is tagged with. The legacy KNOWLEDGE_HUB_PASSWORD
-// still works and is treated as the Aurax team so existing logins don't break.
-function teamCredentials() {
-  const creds = [];
-  if (config.adminTeams?.auraxPassword) {
-    creds.push({ team: 'aurax', label: 'Aurax Team', password: config.adminTeams.auraxPassword });
-  }
-  if (config.adminTeams?.testingPassword) {
-    creds.push({ team: 'testing', label: 'Testing Team', password: config.adminTeams.testingPassword });
-  }
-  if (config.knowledgeHub?.password && !creds.some((c) => c.team === 'aurax')) {
-    creds.push({ team: 'aurax', label: 'Aurax Team', password: config.knowledgeHub.password });
-  }
-  return creds;
-}
-
-function requireKnowledgeAuth(req, res, next) {
-  const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  const session = token && knowledgeTokens.get(token);
-  if (session) {
-    req.adminTeam = session.team;
-    return next();
-  }
-  return res.status(401).json({ error: 'Unauthorized. Please log in.' });
-}
 
 // Flag likely-problem conversations (same heuristics as `npm run review`) so the client
 // can correct real mistakes from the UI. Kept inline to reuse dbService directly.
@@ -335,30 +323,7 @@ function normalizeMsg(t) {
   return (t || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
-app.post('/api/knowledge-hub/login', (req, res) => {
-  const creds = teamCredentials();
-  if (!creds.length) {
-    return res.status(503).json({
-      error: 'Admin login is not configured. Set AURAX_TEAM_PASSWORD / TESTING_TEAM_PASSWORD (or KNOWLEDGE_HUB_PASSWORD).',
-    });
-  }
-  const supplied = (req.body?.password || '').toString();
-  const a = Buffer.from(supplied);
-  // Check against every team password. Compare all (no early return) so the
-  // response time doesn't reveal which team's password was closest.
-  let match = null;
-  for (const c of creds) {
-    const b = Buffer.from(c.password);
-    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-    if (ok) match = c;
-  }
-  if (!match) return res.status(401).json({ error: 'Incorrect password.' });
-  const token = crypto.randomBytes(24).toString('hex');
-  knowledgeTokens.set(token, { team: match.team, label: match.label, at: Date.now() });
-  res.json({ token, team: match.team, label: match.label });
-});
-
-app.get('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/knowledge', requirePermission('knowledge.view'), async (req, res) => {
   try {
     // Hide dismissed auto-draft tombstones — they're kept only to stop re-diagnosis.
     const all = await dbService.getAllKnowledge();
@@ -370,10 +335,12 @@ app.get('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
 });
 
 // Permanently dismiss an auto-drafted question so it never gets re-queued.
-app.post('/api/knowledge/:id/dismiss', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/knowledge/:id/dismiss', requirePermission('knowledge.edit'), async (req, res) => {
   try {
+    const entry = (await dbService.getAllKnowledge()).find(k => k.id === req.params.id);
     await dbService.dismissKnowledge(req.params.id);
     knowledgeService.invalidate();
+    await adminAuth.record(req, 'knowledge.dismiss', `Dismissed the unanswered question "${entry?.question || req.params.id}"`);
     res.json({ ok: true });
   } catch (err) {
     console.error('[Server] POST /api/knowledge/:id/dismiss error:', err.message);
@@ -381,7 +348,7 @@ app.post('/api/knowledge/:id/dismiss', requireKnowledgeAuth, async (req, res) =>
   }
 });
 
-app.post('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/knowledge', requirePermission('knowledge.edit'), async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.answer || !String(body.answer).trim()) {
@@ -392,6 +359,8 @@ app.post('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
     if (typeof keywords === 'string') keywords = keywords.split(',').map(k => k.trim()).filter(Boolean);
     const saved = await dbService.saveKnowledge({ ...body, keywords });
     knowledgeService.invalidate(); // edits go live immediately, no restart
+    await adminAuth.record(req, 'knowledge.save',
+      `${body.id ? 'Edited' : 'Added'} the answer for "${saved.question || saved.answer.slice(0, 60)}"${saved.active ? '' : ' (inactive)'}`);
     res.json(saved);
   } catch (err) {
     console.error('[Server] POST /api/knowledge error:', err.message);
@@ -399,10 +368,12 @@ app.post('/api/knowledge', requireKnowledgeAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/knowledge/:id', requireKnowledgeAuth, async (req, res) => {
+app.delete('/api/knowledge/:id', requirePermission('knowledge.edit'), async (req, res) => {
   try {
+    const entry = (await dbService.getAllKnowledge()).find(k => k.id === req.params.id);
     await dbService.deleteKnowledge(req.params.id);
     knowledgeService.invalidate();
+    await adminAuth.record(req, 'knowledge.delete', `Deleted the answer for "${entry?.question || req.params.id}"`);
     res.json({ status: 'ok' });
   } catch (err) {
     console.error('[Server] DELETE /api/knowledge error:', err.message);
@@ -412,7 +383,7 @@ app.delete('/api/knowledge/:id', requireKnowledgeAuth, async (req, res) => {
 
 // Badge count for the Knowledge Hub nav — how many auto-drafted questions still
 // need an answer from the owner.
-app.get('/api/knowledge/pending-count', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/knowledge/pending-count', requirePermission('knowledge.view'), async (req, res) => {
   try {
     res.json({ count: await dbService.countPendingKnowledge() });
   } catch (err) {
@@ -425,7 +396,7 @@ app.get('/api/knowledge/pending-count', requireKnowledgeAuth, async (req, res) =
 // "needs answer" drafts from struggling conversations; returns how many are waiting.
 // alert:false here — the on-demand refresh from the dashboard shouldn't ping the owner
 // (the periodic scheduler is what alerts on genuinely new gaps).
-app.post('/api/knowledge/diagnose', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/knowledge/diagnose', requirePermission('knowledge.edit'), async (req, res) => {
   try {
     const result = await diagnoseUnanswered({ alert: false });
     res.json(result);
@@ -454,7 +425,7 @@ const uploadDocument = multer({
   },
 });
 
-app.get('/api/knowledge/sources', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/knowledge/sources', requirePermission('knowledge.view'), async (req, res) => {
   try {
     const [sources, usage] = await Promise.all([
       dbService.getAllKnowledgeSources(),
@@ -479,7 +450,7 @@ app.get('/api/knowledge/sources', requireKnowledgeAuth, async (req, res) => {
   }
 });
 
-app.post('/api/knowledge/sources/document', requireKnowledgeAuth, (req, res) => {
+app.post('/api/knowledge/sources/document', requirePermission('knowledge.sources'), (req, res) => {
   uploadDocument.single('file')(req, res, async (uploadErr) => {
     if (uploadErr) {
       return res.status(400).json({ error: uploadErr.message });
@@ -491,6 +462,7 @@ app.post('/api/knowledge/sources/document', requireKnowledgeAuth, (req, res) => 
         title: req.body?.title,
       });
       console.log(`[Server] Indexed document "${result.source.title}" — ${result.chunks} chunks, embedded=${result.embedded}`);
+      await adminAuth.record(req, 'sources.document', `Uploaded the document "${result.source.title}" (${result.chunks} chunks)`);
       res.json(result);
     } catch (err) {
       // Extraction failures are almost always the owner's file being unreadable
@@ -502,7 +474,7 @@ app.post('/api/knowledge/sources/document', requireKnowledgeAuth, (req, res) => 
   });
 });
 
-app.post('/api/knowledge/sources/website', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/knowledge/sources/website', requirePermission('knowledge.sources'), async (req, res) => {
   const { url, maxPages, maxDepth, language, title } = req.body || {};
   if (!url) return res.status(400).json({ error: 'A website URL is required.' });
   try {
@@ -513,6 +485,7 @@ app.post('/api/knowledge/sources/website', requireKnowledgeAuth, async (req, res
       maxDepth: Number(maxDepth) >= 0 ? Number(maxDepth) : undefined,
     });
     console.log(`[Server] Indexed website "${result.source.title}" — ${result.pagesCrawled} pages, ${result.chunks} chunks`);
+    await adminAuth.record(req, 'sources.website', `Crawled ${url} (${result.pagesCrawled} pages, ${result.chunks} chunks)`);
     res.json(result);
   } catch (err) {
     console.warn('[Server] Website indexing failed:', err.message);
@@ -520,13 +493,14 @@ app.post('/api/knowledge/sources/website', requireKnowledgeAuth, async (req, res
   }
 });
 
-app.post('/api/knowledge/sources/:id/toggle', requireKnowledgeAuth, async (req, res) => {
+app.post('/api/knowledge/sources/:id/toggle', requirePermission('knowledge.sources'), async (req, res) => {
   try {
     const all = await dbService.getAllKnowledgeSources();
     const existing = all.find(s => s.id === req.params.id);
     if (!existing) return res.status(404).json({ error: 'Source not found' });
     const saved = await dbService.saveKnowledgeSource({ ...existing, active: !existing.active });
     retrievalService.invalidate();
+    await adminAuth.record(req, 'sources.toggle', `Turned ${saved.active ? 'on' : 'off'} the source "${saved.title}"`);
     res.json(saved);
   } catch (err) {
     console.error('[Server] POST /api/knowledge/sources/:id/toggle error:', err.message);
@@ -534,10 +508,12 @@ app.post('/api/knowledge/sources/:id/toggle', requireKnowledgeAuth, async (req, 
   }
 });
 
-app.delete('/api/knowledge/sources/:id', requireKnowledgeAuth, async (req, res) => {
+app.delete('/api/knowledge/sources/:id', requirePermission('knowledge.sources'), async (req, res) => {
   try {
+    const source = (await dbService.getAllKnowledgeSources()).find(s => s.id === req.params.id);
     await dbService.deleteKnowledgeSource(req.params.id);
     retrievalService.invalidate();
+    await adminAuth.record(req, 'sources.delete', `Deleted the source "${source?.title || req.params.id}"`);
     res.json({ status: 'ok' });
   } catch (err) {
     console.error('[Server] DELETE /api/knowledge/sources/:id error:', err.message);
@@ -545,7 +521,7 @@ app.delete('/api/knowledge/sources/:id', requireKnowledgeAuth, async (req, res) 
   }
 });
 
-app.get('/api/knowledge/review', requireKnowledgeAuth, async (req, res) => {
+app.get('/api/knowledge/review', requirePermission('knowledge.view'), async (req, res) => {
   try {
     const leads = await dbService.getAllLeads();
     const flagged = [];
@@ -601,13 +577,22 @@ const PORT = config.port;
 // backoff; without this await, requests arriving during those retries would be served
 // from JSON and then be invisible once Mongo came up.
 await dbService.ready;
+// Built-in roles + the first Owner account (from ADMIN_OWNER_EMAIL) before anyone can sign in.
+await adminAuth.ensureSeeded().catch(err => console.error('[Admin Auth] Setup failed — console sign-in may not work:', err.message));
 
 app.listen(PORT, () => {
   console.log(`🚀 Theaurax AI Sales Assistant is listening on port ${PORT}`);
   console.log(`🛠️  Admin console (single app):  GET http://localhost:${PORT}/admin`);
   console.log(`     ├─ Monitor        /admin/monitor`);
   console.log(`     ├─ WhatsApp link  /admin/whatsapp`);
-  console.log(`     └─ Knowledge Hub  /admin/knowledge   (sign in with AURAX_TEAM_PASSWORD / TESTING_TEAM_PASSWORD)`);
+  console.log(`     ├─ Knowledge Hub  /admin/knowledge`);
+  console.log(`     └─ Users & Roles  /admin/users       (each person signs in with their own email + password)`);
+
+  // Expired console sign-ins are rejected on use anyway; this just keeps the store small.
+  setInterval(() => {
+    dbService.purgeExpiredAdminSessions()
+      .catch(err => console.error('[Admin Auth] Session cleanup failed:', err.message));
+  }, 6 * 60 * 60 * 1000);
 
   // Initialize WhatsApp Web Bot if enabled in configuration
   if (config.whatsappWeb && config.whatsappWeb.enabled) {

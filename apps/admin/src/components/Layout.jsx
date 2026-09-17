@@ -3,34 +3,34 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts.jsx';
 import logo from '../assets/aurax-logo.png';
 
-const SECTIONS = [
-  { id: 'monitor', label: 'Monitor', icon: '📊', title: 'Monitoring Dashboard', live: true },
-  { id: 'whatsapp', label: 'WhatsApp', icon: '💬', title: 'WhatsApp Connection' },
-  { id: 'knowledge', label: 'Knowledge Hub', icon: '🧠', title: 'Knowledge Hub' },
-  { id: 'tickets', label: 'Support Tickets', icon: '🎫', title: 'Support Tickets' },
-];
-
-export default function Layout({ children }) {
-  const { logout, api, teamLabel } = useAuth();
+export default function Layout({ sections, children }) {
+  const { logout, api, user, can } = useAuth();
   const [drawer, setDrawer] = useState(false);
   const [pending, setPending] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
   const { pathname } = useLocation();
-  const active = SECTIONS.find((s) => pathname.startsWith('/' + s.id)) || SECTIONS[0];
+  const active = sections.find((s) => pathname.startsWith('/' + s.id)) || sections[0];
+  const canKnowledge = can('knowledge.view');
+  const canTickets = can('tickets.view');
 
   // Poll the nav badges: auto-diagnosed questions awaiting an answer, and open tickets.
+  // Only for pages this role can open — the server would refuse the others anyway.
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      try { const r = await api('/api/knowledge/pending-count'); if (alive) setPending(r.count || 0); }
-      catch { /* silent */ }
-      try { const t = await api('/api/tickets/open-count'); if (alive) setOpenTickets(t.count || 0); }
-      catch { /* silent */ }
+      if (canKnowledge) {
+        try { const r = await api('/api/knowledge/pending-count'); if (alive) setPending(r.count || 0); }
+        catch { /* silent */ }
+      }
+      if (canTickets) {
+        try { const t = await api('/api/tickets/open-count'); if (alive) setOpenTickets(t.count || 0); }
+        catch { /* silent */ }
+      }
     };
     load();
     const id = setInterval(load, 30000);
     return () => { alive = false; clearInterval(id); };
-  }, [api, pathname]);
+  }, [api, pathname, canKnowledge, canTickets]);
 
   return (
     <div className="app">
@@ -45,7 +45,7 @@ export default function Layout({ children }) {
           </div>
         </div>
         <nav className="nav">
-          {SECTIONS.map((s) => (
+          {sections.map((s) => (
             <NavLink
               key={s.id}
               to={'/' + s.id}
@@ -65,10 +65,13 @@ export default function Layout({ children }) {
           ))}
         </nav>
         <div className="sidebar-foot">
-          {teamLabel && (
-            <div className="who-badge" title="Signed in team">
-              <span className="dot" style={{ background: 'var(--accent)' }} />
-              {teamLabel}
+          {user && (
+            <div className="who-card" title={user.email}>
+              <span className="avatar">{(user.name || user.email || '?').trim().charAt(0).toUpperCase()}</span>
+              <div className="who-text">
+                <div className="who-name">{user.name}</div>
+                <div className="who-role">{user.roleName}</div>
+              </div>
             </div>
           )}
           <button className="btn ghost sm" style={{ width: '100%' }} onClick={logout}>
@@ -79,7 +82,7 @@ export default function Layout({ children }) {
 
       <div className="main">
         <header className="topbar">
-          <button className="hamburger" onClick={() => setDrawer((d) => !d)}>
+          <button className="hamburger" onClick={() => setDrawer((d) => !d)} aria-label="Open menu">
             ☰
           </button>
           <h1>{active.title}</h1>

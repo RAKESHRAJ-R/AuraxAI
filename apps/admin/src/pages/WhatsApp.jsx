@@ -20,7 +20,10 @@ function formatNumber(raw) {
 }
 
 export default function WhatsApp() {
-  const { api } = useAuth();
+  const { api, can } = useAuth();
+  // Linking and unlinking the number. Without it the server withholds the QR and the
+  // linking code too, since either one lets whoever sees it pair their own phone.
+  const canManage = can('whatsapp.manage');
   const [status, setStatus] = useState('DISCONNECTED');
   const [qr, setQr] = useState(null);
   const [err, setErr] = useState(false);
@@ -142,6 +145,8 @@ export default function WhatsApp() {
             )
             : showQr ? <img src={qr} alt="WhatsApp QR" />
             : status === 'CONNECTED' ? <div className="check">✓</div>
+            : !canManage && (status === 'QR_READY' || status === 'CODE_READY')
+              ? <div className="locked-msg">🔒 Waiting for someone who is allowed to link the number.</div>
             : <div className="spinner" />}
         </div>
         {status === 'CONNECTED' && (
@@ -171,9 +176,11 @@ export default function WhatsApp() {
             <p className="desc" style={{ marginTop: 14 }}>
               <strong style={{ color: 'var(--accent)' }}>Connected!</strong> The bot answers every message sent to this number.
             </p>
-            <button className="btn danger" style={{ marginTop: 14 }} disabled={busy} onClick={doLogout}>
-              {busy ? 'Logging out…' : '🔌 Log out this number'}
-            </button>
+            {canManage && (
+              <button className="btn danger" style={{ marginTop: 14 }} disabled={busy} onClick={doLogout}>
+                {busy ? 'Logging out…' : '🔌 Log out this number'}
+              </button>
+            )}
           </>
         )}
         {notice && (
@@ -181,7 +188,7 @@ export default function WhatsApp() {
             {notice.text}
           </p>
         )}
-        {!phoneMode && status === 'QR_READY' && (
+        {canManage && !phoneMode && status === 'QR_READY' && (
           <div className="steps">
             <div className="t">🤳 How to pair</div>
             <ol>
@@ -192,7 +199,7 @@ export default function WhatsApp() {
             </ol>
           </div>
         )}
-        {phoneMode && (
+        {canManage && phoneMode && (
           <div className="steps">
             <div className="t">📱 Link with phone number</div>
             <ol>
@@ -204,12 +211,12 @@ export default function WhatsApp() {
             <p className="pair-note">The code refreshes every 3 minutes. Enter the one shown here now.</p>
           </div>
         )}
-        {status !== 'CONNECTED' && !phoneMode && !phoneForm && (
+        {canManage && status !== 'CONNECTED' && !phoneMode && !phoneForm && (
           <button className="btn ghost" style={{ marginTop: 14 }} disabled={busy} onClick={() => { setPhoneForm(true); setNotice(null); }}>
             📱 Link with phone number instead
           </button>
         )}
-        {status !== 'CONNECTED' && !phoneMode && phoneForm && (
+        {canManage && status !== 'CONNECTED' && !phoneMode && phoneForm && (
           <form className="pair-form" onSubmit={startPairing}>
             <label htmlFor="wa-phone">WhatsApp number to link <span className="hint">(with country code)</span></label>
             <input
@@ -228,7 +235,7 @@ export default function WhatsApp() {
             </div>
           </form>
         )}
-        {phoneMode && (
+        {canManage && phoneMode && (
           <button className="btn ghost" style={{ marginTop: 14 }} disabled={busy} onClick={backToQr}>
             {busy ? 'Switching…' : '🔳 Use QR code instead'}
           </button>

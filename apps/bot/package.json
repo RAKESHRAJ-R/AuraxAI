@@ -12,10 +12,12 @@
     "test-search": "node test_product_search.js",
     "test-embeddings": "node src/test_embeddings.js",
     "test-catchup": "node src/test_catchup.js",
+    "test-admin-auth": "node src/test_admin_auth.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",
     "seed-tickets": "node src/seed_tickets.js",
-    "migrate-mongo": "node src/migrate_to_mongo.js"
+    "migrate-mongo": "node src/migrate_to_mongo.js",
+    "admin-user": "node src/admin_user.js"
   },
   "overrides": {
     "sharp": "^0.35.3"

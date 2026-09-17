@@ -222,9 +222,31 @@ class CatchupService {
     const startedAt = Date.now();
 
     try {
-      const watermark = await dbService.getMeta(WATERMARK_KEY, 0);
+      const storedWatermark = await dbService.getMeta(WATERMARK_KEY, 0);
       const nowSec = Math.floor(Date.now() / 1000);
       const freshCutoff = nowSec - config.catchup.freshHours * 3600;
+
+      // COLD START. A zero watermark means this account has never been swept — a phone
+      // that was just paired, or a wiped data dir. Taken literally it means "every chat in
+      // this account's entire history is unanswered", which on the live handset is 600+
+      // conversations going back months. Answering those is not catch-up, it is a cold
+      // broadcast from a number with no outbound history, and on 2026-09-17 it got the
+      // client's number restricted for "spam, automated or bulk messaging" within minutes
+      // of them pairing the phone to try the bot.
+      //
+      // So on a first sweep, look back only coldStartHours. Anything older was already
+      // there before the bot existed and is the shop's own backlog to answer by hand.
+      let watermark = storedWatermark;
+      const coldStart = storedWatermark === 0 && config.catchup.coldStartHours > 0;
+      if (coldStart) {
+        watermark = nowSec - config.catchup.coldStartHours * 3600;
+        console.log(
+          `[Catch-up] First sweep on this account — only looking back ` +
+          `${config.catchup.coldStartHours}h. Older chats are left alone on purpose ` +
+          '(set CATCHUP_COLD_START_HOURS=0 to sweep the whole history).'
+        );
+      }
+
       const ageLimit = config.catchup.maxAgeDays > 0
         ? nowSec - config.catchup.maxAgeDays * 86400
         : 0;
@@ -371,8 +393,15 @@ class CatchupService {
   }
 
   /**
-   * Drain tier-1 items straight away. They still go through the bot's global send pacer, so
-   * "immediately" means ~1.7s apart, not all at once.
+   * Drain tier-1 items straight away — but only the first `freshMaxImmediate` of them.
+   *
+   * ⚠️ The cap is the whole point. This method used to loop over EVERY tier-1 item with no
+   * ceiling, on the reasoning that the global send pacer made it safe. It did not: the pacer
+   * only spaces sends out, and spacing a burst of 60 first-contact messages 2 seconds apart
+   * still produces 60 new conversations from one handset inside two minutes. That is the
+   * pattern that got the client's number restricted on 2026-09-17, minutes after they paired
+   * the phone. The rest now fall into the same slow, live-traffic-yielding drip as tier 2 —
+   * they are already persisted, so nobody is dropped, they just wait their turn.
    *
    * Takes the sweep's own list rather than re-reading the queue. Reading it back would return
    * the OLDEST items first — i.e. the tier-2 backlog — and answer the whole thing at full
@@ -380,8 +409,18 @@ class CatchupService {
    * the items are already persisted by this point, so crash-safety is unaffected.)
    */
   async drainFresh(items) {
-    for (const item of items) {
+    const cap = Math.max(0, config.catchup.freshMaxImmediate);
+    const now = items.slice(0, cap);
+    for (const item of now) {
       await this.processItem(item, { silentAge: true });
+      this.sentThisHour.push(Date.now());
+    }
+    const deferred = items.length - now.length;
+    if (deferred > 0) {
+      console.log(
+        `[Catch-up] Answered ${now.length} waiting customer(s) now; ${deferred} more are ` +
+        `queued for the drip (${config.catchup.drainPerHour}/h) rather than sent as a burst.`
+      );
     }
   }
 
@@ -397,15 +436,27 @@ class CatchupService {
     // being processed, so backlog work simply waits for a quiet moment.
     if (this.bot.senderChains?.size > 0) return;
 
-    // Per-hour ceiling.
+    // Account-wide ceiling on distinct chats contacted per hour, shared with live traffic
+    // and follow-ups. The backlog is the part that yields: a busy hour of real customers
+    // should push the drip back, never the other way round.
+    const budget = this.bot.chatBudget?.();
+
+    // Per-hour ceiling. Tier-1 sends from the sweep count against this too, so a burst of
+    // recent customers correctly slows the backlog rather than being free.
     const hourAgo = Date.now() - 3600 * 1000;
     this.sentThisHour = this.sentThisHour.filter((t) => t > hourAgo);
     const remaining = config.catchup.drainPerHour - this.sentThisHour.length;
-    if (remaining <= 0) return;
+
+    // Being rate-limited is not a reason to skip the tick entirely: the queue may have just
+    // gone empty, and the one-off "backlog cleared" notice would then never be sent. Bail
+    // early only when there is also nothing left to announce.
+    const throttled = remaining <= 0 || (budget && !budget.hasRoom);
+    if (throttled && this.announcedEmpty) return;
 
     this.draining = true;
     try {
-      const batch = await dbService.getCatchupBatch(Math.min(config.catchup.drainBatch, remaining));
+      const want = throttled ? 1 : Math.min(config.catchup.drainBatch, remaining);
+      const batch = await dbService.getCatchupBatch(want);
       if (!batch.length) {
         if (!this.announcedEmpty) {
           this.announcedEmpty = true;
@@ -414,6 +465,8 @@ class CatchupService {
         }
         return;
       }
+      // Still work to do, but no budget to do it with — leave it for the next tick.
+      if (throttled) return;
       for (const item of batch) {
         await this.processItem(item);
         this.sentThisHour.push(Date.now());

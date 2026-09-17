@@ -162,10 +162,24 @@ MONGODB_URI=mongodb://theaurax:PASSWORD@127.0.0.1:27017/theaurax_assistant?authS
 BASE_URL=https://bot.theaurax.in
 WHATSAPP_WEB_ENABLED=true
 ADMIN_ALLOWED_ORIGINS=https://<your-project>.vercel.app
+ADMIN_OWNER_EMAIL=owner@theaurax.in
+ADMIN_CONSOLE_URL=https://<your-project>.vercel.app
+BREVO_API_KEY=xkeysib-...
+MAIL_FROM_EMAIL=no-reply@theaurax.in
 ```
 
-Everything else (Groq/Sarvam keys, WooCommerce, `AURAX_TEAM_PASSWORD` /
-`TESTING_TEAM_PASSWORD`) carries over unchanged.
+Everything else (Groq/Sarvam keys, WooCommerce) carries over unchanged.
+
+**Admin console logins are per person.** On the first boot with no accounts,
+`ADMIN_OWNER_EMAIL` + `ADMIN_OWNER_PASSWORD` create the Owner. If `ADMIN_OWNER_PASSWORD` is
+unset, the old `AURAX_TEAM_PASSWORD` is used, so an existing server only needs
+`ADMIN_OWNER_EMAIL` added. After that, the Owner adds staff from **Users & Roles**.
+`TESTING_TEAM_PASSWORD` no longer signs anyone in. If the Owner is ever locked out:
+`npm run admin-user -- --email owner@theaurax.in --password "new-password"`.
+
+`BREVO_API_KEY` / `MAIL_FROM_EMAIL` are optional (without them, login details are shown on
+screen instead of emailed). The sender must be verified in Brevo, and theaurax.in needs Brevo's
+SPF/DKIM DNS records in Hostinger, or the emails go to spam.
 
 `ADMIN_ALLOWED_ORIGINS` is what lets the Vercel-hosted console talk to this server —
 without it the browser blocks every admin API response. Details in §9.
@@ -187,6 +201,50 @@ mongorestore --uri="<local-uri>" --gzip --archive=atlas.gz --drop
 
 Verify the count matches Atlas before pointing the bot at it. **Once verified, delete the
 Atlas cluster** — that also closes the `0.0.0.0/0` IP-allowlist exposure logged 2026-07-29.
+
+## 5b. First connection on a real number — do not skip
+
+On 2026-09-17 the client's number was restricted by WhatsApp ("spam, automated or bulk
+messaging") within minutes of pairing a shop phone, because the catch-up sweep treated the
+phone's entire 660-chat history as unanswered and started replying to it. See the
+"WhatsApp account restriction" section in CLAUDE.md for the full post-mortem.
+
+**Every time you link a number that has existing chats, dry-run it first.** In `apps/bot/.env`:
+
+```bash
+CATCHUP_DRY_RUN=true      # sweep + report, send NOTHING, queue nothing
+FOLLOWUP_ENABLED=false    # no unsolicited messages while the number is cold
+```
+
+Restart, link the number, then read the log:
+
+```bash
+pm2 logs aurax-ai --lines 100 | grep 'Catch-up'
+```
+
+Expect something like:
+
+```
+[Catch-up] First sweep on this account — only looking back 24h.
+[Catch-up] DRY RUN — would answer 3 recent and 0 older customer(s). Nothing was sent or queued.
+```
+
+If that count is small and the sampled numbers look like genuinely waiting customers, set
+`CATCHUP_DRY_RUN=false` and restart. If it is in the hundreds, leave dry run ON and lower
+`CATCHUP_COLD_START_HOURS` — you have sent nobody anything, which is the point.
+
+⚠️ **Wiping `.wwebjs_auth/` or the data dir resets the catch-up watermark to zero**, which
+makes the next boot look like a first pairing all over again. Re-run the dry run after any
+such reset.
+
+⚠️ **Never copy a developer's `apps/bot/.env.local` to the server.** That file exists only
+to point a local machine away from production (blank `MONGODB_URI`, a throwaway WhatsApp
+session, safe mode on). It overrides `.env`, so on the server it would disable the live
+database and silently stop the bot replying to real customers.
+
+The ban-protection limits themselves ship with safe defaults in `config.js` and normally
+need no env entries. They are all listed in `apps/bot/.env.example` under "WhatsApp ban
+protection" if you need to tune them.
 
 ## 6. systemd service
 

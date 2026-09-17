@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -8,6 +9,22 @@ const __dirname = path.dirname(__filename);
 // Load environment variables from .env file (if it exists)
 // override: true ensures .env values take precedence over pre-existing shell env vars
 dotenv.config({ path: path.join(__dirname, '../../.env'), override: true });
+
+// `.env.local` wins over `.env` when present. It exists so a developer can run the bot on
+// their own machine WITHOUT touching production: the real .env points MONGODB_URI at the
+// live Atlas cluster and WHATSAPP_CLIENT_ID at the paired shop session, so a plain local
+// `npm start` would read and write the production watermark, queue and leads, and try to
+// restore the live WhatsApp session onto a second machine (which corrupts it — see the
+// two-clients-one-LocalAuth warning in whatsapp-web-bot.js).
+//
+// Because `.env` is loaded with override:true, exporting a shell variable cannot win
+// against it; a file that loads afterwards is the only thing that can. Gitignored via the
+// repo's `.env.*` rule.
+const localEnv = path.join(__dirname, '../../.env.local');
+if (fs.existsSync(localEnv)) {
+  dotenv.config({ path: localEnv, override: true });
+  console.log('[Config] ⚠️  .env.local is present and OVERRIDES .env — this is a local dev run, not production.');
+}
 
 const config = {
   port: process.env.PORT || 3000,
@@ -134,6 +151,9 @@ const config = {
     // Browser identity reported to WhatsApp. Empty = derived from the Chrome build Puppeteer
     // actually runs (see whatsapp-web-bot.js). Only set this to pin a specific string.
     userAgent: process.env.WHATSAPP_USER_AGENT || null,
+    // Session folder name under .wwebjs_auth/. Change it for local testing so a dev
+    // machine pairs a throwaway number instead of restoring the live shop session.
+    clientId: process.env.WHATSAPP_CLIENT_ID || 'theaurax-bot',
     // --- Outbound send pacing (WhatsApp ban-risk protection) ---
     // whatsapp-web.js is an UNOFFICIAL client: WhatsApp bans numbers that behave like
     // bots, and the loudest signal is a burst of instant, evenly-spaced replies to many
@@ -142,11 +162,18 @@ const config = {
     // sends and enforces these limits globally — per ACCOUNT, not per chat, because
     // that's how WhatsApp measures it.
     // Defaults are deliberately conservative; raise only with evidence.
-    minSendGapMs: parseInt(process.env.WA_MIN_SEND_GAP_MS || '1200', 10),
+    // Lowered from 1200/900/30 on 2026-09-17 after the live number was restricted for
+    // "spam, automated or bulk messaging". 30/min is a fast human INSIDE ONE CHAT; across
+    // 30 DIFFERENT chats it is a broadcast, which is the thing WhatsApp actually measures.
+    minSendGapMs: parseInt(process.env.WA_MIN_SEND_GAP_MS || '4000', 10),
     // Random extra 0..N ms on top of the gap so the spacing isn't machine-perfect.
-    sendJitterMs: parseInt(process.env.WA_SEND_JITTER_MS || '900', 10),
-    // Hard ceiling over a rolling 60s window. 30/min ≈ a fast human on WhatsApp Web.
-    maxSendsPerMinute: parseInt(process.env.WA_MAX_SENDS_PER_MIN || '30', 10),
+    sendJitterMs: parseInt(process.env.WA_SEND_JITTER_MS || '3000', 10),
+    // Hard ceiling over a rolling 60s window.
+    maxSendsPerMinute: parseInt(process.env.WA_MAX_SENDS_PER_MIN || '8', 10),
+    // Hard ceiling over a rolling 60 MINUTE window, counted only over DISTINCT chats.
+    // The per-minute cap alone cannot stop a slow, steady 480-chats-per-hour broadcast,
+    // which is precisely what a large catch-up backlog looks like from WhatsApp's side.
+    maxNewChatsPerHour: parseInt(process.env.WA_MAX_NEW_CHATS_PER_HOUR || '30', 10),
     // Minimum time between receiving a message and replying to it. Deterministic
     // fast-path replies (FAQ / knowledge / size-parse) return in ~0ms, which reads as
     // inhuman; this pads them. Replies that already took longer (LLM calls) are NOT
@@ -169,12 +196,28 @@ const config = {
     // Tier 1. A customer who wrote within this window is still actively waiting, so their
     // reply goes out immediately at normal pace on reconnect.
     freshHours: parseInt(process.env.CATCHUP_FRESH_HOURS || '12', 10),
+    // How many tier-1 items may be answered back-to-back at the end of a sweep. Everything
+    // beyond this goes into the same slow drip as tier 2.
+    //
+    // Added 2026-09-17. Before this, drainFresh() answered EVERY tier-1 item in one
+    // uninterrupted loop, bounded only by the per-minute send cap — so pairing a phone that
+    // had 60 unread chats from the last 12h produced 60 first-contact messages in ~2 minutes.
+    // That is what got the live number restricted for bulk messaging.
+    freshMaxImmediate: parseInt(process.env.CATCHUP_FRESH_MAX_IMMEDIATE || '5', 10),
+    // The FIRST sweep on a number with no watermark (a freshly paired phone, or a wiped
+    // data dir) would otherwise treat the account's ENTIRE history as "missed" — 600+ chats
+    // on the live account. Nobody wants a bot answering a chat from last March on the day
+    // it is switched on. With no watermark, only look back this far. 0 disables the guard
+    // and restores the old answer-everything behaviour.
+    coldStartHours: parseInt(process.env.CATCHUP_COLD_START_HOURS || '24', 10),
     // Tier 2. Everything older is still answered, just dripped out. 0 = no age limit at all
-    // (handle the entire backlog however far back it goes).
-    maxAgeDays: parseInt(process.env.CATCHUP_MAX_AGE_DAYS || '0', 10),
-    // Drip rate for tier 2, per hour. 120/h ≈ one every 30s — a ~1000-chat backlog clears in
-    // about 8 hours without ever looking like a broadcast. Raise only with evidence.
-    drainPerHour: parseInt(process.env.CATCHUP_DRAIN_PER_HOUR || '120', 10),
+    // (handle the entire backlog however far back it goes) — no longer the default, because
+    // an unprompted reply to a months-old chat reads as outreach, not as a reply.
+    maxAgeDays: parseInt(process.env.CATCHUP_MAX_AGE_DAYS || '7', 10),
+    // Drip rate for tier 2, per hour. Lowered from 120 on 2026-09-17: 120/h is still 2,880
+    // unsolicited-looking messages a day from one handset, and the live number was
+    // restricted at roughly that pace. 20/h clears a 500-chat backlog in about a day.
+    drainPerHour: parseInt(process.env.CATCHUP_DRAIN_PER_HOUR || '20', 10),
     // How many tier-2 items may go out in a single tick, so the drip isn't perfectly periodic.
     drainBatch: parseInt(process.env.CATCHUP_DRAIN_BATCH || '2', 10),
     tickMs: parseInt(process.env.CATCHUP_TICK_MS || '60000', 10),
@@ -189,20 +232,50 @@ const config = {
     // way to verify the sweep against live customer data without contacting them.
     dryRun: process.env.CATCHUP_DRY_RUN === 'true',
   },
+  // Cold-lead re-engagement. This is the ONLY path in the app that contacts a customer who
+  // did not just message us, which makes it the highest ban-risk feature we ship — it is
+  // literally "starting new chats", the exact capability WhatsApp revokes first when it
+  // flags an account. Kept behind a switch so it can be turned off without a deploy.
+  followUp: {
+    enabled: process.env.FOLLOWUP_ENABLED !== 'false',
+    inactiveHours: parseInt(process.env.FOLLOWUP_INACTIVE_HOURS || '3', 10),
+    maxPerLead: parseInt(process.env.FOLLOWUP_MAX_PER_LEAD || '2', 10),
+    // Hard cap per 30-minute run. Without it the loop walks EVERY active lead in one pass,
+    // sending near-identical templated text to all of them — the textbook bulk pattern.
+    maxPerRun: parseInt(process.env.FOLLOWUP_MAX_PER_RUN || '8', 10),
+  },
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
-  knowledgeHub: {
-    // Single shared password protecting the /knowledge-hub admin page + its APIs.
-    // If unset, the hub APIs refuse all logins (page is inert) — set it to enable.
-    // Kept as a backward-compatible fallback that logs in as the Aurax team.
-    password: process.env.KNOWLEDGE_HUB_PASSWORD || '',
+  // Admin console accounts. Every person signs in with their own email + password and
+  // gets a role that decides which pages they can open (services/adminAuth.js).
+  //
+  // The owner settings below are used exactly ONCE: on a boot where no accounts exist yet,
+  // they create the first Owner. After that they are ignored — change passwords from the
+  // Users page, or recover a lost Owner login with `npm run admin-user`.
+  adminAuth: {
+    ownerEmail: (process.env.ADMIN_OWNER_EMAIL || '').trim().toLowerCase(),
+    ownerName: (process.env.ADMIN_OWNER_NAME || 'Store Owner').trim(),
+    // Falls back to the old shared Aurax team password so an existing deployment only
+    // needs ADMIN_OWNER_EMAIL added to come up with a working owner login.
+    ownerPassword: process.env.ADMIN_OWNER_PASSWORD || process.env.AURAX_TEAM_PASSWORD || process.env.KNOWLEDGE_HUB_PASSWORD || '',
+    sessionTtlHours: parseInt(process.env.ADMIN_SESSION_TTL_HOURS || '168', 10),
   },
-  // Team-scoped admin logins: one shared password per team. Whichever password
-  // is entered decides which team the session is tagged with. Both grant the same
-  // access today — the team tag is for attribution, not different permissions.
-  adminTeams: {
-    auraxPassword: process.env.AURAX_TEAM_PASSWORD || '',
-    testingPassword: process.env.TESTING_TEAM_PASSWORD || '',
+  // Retired shared-password logins. Read only so boot can warn that they no longer work.
+  legacyAdminPasswords: {
+    testing: process.env.TESTING_TEAM_PASSWORD || '',
+    knowledgeHub: process.env.KNOWLEDGE_HUB_PASSWORD || '',
   },
+  // Transactional email via Brevo — sends new staff their login details. Optional: without
+  // it accounts still work, the owner just shares the details by hand. The sender address
+  // must be verified in Brevo (Senders & IP → Senders), and the domain authenticated
+  // (SPF/DKIM) or the email lands in spam.
+  mail: {
+    brevoApiKey: (process.env.BREVO_API_KEY || '').trim(),
+    fromEmail: (process.env.MAIL_FROM_EMAIL || '').trim(),
+    fromName: (process.env.MAIL_FROM_NAME || 'Aurax Admin').trim(),
+  },
+  // Public URL of the admin console, used as the sign-in link in those emails. Normally the
+  // Vercel URL. Falls back to the self-hosted /admin build on this server.
+  adminConsoleUrl: (process.env.ADMIN_CONSOLE_URL || '').trim().replace(/\/+$/, ''),
   // Origins allowed to call the admin API cross-origin. The console is deployed to
   // Vercel, which is a different origin than this server, so its URL must be listed
   // here or the browser blocks every response. Comma-separated, exact origins only

@@ -16,7 +16,8 @@ const ISSUE = {
 const issueMeta = (t) => ISSUE[t] || { label: t || 'Other', cls: 'idle' };
 
 export default function Tickets() {
-  const { api } = useAuth();
+  const { api, can } = useAuth();
+  const canManage = can('tickets.manage');
   const [tickets, setTickets] = useState(null);
   const [filter, setFilter] = useState('open'); // open | resolved | all
   const [q, setQ] = useState('');
@@ -119,14 +120,14 @@ export default function Tickets() {
             <thead>
               <tr>
                 <th>Ticket</th><th>Customer</th><th>Issue</th><th>Order</th>
-                <th>Photo</th><th>Details</th><th>Created</th><th>Action</th>
+                <th>Photo</th><th>Details</th><th>Created</th>{canManage && <th>Action</th>}
               </tr>
             </thead>
             <tbody>
               {tickets === null
-                ? <tr><td colSpan="8" className="empty">Loading tickets…</td></tr>
+                ? <tr><td colSpan={canManage ? 8 : 7} className="empty">Loading tickets…</td></tr>
                 : visible.length === 0
-                ? <tr><td colSpan="8" className="empty">No {filter === 'all' ? '' : filter} tickets{q ? ' match your search' : ''}.</td></tr>
+                ? <tr><td colSpan={canManage ? 8 : 7} className="empty">No {filter === 'all' ? '' : filter} tickets{q ? ' match your search' : ''}.</td></tr>
                 : visible.map((t) => {
                     const im = issueMeta(t.issueType);
                     const resolved = t.status === 'resolved';
@@ -143,11 +144,13 @@ export default function Tickets() {
                         <td>{t.hasPhoto ? '📷' : <span style={{ color: 'var(--faint)' }}>—</span>}</td>
                         <td style={{ maxWidth: 280, whiteSpace: 'normal', color: 'var(--muted)' }}>{t.description || '—'}</td>
                         <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{relTime(t.createdAt)}</td>
-                        <td>
-                          {resolved
-                            ? <button className="btn ghost sm" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'open')}>Reopen</button>
-                            : <button className="btn sm" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'resolved')}>Resolve</button>}
-                        </td>
+                        {canManage && (
+                          <td>
+                            {resolved
+                              ? <button className="btn ghost sm" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'open')}>Reopen</button>
+                              : <button className="btn sm" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'resolved')}>Resolve</button>}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}

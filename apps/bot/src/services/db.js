@@ -4,7 +4,9 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = path.join(__dirname, '../data');
+// AURAX_DATA_DIR exists for test suites: it lets them run against a throwaway directory
+// instead of the real src/data files (which hold live customers and admin accounts).
+const DATA_DIR = process.env.AURAX_DATA_DIR || path.join(__dirname, '../data');
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.json');
@@ -24,6 +26,15 @@ const KNOWLEDGE_CHUNKS_FILE = path.join(DATA_DIR, 'knowledge_chunks.json');
 // restart does not lose customers, so a queue held only in memory would defeat the feature.
 const META_FILE = path.join(DATA_DIR, 'meta.json');
 const CATCHUP_QUEUE_FILE = path.join(DATA_DIR, 'catchup_queue.json');
+// Admin console accounts. admin_users holds password HASHES and admin_sessions holds
+// login-token HASHES — never plaintext — but both are still per-deployment secrets and
+// are gitignored.
+const ADMIN_USERS_FILE = path.join(DATA_DIR, 'admin_users.json');
+const ADMIN_ROLES_FILE = path.join(DATA_DIR, 'admin_roles.json');
+const ADMIN_SESSIONS_FILE = path.join(DATA_DIR, 'admin_sessions.json');
+const ADMIN_ACTIVITY_FILE = path.join(DATA_DIR, 'admin_activity.json');
+// The JSON activity log is rewritten on every append, so it is capped. Mongo keeps everything.
+const ADMIN_ACTIVITY_JSON_CAP = 5000;
 
 // Session default state template
 const DEFAULT_SESSION = {
@@ -77,6 +88,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(CATCHUP_QUEUE_FILE)) {
       fs.writeFileSync(CATCHUP_QUEUE_FILE, JSON.stringify([]), 'utf-8');
+    }
+    for (const file of [ADMIN_USERS_FILE, ADMIN_ROLES_FILE, ADMIN_SESSIONS_FILE, ADMIN_ACTIVITY_FILE]) {
+      if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify([]), 'utf-8');
     }
 
     // Callers await this before serving traffic, so the store is decided once and
@@ -1165,6 +1179,105 @@ class DatabaseService {
     } catch (err) {
       return { pending: 0, oldestTimestamp: null };
     }
+  }
+
+  // --- Admin console accounts: users, roles, login sessions, activity log ---
+  //
+  // Unlike every collection above, these helpers THROW on a storage error instead of
+  // logging and falling through to the JSON files. For accounts, a silent fallback is
+  // actively dangerous: a failed read that returns [] looks like "no users exist" (and would
+  // re-run first-boot owner seeding), and a Mongo write that lands in JSON instead creates an
+  // account that vanishes on the next restart. Callers turn the throw into a 500.
+
+  async _findAdminDocs(collection, file, filter = {}) {
+    if (this.useMongo) {
+      return this.db.collection(collection).find(filter, { projection: { _id: 0 } }).toArray();
+    }
+    const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return all.filter((doc) => Object.entries(filter).every(([k, v]) => doc[k] === v));
+  }
+
+  /** Insert or replace a document keyed by its `id`. */
+  async _upsertAdminDoc(collection, file, doc) {
+    if (this.useMongo) {
+      await this.db.collection(collection).replaceOne({ id: doc.id }, doc, { upsert: true });
+      return doc;
+    }
+    const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const idx = all.findIndex((d) => d.id === doc.id);
+    if (idx === -1) all.push(doc); else all[idx] = doc;
+    fs.writeFileSync(file, JSON.stringify(all, null, 2), 'utf-8');
+    return doc;
+  }
+
+  async _deleteAdminDocs(collection, file, filter) {
+    if (this.useMongo) {
+      const res = await this.db.collection(collection).deleteMany(filter);
+      return res.deletedCount || 0;
+    }
+    const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const keep = all.filter((doc) => !Object.entries(filter).every(([k, v]) => doc[k] === v));
+    if (keep.length !== all.length) fs.writeFileSync(file, JSON.stringify(keep, null, 2), 'utf-8');
+    return all.length - keep.length;
+  }
+
+  // Users: { id, name, email, passwordHash, roleId, status:'active'|'disabled', failedAttempts,
+  //          lockedUntil, lastLoginAt, createdAt, createdBy, updatedAt }
+  getAdminUsers() { return this._findAdminDocs('admin_users', ADMIN_USERS_FILE); }
+  saveAdminUser(user) { return this._upsertAdminDoc('admin_users', ADMIN_USERS_FILE, user); }
+  deleteAdminUser(id) { return this._deleteAdminDocs('admin_users', ADMIN_USERS_FILE, { id }); }
+
+  // Roles: { id, name, description, permissions:string[], system:bool, createdAt, updatedAt }
+  getAdminRoles() { return this._findAdminDocs('admin_roles', ADMIN_ROLES_FILE); }
+  saveAdminRole(role) { return this._upsertAdminDoc('admin_roles', ADMIN_ROLES_FILE, role); }
+  deleteAdminRole(id) { return this._deleteAdminDocs('admin_roles', ADMIN_ROLES_FILE, { id }); }
+
+  // Sessions: { id: sha256(token), userId, createdAt, expiresAt }. The raw token only ever
+  // exists in the browser, so a leaked sessions file cannot be replayed.
+  async getAdminSession(id) {
+    const [session] = await this._findAdminDocs('admin_sessions', ADMIN_SESSIONS_FILE, { id });
+    return session || null;
+  }
+  saveAdminSession(session) { return this._upsertAdminDoc('admin_sessions', ADMIN_SESSIONS_FILE, session); }
+  /** Delete sessions matching an equality filter — `{ id }` for one, `{ userId }` for all of a user's. */
+  deleteAdminSessions(filter) { return this._deleteAdminDocs('admin_sessions', ADMIN_SESSIONS_FILE, filter); }
+
+  async purgeExpiredAdminSessions() {
+    const now = new Date().toISOString();
+    if (this.useMongo) {
+      const res = await this.db.collection('admin_sessions').deleteMany({ expiresAt: { $lt: now } });
+      return res.deletedCount || 0;
+    }
+    const all = JSON.parse(fs.readFileSync(ADMIN_SESSIONS_FILE, 'utf-8'));
+    const keep = all.filter((s) => s.expiresAt >= now);
+    if (keep.length !== all.length) fs.writeFileSync(ADMIN_SESSIONS_FILE, JSON.stringify(keep, null, 2), 'utf-8');
+    return all.length - keep.length;
+  }
+
+  // Activity: { id, at, userId, userName, userEmail, roleName, action, summary, ip }
+  async appendAdminActivity(entry) {
+    if (this.useMongo) {
+      await this.db.collection('admin_activity').insertOne({ ...entry });
+      return;
+    }
+    const all = JSON.parse(fs.readFileSync(ADMIN_ACTIVITY_FILE, 'utf-8'));
+    all.push(entry);
+    const trimmed = all.length > ADMIN_ACTIVITY_JSON_CAP ? all.slice(-ADMIN_ACTIVITY_JSON_CAP) : all;
+    fs.writeFileSync(ADMIN_ACTIVITY_FILE, JSON.stringify(trimmed, null, 2), 'utf-8');
+  }
+
+  /** Newest first. `before` is an ISO timestamp cursor for "load more". */
+  async getAdminActivity({ limit = 100, before = null } = {}) {
+    if (this.useMongo) {
+      const filter = before ? { at: { $lt: before } } : {};
+      return this.db.collection('admin_activity')
+        .find(filter, { projection: { _id: 0 } }).sort({ at: -1 }).limit(limit).toArray();
+    }
+    const all = JSON.parse(fs.readFileSync(ADMIN_ACTIVITY_FILE, 'utf-8'));
+    return all
+      .filter((e) => !before || e.at < before)
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+      .slice(0, limit);
   }
 }
 
