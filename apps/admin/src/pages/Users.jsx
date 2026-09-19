@@ -19,9 +19,41 @@ function generatePassword(length = 14) {
 
 const consoleUrl = () => window.location.origin + import.meta.env.BASE_URL;
 
+// navigator.clipboard only exists in a SECURE context — https or localhost. The bot is
+// commonly reached over plain http on the VPS IP (http://<ip>:3000/admin), where the API
+// is simply absent, so the modern call throws and every copy button looks broken. The
+// execCommand path still works there; it is deprecated, not removed.
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  // Off-screen but still selectable — display:none or visibility:hidden would make the
+  // selection, and therefore the copy, fail.
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+  document.body.appendChild(ta);
+  try {
+    ta.select();
+    ta.setSelectionRange(0, text.length); // iOS ignores select() on its own
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 async function copyText(text, toast, what = 'Copied') {
-  try { await navigator.clipboard.writeText(text); toast(what + '.'); }
-  catch { toast('Couldn\'t copy — select the text and copy it manually.', true); }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      toast(what + '.');
+      return;
+    }
+  } catch {
+    // Permission denied, or a non-secure origin — fall through to the legacy path.
+  }
+  if (legacyCopy(text)) toast(what + '.');
+  else toast("Couldn't copy — select the text and copy it manually.", true);
 }
 
 function PasswordInput({ id, value, onChange }) {
