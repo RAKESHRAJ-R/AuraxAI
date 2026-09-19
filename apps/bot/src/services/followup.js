@@ -13,7 +13,8 @@ class FollowUpService {
     setInterval(() => this.runFollowUpCheck(), CHECK_INTERVAL_MS);
     console.log(
       `[FollowUp] Cold lead follow-up scheduler started (every 30 min, ` +
-      `max ${config.followUp.maxPerRun} per run).`
+      `max ${config.followUp.maxPerRun} per run, ${config.followUp.maxPerLead} per lead, ` +
+      `${config.followUp.cooldownHours}h apart, nothing older than ${config.followUp.maxLeadAgeDays}d).`
     );
   }
 
@@ -27,13 +28,34 @@ class FollowUpService {
     const leads = await dbService.getActiveLeads();
     const now = Date.now();
     let contacted = 0;
+    let skippedCooldown = 0;
+    let skippedStale = 0;
 
     for (const lead of leads) {
       if (!lead.userId || !lead.userId.includes('@c.us')) continue;
 
       const lastUpdate = new Date(lead.updatedAt).getTime();
+      if (!Number.isFinite(lastUpdate)) continue;
       const hoursInactive = (now - lastUpdate) / (1000 * 60 * 60);
       const followUpCount = lead.followUpCount || 0;
+
+      // Too old to nudge. A lead that went quiet days ago is a cold contact, not an
+      // in-progress conversation, and messaging it is "starting a new chat".
+      if (config.followUp.maxLeadAgeDays > 0 &&
+          hoursInactive > config.followUp.maxLeadAgeDays * 24) {
+        skippedStale++;
+        continue;
+      }
+
+      // Space the nudges out from OUR last one, not from the customer's last message.
+      // See config.followUp.cooldownHours — this is the guard that stops follow-up #2
+      // firing 30 minutes after #1.
+      const lastFollowUp = lead.lastFollowUp ? new Date(lead.lastFollowUp).getTime() : 0;
+      if (lastFollowUp && Number.isFinite(lastFollowUp) &&
+          (now - lastFollowUp) < config.followUp.cooldownHours * 60 * 60 * 1000) {
+        skippedCooldown++;
+        continue;
+      }
 
       if (hoursInactive >= config.followUp.inactiveHours && followUpCount < config.followUp.maxPerLead) {
         // Unsolicited messages are the first thing to give way when the account has already
@@ -55,8 +77,11 @@ class FollowUpService {
       }
     }
 
-    if (contacted > 0) {
-      console.log(`[FollowUp] Sent follow-ups to ${contacted} inactive lead(s).`);
+    if (contacted > 0 || skippedCooldown > 0 || skippedStale > 0) {
+      console.log(
+        `[FollowUp] Sent ${contacted} follow-up(s); skipped ${skippedCooldown} in cooldown, ` +
+        `${skippedStale} too old (>${config.followUp.maxLeadAgeDays}d).`
+      );
     }
   }
 

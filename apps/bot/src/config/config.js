@@ -213,7 +213,7 @@ const config = {
     // Tier 2. Everything older is still answered, just dripped out. 0 = no age limit at all
     // (handle the entire backlog however far back it goes) — no longer the default, because
     // an unprompted reply to a months-old chat reads as outreach, not as a reply.
-    maxAgeDays: parseInt(process.env.CATCHUP_MAX_AGE_DAYS || '7', 10),
+    maxAgeDays: parseInt(process.env.CATCHUP_MAX_AGE_DAYS || '2', 10),
     // Drip rate for tier 2, per hour. Lowered from 120 on 2026-09-17: 120/h is still 2,880
     // unsolicited-looking messages a day from one handset, and the live number was
     // restricted at roughly that pace. 20/h clears a 500-chat backlog in about a day.
@@ -240,6 +240,19 @@ const config = {
     enabled: process.env.FOLLOWUP_ENABLED !== 'false',
     inactiveHours: parseInt(process.env.FOLLOWUP_INACTIVE_HOURS || '3', 10),
     maxPerLead: parseInt(process.env.FOLLOWUP_MAX_PER_LEAD || '2', 10),
+    // Minimum gap between two follow-ups to the SAME person. Without this the second
+    // nudge lands on the very next 30-minute run: eligibility is measured from the
+    // customer's last message (`updatedAt`), and our own follow-up does not move it, so
+    // an already-overdue lead stays overdue the instant follow-up #1 is sent. From the
+    // customer's side that is two near-identical "still interested?" texts half an hour
+    // apart — the pattern that reads as a bot on a loop.
+    cooldownHours: parseInt(process.env.FOLLOWUP_COOLDOWN_HOURS || '24', 10),
+    // Never re-engage a lead whose last real activity is older than this. `updatedAt` from
+    // months ago is not a warm lead, and an unprompted message into a long-dead chat is
+    // outreach, not a follow-up — the same reasoning as catchup.maxAgeDays. It also matters
+    // on a freshly paired phone: without it, every stale lead in the database becomes
+    // eligible the moment the bot connects. 0 disables the guard.
+    maxLeadAgeDays: parseInt(process.env.FOLLOWUP_MAX_LEAD_AGE_DAYS || '3', 10),
     // Hard cap per 30-minute run. Without it the loop walks EVERY active lead in one pass,
     // sending near-identical templated text to all of them — the textbook bulk pattern.
     maxPerRun: parseInt(process.env.FOLLOWUP_MAX_PER_RUN || '8', 10),

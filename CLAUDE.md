@@ -52,6 +52,7 @@ npm run review         # Semi-automated conversation review — flags likely-pro
                        # abandoned mid-purchase)
 npm run migrate-mongo  # One-time migrate local JSON data → MongoDB (needs MONGODB_URI)
 npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
+npm run test-followup  # Cold-lead follow-up guards (no-loop, age, per-run caps) — stubbed, sends nothing
 npm run admin-user -- --email x@y.z --password "..."   # Create/recover an Owner login
 
 node src/test_agent.js "Do you have Barcelona jerseys?"   # single ad-hoc query
@@ -85,7 +86,7 @@ GOOGLE_SHEETS_ID=          # Optional: for lead logging
 MONGODB_URI=               # Optional: MongoDB for persistent sessions (JSON fallback used if absent)
 CATCHUP_ENABLED=true       # Missed-message catch-up (default on). false = missed customers NOT answered
 CATCHUP_FRESH_HOURS=12     # Answered immediately on reconnect; older goes to the slow drip
-CATCHUP_MAX_AGE_DAYS=0     # 0 = no age limit, the whole backlog is eventually answered
+CATCHUP_MAX_AGE_DAYS=2     # Never answer a message older than this. 0 = no age limit
 CATCHUP_DRAIN_PER_HOUR=120 # Backlog drip rate — raising this raises ban risk
 CATCHUP_ALERT_OWNER=true   # WhatsApp summary to the owner per sweep
 CATCHUP_DRY_RUN=false      # true = sweep + report only, message nobody (validate before going live)
@@ -529,8 +530,9 @@ most bannable thing an unofficial client can do:**
 | 1 (`tierRank 0`) | ≤ `CATCHUP_FRESH_HOURS` (12) | Answered immediately, normal send pace |
 | 2 (`tierRank 1`) | older | Persisted, dripped at `CATCHUP_DRAIN_PER_HOUR` (120/h ≈ 1000 chats in ~8h) |
 
-`CATCHUP_MAX_AGE_DAYS=0` (default) means **no age limit** — the entire backlog is eventually
-answered. Messages ≥24h old get a prefix telling the agent to open by apologising for the
+`CATCHUP_MAX_AGE_DAYS` caps how far back a reply will go (**2 days** since 2026-09-19 — the
+store owner's instruction was "new messages are enough", because older chats mostly concern
+orders that were already sorted out by hand; `0` restores the answer-everything behaviour). Messages ≥24h old get a prefix telling the agent to open by apologising for the
 delay, so a month-old message isn't answered as though it just arrived.
 
 **Four invariants worth not breaking:**
@@ -588,12 +590,14 @@ to months-old chats read as outreach, not as answers.
 |---|---|---|
 | `catchup.coldStartHours` — a zero watermark looks back only this far | `catchup.js sweep()` | 24h |
 | `catchup.freshMaxImmediate` — cap on the tier-1 burst; the rest join the drip | `drainFresh()` | 5 |
-| `catchup.maxAgeDays` — never answer older than this | sweep filter | 7 (was 0 = unlimited) |
+| `catchup.maxAgeDays` — never answer older than this | sweep filter | 2 (was 0 = unlimited) |
 | `catchup.drainPerHour` | drip | 20 (was 120) |
 | `whatsappWeb.maxSendsPerMinute` | `awaitSendSlot()` | 8 (was 30) |
 | `whatsappWeb.minSendGapMs` / `sendJitterMs` | `awaitSendSlot()` | 4000 / 3000 (was 1200 / 900) |
 | `whatsappWeb.maxNewChatsPerHour` — distinct chats per rolling hour | `chatBudget()` | 30 |
 | `followUp.enabled` / `maxPerRun` — kill switch + per-run cap | `followup.js` | true / 8 |
+| `followUp.cooldownHours` — minimum gap between two nudges to one person | `followup.js` | 24 |
+| `followUp.maxLeadAgeDays` — never nudge a lead quieter than this | `followup.js` | 3 |
 
 Tier-1 sends now also count against `sentThisHour`, so a burst of recent customers correctly
 slows the backlog instead of being free.
@@ -627,7 +631,31 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 
 ### Cold Lead Follow-Up
 
-`src/services/followup.js` runs a check every 30 minutes. Any active lead inactive for 3+ hours (up to 2 times) gets a personalized re-engagement message via WhatsApp. Cart contents are referenced in the message if available.
+`src/services/followup.js` runs a check every 30 minutes. Any active lead inactive for 3+ hours
+(up to 2 times, lifetime — `followUpCount` is never reset) gets a personalised re-engagement
+message via WhatsApp. Cart contents are referenced in the message if available.
+
+**Four guards decide who is eligible**, and they exist because this is the only path that
+messages someone who did not just write to us:
+
+| Guard | Default | Stops |
+|---|---|---|
+| `maxPerLead` | 2 | a third nudge to the same person, ever |
+| `cooldownHours` | 24 | nudge #2 landing 30 minutes after nudge #1 |
+| `maxLeadAgeDays` | 3 | re-engaging a chat that went quiet weeks ago |
+| `maxPerRun` + `chatBudget()` | 8 / 30 per hour | one run turning into a broadcast |
+
+⚠️ **`cooldownHours` is the one that isn't obvious** (added 2026-09-19). Eligibility is measured
+from `lead.updatedAt`, i.e. the CUSTOMER's last message, and `updateLeadFollowUp()` only writes
+`followUpCount` + `lastFollowUp` — it deliberately does not touch `updatedAt`, since that field
+means "last customer activity". So the instant nudge #1 goes out the lead is *still* overdue, and
+the next 30-minute run sent nudge #2 immediately: two near-identical "still interested?" texts
+half an hour apart, which is exactly what a customer reads as a bot stuck in a loop. The cooldown
+is measured from `lastFollowUp`, not `updatedAt`.
+
+`npm run test-followup` (`src/test_followup.js`) is the regression suite — 16 checks against a
+stubbed bot and stubbed DB, nothing sent, no network. It pins the config knobs itself so a local
+`.env` with follow-ups disabled can't turn it into a no-op that passes.
 
 ### Product Cache
 

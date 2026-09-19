@@ -242,6 +242,11 @@ to point a local machine away from production (blank `MONGODB_URI`, a throwaway 
 session, safe mode on). It overrides `.env`, so on the server it would disable the live
 database and silently stop the bot replying to real customers.
 
+⚠️ **Leave `ALLOWED_TEST_NUMBERS` empty on the server** (store owner's instruction,
+2026-09-19): they want to watch the bot handle real customers, and safe mode would silently
+drop everyone else's messages. Safe mode is for a developer's local machine, not the VPS —
+`CATCHUP_DRY_RUN` is the guard rail for a first connection, not safe mode.
+
 The ban-protection limits themselves ship with safe defaults in `config.js` and normally
 need no env entries. They are all listed in `apps/bot/.env.example` under "WhatsApp ban
 protection" if you need to tune them.
