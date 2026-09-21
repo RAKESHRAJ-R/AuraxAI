@@ -8,6 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CACHE_DIR = path.join(__dirname, '../data');
 const CACHE_FILE = path.join(CACHE_DIR, 'products_cache.json');
+// The live cache is written by `npm run sync` and is NOT tracked in git (tracking it broke
+// every deploy -- see .gitignore). This seed is tracked, so a fresh clone still has a
+// catalogue to sell from before anyone has run a sync, and on a day when the store's REST API
+// is blocked -- which it has been for weeks at a time. Only ever read, never written.
+const SEED_FILE = path.join(CACHE_DIR, 'products_cache.seed.json');
 
 class WooCommerceService {
   constructor() {
@@ -183,20 +188,33 @@ class WooCommerceService {
   }
 
   /**
-   * Read products from the local cache
+   * Read products from the local cache, falling back to the committed seed.
+   *
+   * An empty catalogue is not a harmless degradation here: search returns nothing, the browse
+   * menu has no groups, and the bot tells every customer we have nothing. So a missing live
+   * cache drops to the seed rather than to []. The warning is deliberately loud and repeated
+   * -- serving a months-old catalogue quietly would be worse than the empty one.
    */
   getLocalProducts() {
-    if (!fs.existsSync(CACHE_FILE)) {
-      console.warn(`[WooCommerce] Cache file not found at ${CACHE_FILE}. Return empty array.`);
-      return [];
+    if (fs.existsSync(CACHE_FILE)) {
+      try {
+        return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+      } catch (error) {
+        console.error('[WooCommerce] Error reading cache file:', error.message);
+      }
     }
-    try {
-      const data = fs.readFileSync(CACHE_FILE, 'utf-8');
-      return JSON.parse(data);
-    } catch (error) {
-      console.error('[WooCommerce] Error reading cache file:', error.message);
-      return [];
+    if (fs.existsSync(SEED_FILE)) {
+      try {
+        const seeded = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
+        console.warn(`[WooCommerce] ⚠️  No usable products_cache.json — serving ${seeded.length} products `
+          + 'from the committed SEED. Prices and stock may be out of date. Run `npm run sync`.');
+        return seeded;
+      } catch (error) {
+        console.error('[WooCommerce] Error reading seed cache:', error.message);
+      }
     }
+    console.error(`[WooCommerce] No product cache and no seed at ${CACHE_DIR} — the bot has nothing to sell. Run \`npm run sync\`.`);
+    return [];
   }
 
   /**

@@ -319,10 +319,67 @@ not do that, the two consoles have drifted — see "Admin Console deployment" in
 which is exactly what got the number restricted on 2026-09-17. If you genuinely must clear it,
 set `CATCHUP_COLD_START_HOURS` first and re-read §5b.
 
+### "Your local changes would be overwritten by merge"
+
+Hit on the first attempt to ship the 2026-09-22 update:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        apps/bot/src/data/products_cache.json
+Please commit your changes or stash them before you merge.
+```
+
+Six files under `apps/bot/src/data/` were tracked in git AND written by the running bot, so the
+server was permanently dirty and `git pull` refused to move. They were untracked on 2026-09-22
+(`.gitignore` explains each), which fixes it for good — but the **first** pull after that change
+still has to get past the dirty working tree, because git will not delete or overwrite a file
+the server has modified.
+
+⚠️ **Before anything else: those files are the production database on a JSON install (no
+`MONGODB_URI`).** `customers.json` is every customer who has ever messaged; `tickets.json` is
+the open support queue. **Never `git checkout` this directory, and never `git reset --hard`,
+without copying it somewhere first.** That is the one irreversible mistake available here.
+
+Run this once, on the server, to get unstuck:
+
+```bash
+cd /root/AuraxAI                      # or wherever `pm2 describe aurax-ai` says
+
+# 1. Back up the data directory. It is small, and it is the only copy.
+BK=/root/aurax-data-$(date +%F-%H%M) && mkdir -p "$BK" && cp apps/bot/src/data/*.json "$BK"/ && ls "$BK"
+
+# 2. Now it is safe to let git move.
+git checkout -- apps/bot/src/data/
+git pull origin development
+
+# 3. Put the real data back. These paths are untracked from now on, so this sticks.
+for f in customers tickets knowledge_sources knowledge_chunks retry_queue; do
+  [ -f "$BK/$f.json" ] && cp "$BK/$f.json" apps/bot/src/data/
+done
+
+# 4. Rebuild the catalogue from WooCommerce.
+cd apps/bot && npm run check-woo && npm run sync
+```
+
+Step 4 is not optional: `products_cache.json` is untracked now, so after step 2 the bot is
+serving `products_cache.seed.json` — the committed fallback — and it will say so loudly on every
+boot:
+
+```
+[WooCommerce] ⚠️  No usable products_cache.json — serving 136 products from the committed SEED.
+```
+
+If `npm run sync` fails (the store's REST API has been blocked for weeks at a time before — see
+CLAUDE.md), the seed keeps the bot selling rather than leaving it with an empty catalogue, and
+that warning is how you know to come back to it.
+
+**Every later pull is just `git pull origin development`.** If one ever refuses again, the file
+it names is something new that is both tracked and written at runtime — add it to `.gitignore`
+and `git rm --cached` it rather than stashing around it every deploy.
 ### Update of 2026-09-22 — Tanglish + machine-output leakage
 
 Bot-only: no new dependencies, no new env vars, no `apps/admin` changes. So `git pull` and
-`pm2 restart` is the whole deploy — `npm ci` is not needed (the only `package.json` change is
+`pm2 restart` is the whole deploy (the FIRST pull needs the recovery above) — `npm ci` is not needed (the only `package.json` change is
 the new `test-tanglish` script and the removal of a dead duplicate `test-search` key).
 
 One thing IS worth doing on the box: the new "which teams do you have?" answer AND the
