@@ -251,6 +251,96 @@ The ban-protection limits themselves ship with safe defaults in `config.js` and 
 need no env entries. They are all listed in `apps/bot/.env.example` under "WhatsApp ban
 protection" if you need to tune them.
 
+## 5c. Shipping an update to a server that is already running
+
+§5 is first-time provisioning. This is the loop you actually run afterwards.
+
+**Find out what you are updating first.** The install has moved at least once — DEPLOY.md
+provisions `/opt/theaurax` under a `theaurax` user and a systemd unit, while the box has also
+been seen running from `/root/AuraxAI` under pm2. Ask the server, don't assume:
+
+```bash
+pm2 describe aurax-ai | grep -E 'script path|cwd|exec cwd'   # pm2 install
+systemctl show theaurax -p WorkingDirectory                  # systemd install
+```
+
+Then, from that directory:
+
+```bash
+cd <that path>
+git status                       # MUST be clean; a hand-edit on the box will block the pull
+git fetch origin
+git log --oneline HEAD..origin/development   # what you are about to ship
+git pull origin development
+```
+
+⚠️ **Check the branch.** `origin/main` runs well behind `origin/development` (23 commits as of
+2026-09-22). Pull whichever branch that server actually tracks — `git rev-parse --abbrev-ref
+--symbolic-full-name @{u}` says which — and don't switch it as part of a hotfix.
+
+Then only what the diff actually requires:
+
+```bash
+cd apps/bot
+npm ci --omit=dev        # ONLY if package.json dependencies changed. Scripts-only? Skip it.
+npm run check-woo        # credentials still work? exits 1 if nothing can read AND order
+npm run sync             # only if the catalogue changed, or products_cache.json is stale
+```
+
+Restart and watch it come up:
+
+```bash
+pm2 restart aurax-ai && pm2 logs aurax-ai --lines 60
+#   ... or: systemctl restart theaurax && journalctl -u theaurax -f
+```
+
+Three lines in that output are the ones that matter:
+
+```
+[WooCommerce] Ordering health: OK (app-password).      <- checkout works; if DOWN, see §WooCommerce
+[Catch-up] ...                                          <- re-read §5b before pointing at a live number
+[AI Service] Loaded N ... key(s)                        <- providers came up
+```
+
+**Run the suites on the box, not just locally.** They are stubbed — no network, no LLM spend,
+nothing sent, nothing ordered — so they are safe on production and they catch a half-applied
+pull that `node --check` cannot:
+
+```bash
+npm run test-order-flow && npm run test-search && npm run test-tanglish && npm run test-followup
+```
+
+⚠️ **`apps/admin` is NOT updated by any of the above.** Vercel rebuilds itself on push; the
+Express fallback at `/admin` only changes when someone runs `npm run build-admin` from the repo
+root and commits `apps/admin/dist-express`. If the update touched `apps/admin/src` and you did
+not do that, the two consoles have drifted — see "Admin Console deployment" in CLAUDE.md.
+
+⚠️ **Never `rm -rf .wwebjs_auth/` as part of a deploy.** It resets the catch-up watermark to 0,
+which is exactly what got the number restricted on 2026-09-17. If you genuinely must clear it,
+set `CATCHUP_COLD_START_HOURS` first and re-read §5b.
+
+### Update of 2026-09-22 — Tanglish + machine-output leakage
+
+Bot-only: no new dependencies, no new env vars, no `apps/admin` changes. So `git pull` and
+`pm2 restart` is the whole deploy — `npm ci` is not needed (the only `package.json` change is
+the new `test-tanglish` script and the removal of a dead duplicate `test-search` key).
+
+One thing IS worth doing on the box: the new "which teams do you have?" answer is read live from
+`apps/bot/src/data/products_cache.json`, so a stale cache means a stale team list shown to real
+customers. Run `npm run check-woo` and then `npm run sync` before restarting, and sanity-check
+the result:
+
+```bash
+node -e "import('./src/services/woocommerce.js').then(m=>console.log(m.default.listTeams().join(', ')))"
+```
+
+After the restart, these lines are new and are the ones to grep for. All three mean a guard
+caught something on its way to a customer — occasional is healthy, constant is a regression:
+
+```bash
+pm2 logs aurax-ai --lines 200 | grep -E 'Egress sanitiser|Machine output leaked|Tanglish quality'
+```
+
 ## 6. systemd service
 
 `/etc/systemd/system/theaurax.service`:
