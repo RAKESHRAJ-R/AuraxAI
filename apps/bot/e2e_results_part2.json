@@ -1,0 +1,27 @@
+[
+  {
+    "feature": "Sarvam Tanglish provider (/no_think)",
+    "pass": false,
+    "detail": "2507ms | tokens=242 | reply: "
+  },
+  {
+    "feature": "answerQuery English product search",
+    "pass": true,
+    "detail": "intent=agent_handled | products=10 | reply: This one's a favorite! 🏆\n1. *REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS* — ₹490 [XXL-44, S-36, M-38, L-40, XL-42]\nhttps://theaurax.in/product/real-madrid-11-12-home-full-sleeve-ronaldo/\n2. *REAL MADRID 25-26 THIRD FULL SLEEVE JERSEY — MBAPPE* — ₹470 [XXL-44, S-36, M-38, L-40, XL-42]\nhttps:…"
+  },
+  {
+    "feature": "answerQuery Tanglish routing",
+    "pass": true,
+    "detail": "intent=agent_handled | provider=sarvam | reply: Semma choice bro! 😍\n1. *REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS* — ₹490 [XXL-44, S-36, M-38, L-40, XL-42]\nhttps://theaurax.in/product/real-madrid-11-12-home-full-sleeve-ronaldo/\n2. *REAL MADRID 25-26 THIRD FULL SLEEVE JERSEY — MBAPPE* — ₹470 [XXL-44, S-36, M-38, L-40, XL-42]\nhttps://the…"
+  },
+  {
+    "feature": "Knowledge Hub short-circuit in answerQuery (zero LLM)",
+    "pass": true,
+    "detail": "intent=knowledge | reply: All Theaurax jerseys carry a 7-day replacement guarantee for manufacturing defects."
+  },
+  {
+    "feature": "Full purchase funnel (search→size→qty→address→confirm)",
+    "pass": true,
+    "detail": "\"I want to buy the Arsenal Home 26/27 jersey\"\n    [IDLE->IDLE] cart=0 intent=agent_handled\n    reply: Yes, we have it! 🔥 *ARSENAL 2003-04 AWAY — BERGKAMP 5-SLV* — ₹450 [XXL-46, S-38, M-40, L-42, XL-44]\nhttps://theaurax.in/product/arsenal-2003-04-away-bergkamp/\n\nWhich size and how …\n\n\"size XXL\"\n    [IDLE->COLLECTING_ADDRESS] cart=1 intent=deterministic_cart\n    reply: Done! 🛒 Added *ARSENAL 2003-04 AWAY — BERGKAMP 5-SLV* — Size XXL, Qty 1 to your cart! Now share your shipping details — Name, Address, Pincode, Mobile number.\n\n\"2 pieces\"\n    [COLLECTING_ADDRESS->COLLECTING_ADDRESS] cart=1 intent=agent_handled\n    reply: {\"productId\":71920,\"name\":\"ARSENAL 2003-04 AWAY — BERGKAMP 5-SLV\",\"price\":450,\"size\":\"XXL\",\"qty\":2}\n\n\"My address is: Alice Smith, Flat 401, Sapphire Heights, Mumbai 400053, Ph: 9819928374\"\n    [COLLECTING_ADDRESS->CONFIRMING_ORDER] cart=1 intent=agent_handled\n    reply: Here's your order summary:\n• *ARSENAL 2003-04 AWAY — BERGKAMP 5-SLV* — XXL size, 1 qty — ₹450\nTotal: ₹450\n\nReply \"YES\" to confirm! 🎉\n\n\"YES\"\n    [CONFIRMING_ORDER->IDLE] cart=0 intent=deterministic_confirm\n    reply: Awesome! 🎉 Your order is confirmed! Our team will reach out shortly to confirm payment. Thanks for shopping with Theaurax! ⚽🔥\n\n📄 *Proforma Invoice*: http://localhost:3000/invoic…"
+  }
+]
