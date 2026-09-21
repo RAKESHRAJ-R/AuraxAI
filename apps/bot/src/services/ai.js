@@ -187,6 +187,227 @@ class AIService {
     return tanglishWords.test(text) ? 'tanglish' : 'english';
   }
 
+  /* ────────────────────────────────────────────────────────────────────────────
+   * OUTGOING-MESSAGE HYGIENE (added 2026-09-22)
+   *
+   * A live Tanglish chat on 2026-09-21 put two pieces of machine output in front of a real
+   * customer, inside otherwise normal sentences:
+   *     "best options kaanpida*ven*! 🔥"          <- markdown emphasis wedged mid-word
+   *     "3 jersey ready p\"{ Oru pechu sollu"     <- a raw JSON/escape fragment
+   * Neither was caught. The stripping that existed ran ONLY inside the agentic loop's
+   * free-text branch, and only matched leaks that were a whole, well-formed tool call —
+   * an escape fragment in the middle of a sentence sailed straight through, and nothing
+   * anywhere looked at asterisks.
+   *
+   * So cleaning is now a property of the exit, not of one branch: every reply the bot
+   * produces — deterministic template, FAQ, knowledge hit, LLM narration, error path —
+   * passes through sanitizeOutgoing() exactly once, at the single egress in answerQuery().
+   * A path added later is covered automatically rather than needing to remember.
+   *
+   * Two distinct jobs, deliberately kept apart:
+   *   looksCorrupted()  — structural machine output (braces, backslashes, tool names,
+   *                       chat-template tags, JSON keys). Unambiguous, so it is worth
+   *                       spending one regeneration on inside the loop.
+   *   sanitizeOutgoing() — repairs and strips. Never asks a model for anything, so it is
+   *                       free and cannot itself fail. It is the guarantee; the
+   *                       regeneration above is only an attempt at a better answer.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  // Kept as one source of truth so the sanitizer and the detector cannot drift from
+  // getTools(). test_tanglish.js asserts this list still covers every registered tool.
+  toolNames() {
+    return [
+      'search_products', 'update_cart', 'set_shipping_address', 'confirm_order',
+      'escalate_to_human', 'lookup_order', 'create_support_ticket',
+    ];
+  }
+
+  /**
+   * Does this text still read as machine output rather than as a message from a shop?
+   *
+   * Structural signals only. Braces and backslashes are the load-bearing ones: no jersey,
+   * price, size, URL or Tanglish sentence has ever legitimately contained `{`, `}` or `\`,
+   * so their presence is proof of a leak no matter how well-formed the rest of the reply
+   * looks. That is exactly the case the old whole-message JSON test missed.
+   */
+  looksCorrupted(text) {
+    const t = String(text || '');
+    if (!t.trim()) return true;
+    if (/[{}\\]/.test(t)) return true;
+    if (/<\/?(?:function|tool_call|tool|think|reasoning|scratchpad)\b/i.test(t)) return true;
+    if (/<\|[^|>]*\|>/.test(t)) return true;
+    if (/\[\/?(?:INST|SYS|TOOL_CALL|TOOL_RESULT)\]/i.test(t)) return true;
+    if (/"(?:function|name|type|arguments|parameters|query|productId|tool_calls)"\s*:/i.test(t)) return true;
+    if (new RegExp(`\\b(?:${this.toolNames().join('|')})\\b`).test(t)) return true;
+    return false;
+  }
+
+  /**
+   * Strip every known leak shape and repair broken markdown. Returns '' when nothing
+   * usable survives, which the caller turns into an honest apology rather than sending
+   * whitespace. Pure string work: no network, no model, cannot throw on odd input.
+   */
+  sanitizeOutgoing(text) {
+    let t = String(text == null ? '' : text);
+    const tools = this.toolNames().join('|');
+
+    // 1. Reasoning traces and chat-template scaffolding. The unclosed variants matter more
+    //    than the closed ones — a reply truncated at max_tokens mid-<think> has no closer.
+    t = t.replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+    t = t.replace(/<(?:think|reasoning|scratchpad)\b[^>]*>[\s\S]*/gi, ' ');
+    t = t.replace(/<\|[^|>]*\|>/g, ' ');
+    t = t.replace(/\[\/?(?:INST|SYS|TOOL_CALL|TOOL_RESULT)\]/gi, ' ');
+
+    // 2. Tool-call leaks, most specific shape first so a well-formed call is removed whole
+    //    rather than being shredded into orphan punctuation by the broader rules below.
+    t = t.replace(/<function[^>]*>[\s\S]*?<\/function>/gi, ' ');
+    t = t.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, ' ');
+    t = t.replace(/<\/?(?:function|tool_call|tool)\b[^>]*>?/gi, ' ');
+    t = t.replace(/\{\s*"(?:type|name|function|tool|arguments|parameters)"[\s\S]*?\}\s*\}?/gi, ' ');
+    t = t.replace(new RegExp(`\\b(?:${tools})\\s*\\(?\\s*\\{[\\s\\S]*?\\}\\s*\\)?`, 'gi'), ' ');
+    t = t.replace(new RegExp(`\\b(?:${tools})\\b`, 'gi'), ' ');
+    //    A quoted JSON key outlives its own braces once the rules above have taken them
+    //    away, leaving `"tool_calls": [ ]` sitting in the sentence with nothing corrupt
+    //    left for the brace rule below to catch.
+    t = t.replace(/"(?:function|name|type|arguments|parameters|query|productId|tool_calls|role|content)"\s*:\s*(?:\[\s*\]|"[^"]*"|[\w.\-]+)?/gi, ' ');
+
+    // 3. Whatever fragment is left. A single word carrying a brace or a backslash is
+    //    removed ENTIRELY, not character by character: "p\"{" cleaned character-wise
+    //    leaves a stray "p" sitting in the sentence, which reads as a typo the customer
+    //    will ask about. Whole-token removal is the only version that reads cleanly.
+    t = t.replace(/\S*[{}\\]\S*/g, ' ');
+    //    An empty bracket pair is debris too. A populated one is a size list — "[S, M, L]"
+    //    appears in every product reply the bot sends — so only the empty pair goes.
+    t = t.replace(/\[\s*\]/g, ' ');
+
+    // 4. Control and zero-width characters — invisible in a terminal, visible as boxes on
+    //    a phone. Must precede the emphasis pass, which uses U+0001/U+0002 as sentinels.
+    t = t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+    t = t.replace(/[​-‍﻿]/g, '');
+
+    // 5. Markdown emphasis.
+    t = this.repairEmphasis(t);
+
+    // 6. Tidy up after the removals: orphaned punctuation, doubled spaces, blank lines.
+    t = t.replace(/[ \t]+/g, ' ');
+    t = t.replace(/ *\n */g, '\n');
+    t = t.replace(/\s+([,.!?;:])/g, '$1');
+    t = t.replace(/([,;:])\s*(?=[,.!?;:])/g, '');
+    t = t.replace(/\n{3,}/g, '\n\n');
+    t = t.trim();
+
+    // Nothing but punctuation left means the reply WAS the leak. Say so upstream.
+    if (!t || /^[\s\p{P}\p{S}]+$/u.test(t)) return '';
+    return t;
+  }
+
+  /**
+   * WhatsApp renders *bold* and _italic_ only when the marker sits at a word boundary.
+   * An asterisk wedged between two letters is therefore never formatting — it is token
+   * corruption, and the phone prints it literally ("kaanpida*ven*"). Remove those, then
+   * keep only balanced single-line pairs so a half-emitted bold marker can't leak either.
+   */
+  repairEmphasis(text) {
+    let t = String(text || '').replace(/(?<=[\p{L}\p{N}])\*(?=[\p{L}\p{N}])/gu, '');
+    // Mark the survivors that really are a pair, drop every orphan, then restore.
+    t = t.replace(/\*([^*\n]+)\*/g, '\u0001$1\u0002').replace(/\*/g, '');
+    return t.replace(/\u0001/g, '*').replace(/\u0002/g, '*');
+  }
+
+  /**
+   * "Here's what we stock — which one?", built from the catalogue.
+   *
+   * Three paths need exactly this reply and they must not drift apart: the deterministic
+   * "which teams do you have?" answer, a 'broad' search that matched nothing because the
+   * customer has not named a team yet, and the recovery when the model offers teams we do
+   * not carry. Returns null when the cache is empty, so callers can fall through.
+   */
+  teamListReply(language, session = null, limit = 12) {
+    const teams = woocommerceService.listTeams(limit);
+    if (teams.length === 0) return null;
+    const list = teams.map(t => `• ${t}`).join('\n');
+    const full = language === 'tanglish'
+      ? `Idhellaam ippo stock la iruku bro 👇\n\n${list}\n\nEnna team venum? Team peru sollunga, naan price-um size-um kaatturen! ⚽`
+      : `Here's what we've got in stock right now 👇\n\n${list}\n\nWhich team would you like? Tell me the name and I'll show you prices and sizes! ⚽`;
+
+    // Printing the identical twelve-line list twice in a row is exactly what a stuck bot
+    // looks like — the same thing the follow-up cooldown was added to stop on 2026-09-19.
+    // The customer can still see the first one, so point at it instead of repeating it.
+    // Compared against the full generated string, so this can only ever match our own list.
+    const lastAssistant = [...(session?.history || [])].reverse().find(m => m.role === 'assistant');
+    if (lastAssistant && lastAssistant.content === full) {
+      return language === 'tanglish'
+        ? `Mela iruka list la irundhu oru team peru sollunga bro — example: "Real Madrid" — naan price-um size-um udane kaatturen! ⚽`
+        : `Just pick one from the list above — for example "Real Madrid" — and I'll send you the prices and sizes right away! ⚽`;
+    }
+    return full;
+  }
+
+  // Said only when sanitizeOutgoing() found nothing worth sending. Deliberately asks the
+  // customer to restate rather than guessing: we know the model's last output was broken,
+  // so anything we invented on top of it would be a guess about a guess.
+  brokenReplyFallback(language) {
+    return language === 'tanglish'
+      ? 'Aiyo sorry bro 🙏 adhu sariya varala. Enna jersey venum nu innoru vaati sollunga — team illa player peru sollunga, naan udane kaatturen!'
+      : "Sorry about that! 🙏 Could you tell me again what you're looking for — the team or player name? I'll pull it up right away.";
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────────
+   * TANGLISH QUALITY
+   *
+   * The client's report on 2026-09-21 was "mistakes even in the language (tanglish)", and
+   * the chat behind it shows what kind: not a wrong language, but invented Tamil word-forms
+   * that mean nothing to a Tamil speaker — "Which team or player theekana jersey venum",
+   * "Chuuda, endha team venum", "Oru team pechu sollu", "best options kaanpidaven".
+   * Every one is a real Tamil-ish shape assembled out of nothing, which is what a model
+   * does when it is sampling freely in a language it only half knows.
+   *
+   * Three defences, in order of how much they are worth:
+   *   1. Do not let the model write free Tanglish when a template will do (already true for
+   *      product listings — those replies in the screenshot were the good ones).
+   *   2. Lower the sampling temperature for Tanglish (see callLLMWithRetry).
+   *   3. Give it a closed phrasebook in the prompt and the rule "if you are not sure a Tamil
+   *      word is real, use the English word" — a Tanglish speaker mixing in English reads
+   *      completely normal; invented Tamil does not.
+   * This detector is the backstop for the cases that still get through: it names the
+   * specific broken forms seen in production so a regeneration can be asked for once, and
+   * so test_tanglish.js fails if any of them ever reaches a reply again.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  // Word-forms observed being invented by the model, with what a Chennai seller would
+  // actually type. Only entries confirmed meaningless/wrong go in here — this list drives
+  // a regeneration, so a false positive costs a real LLM call.
+  tanglishBadForms() {
+    return [
+      { bad: /\btheekana\b/i,            note: 'not a word' },
+      { bad: /\bchuuda\b/i,              note: 'not a word' },
+      { bad: /\bkaanpida(?:ven|vaen|ven)\b/i, note: 'invented verb form; "kaatturen" is the real one' },
+      { bad: /\bpechu\s+sollu\b/i,       note: 'meaningless here; "team peru sollunga"' },
+      { bad: /\buthavuven\b/i,           note: 'Google-Translate Tamil, not spoken' },
+      { bad: /\bungalukku\s+naan\b/i,    note: 'Google-Translate Tamil, not spoken' },
+      { bad: /\bthangaludaya\b/i,        note: 'formal written Tamil, never used in chat' },
+      { bad: /\bnandri\b/i,              note: 'written Tamil; a seller types "thanks bro"' },
+    ];
+  }
+
+  /**
+   * Problems with a Tanglish reply that are worth one regeneration. Returns [] for English
+   * sessions — none of this applies there, and running it would be pure cost.
+   */
+  tanglishProblems(text, language) {
+    if (language !== 'tanglish') return [];
+    const t = String(text || '');
+    if (!t.trim()) return [];
+    const problems = [];
+    // Tamil script in a reply that is contractually Roman-script Tanglish.
+    if (/[஀-௿]/.test(t)) problems.push('Tamil script was used instead of Roman letters');
+    for (const { bad, note } of this.tanglishBadForms()) {
+      const hit = t.match(bad);
+      if (hit) problems.push(`"${hit[0]}" is not real Tamil (${note})`);
+    }
+    return problems;
+  }
+
   generateSystemPrompt(session) {
     const isTanglish = session.language === 'tanglish';
 
@@ -208,6 +429,15 @@ class AIService {
     // arguments-as-text is a valid reply shape — which is very likely the source of the raw
     // JSON reply seen in the 2026-07-26 funnel test (identical field order).
     // Describe tool use ABSTRACTLY here. Never show the wire format, right or wrong.
+    //
+    // The same reasoning governs the MESSAGE FORMAT block below, added 2026-09-22 after a
+    // customer was sent a raw escape fragment and a mid-word markdown marker: it says what a
+    // customer-facing message IS, and never prints an example of the broken output it is
+    // trying to prevent. The Tanglish banned-word list a few lines further down is the one
+    // deliberate exception — those are ordinary vocabulary, not a token sequence the
+    // constrained decoder can be primed into emitting, and naming them is the only way to
+    // rule out those specific invented words. Even so, the real guarantee is not the prompt:
+    // sanitizeOutgoing() removes leaks from every reply regardless of what the model does.
     // 30% is still far too high for Groq to be the primary provider — see the provider
     // ordering note in getFallbackEntries(). Re-measure before promoting Groq.
     const workedExamples = isTanglish
@@ -342,6 +572,7 @@ NEVER INVENT PRODUCTS (CRITICAL — ZERO TOLERANCE):
 - NEVER make up a product, a price, a size, or a theaurax.in/product/... link from your own knowledge (e.g. "PSG Home 2022", "CR7 Home 2022", "Manchester United 2023"). If it isn't in a tool result, it does not exist for you.
 - To suggest ANY product — including when the customer says "any other options?", "vera ethuvum iruka?", "show me more" — you MUST call 'search_products' again first (for "any other", search the SAME team/player they were just asking about, e.g. still "ronaldo"), then reply ONLY with what the tool returns.
 - If 'search_products' returns nothing, say so honestly and ask them to name a specific team or player — e.g. "Sorry bro, adhu ippo stock la illa. Vera enna team venum? Real Madrid, Barcelona, Chelsea?" — do NOT paper over it with invented items.
+- The same rule applies to TEAMS, not just products. When you name teams to help the customer choose, name only teams this store actually carries — Real Madrid, FC Barcelona, AC Milan, Manchester United, Chelsea, Liverpool, Arsenal, Manchester City, Bayern Munich, Juventus, Germany, Argentina, Brazil, Portugal and the IPL sides. Never send someone off to ask for a club we do not stock.
 - Kids jerseys are only offered when the customer explicitly asks for kids/child sizes. Never push a (KIDS) product to someone asking for a normal/adult jersey.
 - SEARCH BEFORE YOU ASK. Never reply "could you be more specific?" / "which team?" to a jersey question before calling 'search_products' with the customer's own words. Search first, then ask a narrowing question only if the result is genuinely empty.
 - The tool result tells you how good the match is. 'exact' means these really are what they asked for — hype them up. 'partial' means a detail could NOT be matched (the 'unmatched' list — e.g. a season or Player Version): say plainly and in ONE short sentence that it is unavailable, THEN show the alternatives. 'none' means we found nothing: say so honestly and ask which team or player they want. NEVER present a partial or no-match result as though it were what the customer asked for.
@@ -397,11 +628,33 @@ TANGLISH STYLE (chat like a real, friendly Chennai/Tamil Nadu store owner on Wha
 - Keep product names, sizes (S/M/L/XL), prices, and terms like "delivery", "payment link", "stock", "size chart" in plain English. Mix them in naturally.
 - Use REAL spoken chat phrases — never word-for-word translate English idioms into Tamil.
 
+TANGLISH — THE ONE RULE THAT MATTERS MOST:
+- If you are not 100% certain a Tamil word is REAL and SPELLED THE WAY TAMIL PEOPLE TYPE IT, use the plain English word instead. A Tamil speaker reading "Enna size venum bro?" thinks nothing of it. A Tamil speaker reading an invented word like "theekana" or "kaanpidaven" immediately knows they are talking to a machine.
+- NEVER invent a Tamil-looking word by joining syllables together. Every Tamil word you type must be one you have actually seen used in a real Tamil WhatsApp chat.
+- Mixing MORE English is always safe. Inventing Tamil is never safe.
+
+TANGLISH WORDS YOU MAY USE (this is the safe list — prefer these, and use English for anything else):
+- Asking: enna ("what"), edhu / ethu ("which"), evlo ("how much / how many"), eppo ("when"), yaaru ("who"), eppadi ("how")
+- Having: iruku / irukku ("we have"), illa ("we don't have / no"), kedaikum ("is available"), stock la iruku
+- Wanting: venum ("want"), vendaam ("don't want"), pidikutha ("do you like it")
+- Doing: pannunga ("please do"), sollunga ("please tell"), paarunga ("please look"), anuppunga ("please send"), kaatturen ("I'll show you"), anuppuren ("I'll send"), potten ("I've added"), aayiduchi ("it's done"), mudichiduven ("I'll finish it")
+- Agreeing: seri ("ok"), sari ("ok"), kandippa ("definitely"), nichayama ("definitely"), okay bro
+- Reacting: semma ("awesome"), vera level ("next level"), super, nalla iruku ("looks good"), aiyo ("oh no"), sorry bro
+- Address words: bro, ji, anna, boss, machan
+- Joiners: aana ("but"), appuram ("then"), ippo ("now"), konjam ("a little"), romba ("very"), kooda ("also"), dhaan ("only/just"), naa ("if")
+
 TANGLISH — STRICTLY NEVER DO THIS (these make you sound like a robot, not a human seller):
 - NEVER use pure Tamil script (e.g. வணக்கம் / நன்றி). ALWAYS Roman letters (Vanakkam, Nandri).
 - NEVER sound like Google Translate. WRONG: "Ungalukku naan eppadi uthavuven?" → RIGHT: "Enna jersey venum bro? Solliyae!"
+- NEVER write these — they are not Tamil words, they are machine noise: "theekana", "Chuuda", "pechu sollu", "kaanpidaven", "uthavuven", "thangaludaya".
 - NEVER repeat the customer's full question back to them. Answer directly.
-- NEVER spam emojis — 1 or 2 relevant ones per message, maximum.` : ''}
+- NEVER spam emojis — 1 or 2 relevant ones per message, maximum.
+- If the customer says they cannot understand you ("purila", "puriyala", "enna sollura", "what are you saying"), do NOT repeat yourself and do NOT add more Tamil. Apologise in one short line and say the SAME thing again in mostly plain English, with a concrete next step.` : ''}
+
+MESSAGE FORMAT (CRITICAL — this text is sent to a phone exactly as you write it):
+- Write ONLY the message the customer should read: ordinary sentences, product names, prices, sizes and links. If a part of your reply is not something a shop assistant would type to a customer, it does not belong in the message at all.
+- Never include punctuation or symbols that belong to code or data rather than to a sentence. A customer messaging a jersey shop must not see one character of machine output.
+- WhatsApp understands *bold* and _italic_ only. Open the marker immediately before the first letter of a complete word or product name and close it immediately after the last letter, and never leave one open. Anywhere else, use no formatting at all — a plain sentence always looks right.
 
 TOOL FORMAT (CRITICAL — ZERO TOLERANCE):
 - When calling a tool, that turn contains ONLY the tool call. No text before, no text after.
@@ -544,6 +797,11 @@ ${sessionContext}`;
    */
   _searchResultMessage(found, searchQuery) {
     if (found.matchQuality === 'exact') return 'Found products. These genuinely match what the customer asked for.';
+    if (found.matchQuality === 'broad') {
+      return 'NOT A MATCH — the customer has not named a team or player yet, so there is nothing to match on. '
+        + 'Do NOT present any product as what they asked for and do NOT claim to have found something. '
+        + 'Tell them what we stock and ask which team they want.';
+    }
     if (found.matchQuality === 'partial') {
       return `PARTIAL MATCH. We do NOT have: ${found.unmatched.join(', ')}. `
         + `The products listed are the closest alternatives we DO stock. Say plainly and briefly that `
@@ -752,7 +1010,16 @@ ${sessionContext}`;
           // qwenMaxTokens is sized dynamically against the actual prompt for this call
           // (see above) so it can't itself tip the request over the 8000 TPM ceiling.
           max_tokens: isQwenReasoning ? qwenMaxTokens : isFireworks ? 1500 : 800,
-          temperature: attempt <= 2 ? 0.7 : 0.2,
+          // Tanglish samples COLDER than English, and that is the single cheapest fix for
+          // the 2026-09-21 language complaint. Romanised Tamil has no orthographic standard
+          // for a model to anchor on, so at 0.7 it happily samples a plausible-looking
+          // word-shape that no Tamil speaker has ever used — "theekana", "Chuuda",
+          // "kaanpidaven" all came out of one four-message conversation. English at 0.7 has
+          // no equivalent failure because the model actually knows which strings are words.
+          // Nothing is lost by cooling it: the hype and the product formatting are produced
+          // by deterministic templates (see "Deterministic Fast Paths"), so the LLM's free
+          // text only needs to be correct, not inventive.
+          temperature: language === 'tanglish' ? (attempt <= 2 ? 0.3 : 0.15) : (attempt <= 2 ? 0.7 : 0.2),
           ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {})
         }), provider, keyIndex);
       } catch (err) {
@@ -1741,7 +2008,44 @@ ${sessionContext}`;
     }
   }
 
+  /**
+   * THE single egress for everything this bot says to a customer.
+   *
+   * All the work happens in _answerQueryImpl(); this wrapper exists only so that the last
+   * thing to touch a reply is always the sanitiser, on every path — deterministic template,
+   * FAQ, knowledge hit, LLM narration, quota fallback, order-failure apology, and anything
+   * added later. Before 2026-09-22 cleaning lived inside one branch of the agentic loop, so
+   * it covered exactly the path it was written for and nothing else, and a raw escape
+   * fragment reached a real customer mid-sentence.
+   *
+   * Making this a wrapper rather than a line at each `return` is deliberate: _answerQueryImpl
+   * has eleven of them, and the twelfth someone adds next month is covered for free.
+   */
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
+    const result = await this._answerQueryImpl(senderId, userQuery, customerName, customerPhone, options);
+    if (!result || typeof result.replyText !== 'string') return result;
+
+    const cleaned = this.sanitizeOutgoing(result.replyText);
+    if (cleaned && cleaned !== result.replyText) {
+      console.warn(`[AI Service] Egress sanitiser cleaned a ${result.intent} reply before sending:`,
+        result.replyText.slice(0, 160));
+    }
+    if (cleaned) {
+      result.replyText = cleaned;
+      return result;
+    }
+
+    // Nothing survived, so the reply WAS the leak. The session is only read here, on a path
+    // that should essentially never run, to get the apology into the right language — doing
+    // it unconditionally would add a database read to every single message.
+    console.error('[AI Service] Reply was entirely machine output — replaced with an apology:',
+      result.replyText.slice(0, 200));
+    const session = await dbService.getSession(senderId).catch(() => null);
+    result.replyText = this.brokenReplyFallback(session?.language || 'english');
+    return result;
+  }
+
+  async _answerQueryImpl(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
     const session = await dbService.getSession(senderId);
     if (customerName && customerName !== 'Customer') session.customerName = customerName;
     if (customerPhone) session.customerPhone = customerPhone;
@@ -1870,6 +2174,47 @@ ${sessionContext}`;
         return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
       }
 
+
+      // --- Deterministic "which teams do you have?" answer (added 2026-09-22) ---
+      // "Enna enna team la iruke?" has no search term in it, so search_products returns
+      // nothing and there is no tool that answers it. Left to the LLM, the 2026-09-21 chat
+      // shows what happens: it answered the question with another question three times in a
+      // row, and padded it with a list off the top of its head — Mbappe, Haaland, CSK,
+      // Mumbai Indians, Rajasthan Royals — none of which is in the catalogue at all. That
+      // breaks the NEVER INVENT PRODUCTS rule and strands the customer.
+      //
+      // The catalogue knows the answer exactly, so nothing is gained by asking a model:
+      // listTeams() reads it straight from the in-stock products cache.
+      if (woocommerceService.asksWhichTeams(userQuery)) {
+        const reply = this.teamListReply(session.language, session);
+        if (reply) {
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: reply });
+          await dbService.saveSession(senderId, session);
+          return { replyText: reply, intent: 'deterministic_teams', requiresEscalation: false, suggestedProductIds: [] };
+        }
+      }
+
+      // --- Deterministic "I can't understand you" recovery (added 2026-09-22) ---
+      // "Enna bro pesuradhe purila" ("I don't get what you're saying") is the clearest
+      // possible signal that the previous reply's Tanglish did not land — and in the
+      // 2026-09-21 chat the model answered it with MORE of the same invented Tamil
+      // ("Oru team pechu sollu"), which is the worst available move.
+      //
+      // Handled in code because the recovery must not be generated by the thing that just
+      // failed: apologise once, then say it again in mostly plain English with the actual
+      // catalogue in front of them, so the next turn has something concrete to reply to.
+      if (/\b(purila|puriyala|puriyalai|puriyathu|puriyavillai|puriyala\s*bro|enna\s+sollur[ae]|enna\s+solringa|what\s+are\s+you\s+saying|makes?\s+no\s+sense|didn'?t\s+understand|don'?t\s+understand|not\s+clear)\b/i.test(userQuery)) {
+        const teams = woocommerceService.listTeams(8);
+        const list = teams.length > 0 ? `\n\n${teams.map(t => `• ${t}`).join('\n')}\n` : ' ';
+        const reply = session.language === 'tanglish'
+          ? `Sorry bro 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
+          : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`;
+        session.history.push({ role: 'user', content: userQuery });
+        session.history.push({ role: 'assistant', content: reply });
+        await dbService.saveSession(senderId, session);
+        return { replyText: reply, intent: 'deterministic_clarify', requiresEscalation: false, suggestedProductIds: [] };
+      }
       // Skip the canned FAQ fast-path for real order-tracking lookups and complaints so
       // they reach the LLM support agent (which can call lookup_order / create_support_ticket)
       // instead of being intercepted by a generic policy blurb. A bare "how do I track?"
@@ -2108,6 +2453,28 @@ ${sessionContext}`;
               if (shown.length >= 1 && responseMessage.tool_calls.length === 1) {
                 const top = shown.slice(0, 3);
                 const isTanglish = session.language === 'tanglish';
+
+                // 'broad' means the customer has not named anything to search on yet, so
+                // there is nothing to list -- the blocker is the missing team, not the
+                // product. Answer it the same way the deterministic "which teams?" path
+                // does: from the catalogue, so the list is real.
+                if (found.matchQuality === 'broad' && this.teamListReply(session.language, session)) {
+                  // Nothing was shown, so a later "1st one" must not resolve against the
+                  // suggestions list the customer never saw.
+                  session.lastShownProducts = [];
+                  lastSearchResults = [];
+                  matchedProductIds = [];
+                  resultText = this.teamListReply(session.language, session);
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: fnName,
+                    content: JSON.stringify({ products: null, matchQuality: 'broad', message: this._searchResultMessage(found, searchQuery) })
+                  });
+                  keepLooping = false;
+                  break;
+                }
+
                 // What we could NOT give them comes FIRST, ahead of any hype. Until 2026-09-21
                 // the hype opener was unconditional, so "Semma choice bro! 😍" was printed over
                 // the five cheapest in-stock shirts when the search had found nothing at all --
@@ -2388,77 +2755,105 @@ ${sessionContext}`;
             });
           }
         } else {
-          resultText = responseMessage.content || "Sorry, I couldn't process that.";
-          // Capture BEFORE stripping — a JSON-shaped tool-call leak is a sign of failure
-          // regardless of whether the regexes below manage to fully clean it out.
-          const rawContentLookedLikeJson = /^\s*\{[\s\S]*\}\s*$/.test(resultText)
-            && /"(function|name|type|parameters|query)"\s*:/i.test(resultText);
+          const rawContent = responseMessage.content || '';
+          // Judge the RAW model output, never the cleaned version. Cleaning always succeeds —
+          // that is the whole point of it — so a check made afterwards would report a healthy
+          // reply every single time and nothing below would ever fire.
+          const rawWasEmpty = !rawContent.trim();
+          const rawIsCorrupted = this.looksCorrupted(rawContent);
+          const languageProblems = this.tanglishProblems(rawContent, session.language);
 
-          // Groq Bug Fix: strip all known leaked tool-call formats
-          resultText = resultText.replace(/<?\/?function=.*?>.*?<\/function>/gs, '').trim();
-          resultText = resultText.replace(/[a-zA-Z_]+>\s*\{.*?\}/gs, '').trim();
-          // JSON-style leak — handles one level of nested braces e.g. {"type":"function","parameters":{"topic":"..."}}
-          resultText = resultText.replace(/\{"type"\s*:\s*"function"(?:[^{}]|\{[^{}]*\})*\}/g, '').trim();
-          // Bare "toolName{...}" or "toolName(...)" leak — no wrapper tags at all, just the raw call
-          resultText = resultText.replace(/\b(?:search_products|update_cart|set_shipping_address|escalate_to_human|confirm_order|lookup_order|create_support_ticket)\s*\(?\s*\{[\s\S]*?\}\)?/g, '').trim();
-          // Malformed/incomplete function-tag leak with no "=" or JSON body at all,
-          // e.g. a bare "<function(</function>" — seen in production when generation
-          // got cut off mid tool-call. Strip any stray <function...> / </function> fragment.
-          resultText = resultText.replace(/<\/?function\b[^>]*>?/gi, '').trim();
-          // Catch any remaining garbage (orphaned braces/punctuation/tag fragments from partial strip)
-          const wasStrippedToGarbage = !resultText || /^[\s{}\[\],"':<>\/()]+$/.test(resultText);
+          // The reply is cleaned HERE as well as at the egress. Not redundant: the egress
+          // sanitiser is the guarantee that nothing reaches a phone, while this call is what
+          // lets the rest of this block reason about, log and fall back on the real reply
+          // text rather than on something still full of tool-call debris.
+          resultText = this.sanitizeOutgoing(rawContent);
+          if (rawIsCorrupted && !rawWasEmpty) {
+            console.warn('[AI Service] Machine output leaked into a customer reply — cleaned:', rawContent.slice(0, 160));
+          }
+          if (languageProblems.length > 0) {
+            console.warn('[AI Service] Tanglish quality problem:', languageProblems.join('; '), '|', rawContent.slice(0, 120));
+          }
+          const wasStrippedToGarbage = !resultText;
           if (wasStrippedToGarbage) {
-            resultText = "Sorry about that! 🙏 Could you tell me again what you're looking for? I'll sort you out right away.";
+            resultText = this.brokenReplyFallback(session.language);
           }
 
           // Guardrail: the model sometimes gives up on tool-calling (esp. after a Groq
           // tool_use_failed glitch) and sends a non-answer instead of a real reply. Known
           // shapes: (a) it recites the FAQ greeting boilerplate from the system prompt
-          // verbatim, ignoring the actual question; (b) it leaks a raw/malformed tool-call
-          // JSON as plain text (e.g. {"function":"search_products","query":"..."}), whether
-          // or not the stripping regexes above fully cleaned it; (c) stripping left nothing
-          // but the generic "could you repeat that" placeholder. By this point the pre-AI
-          // FAQ matcher has already ruled out a genuine greeting, so any of these is a leak —
-          // force one retry with search_products required before sending a non-answer.
+          // verbatim, ignoring the actual question; (b) it leaks tool-call JSON, a chat
+          // template tag or an escape fragment as plain text; (c) it returns nothing at all;
+          // (d) it asks the customer to narrow down a jersey it never looked up; (e) it
+          // writes invented Tamil. By this point the pre-AI FAQ matcher has already ruled out
+          // a genuine greeting, so any of these is a failure — spend ONE regeneration on it
+          // before sending the customer something we already know is wrong.
           const greetingFaq = faqService.getFAQs().find(f => f.category === 'Greetings');
           const looksLikeGreetingLeak = /welcome to theaurax\.in/i.test(resultText)
             || (greetingFaq && resultText.toLowerCase().includes(greetingFaq.question.toLowerCase()));
-          const looksLikeRawJsonLeak = rawContentLookedLikeJson || wasStrippedToGarbage;
-          // (d) it asks the customer to narrow down a jersey it never actually looked up.
+          const looksLikeRawJsonLeak = rawIsCorrupted && !rawWasEmpty;
           // Tester review 2026-09-20: "Ac Milan jerseys iruka bro?" was answered with "Can you
           // be more Specific" — AC Milan is in the catalogue, and no search had been run. If
           // the model wants to clarify, it has to look first.
           const askedToClarifyWithoutSearching = !searchRanThisTurn
             && /(more specific|be specific|bit specific|which team|what team|which player|which club|please specify|could you specify|enna team|entha team|konjam detail|details sollunga)/i.test(resultText)
             && woocommerceService.looksLikeProductQuery(userQuery);
-          if (looksLikeGreetingLeak || looksLikeRawJsonLeak || askedToClarifyWithoutSearching) {
+
+          // (f) it sends the customer off to ask for a team we do not carry. Seen twice:
+          // "IPL team ah irundha CSK, Mumbai Indians, Rajasthan Royals kooda iruku" on
+          // 2026-09-21, and "say PSG, Real Madrid, Inter Milan" on 2026-09-22 after the
+          // first round of fixes. NEVER INVENT PRODUCTS stops it naming a product it has
+          // not searched; this stops it naming a whole team that will never arrive.
+          const unstockedTeams = woocommerceService.unstockedTeamsMentioned(resultText);
+
+          // A structural failure means the reply cannot be trusted at all. A language problem
+          // means the reply is probably fine but reads badly — deliberately kept apart,
+          // because the recovery for each is different (see below).
+          const structuralFailure = looksLikeGreetingLeak || looksLikeRawJsonLeak
+            || rawWasEmpty || askedToClarifyWithoutSearching || unstockedTeams.length > 0;
+          if (structuralFailure || languageProblems.length > 0) {
             if (!forcedSearchRetryDone && loops < 5) {
               forcedSearchRetryDone = true;
               messages.push({
                 role: "system",
                 content: looksLikeRawJsonLeak
-                  ? `Your last reply was broken raw JSON, not a real answer or a proper tool call. The customer's last message was: "${userQuery}". Call the search_products tool NOW (as an actual tool call, not text) with that exact query to answer it.`
-                  : askedToClarifyWithoutSearching
-                    ? `You asked the customer to be more specific without searching first. The customer's last message was: "${userQuery}" — that names something we stock. Call the search_products tool NOW with that exact query and answer from the result. Only ask a narrowing question if the search genuinely comes back with nothing.`
-                    : `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
+                  ? `Your last reply contained text that was not a message for the customer. The customer's last message was: "${userQuery}". Answer it again, writing ONLY the sentences the customer should read. If you need product facts, call the search_products tool properly instead of describing it.`
+                  : rawWasEmpty
+                    ? `Your last reply was empty, so the customer received nothing. Their last message was: "${userQuery}". Answer it now in one or two short sentences, calling search_products first if you need product facts.`
+                    : askedToClarifyWithoutSearching
+                      ? `You asked the customer to be more specific without searching first. The customer's last message was: "${userQuery}" — that names something we stock. Call the search_products tool NOW with that exact query and answer from the result. Only ask a narrowing question if the search genuinely comes back with nothing.`
+                      : looksLikeGreetingLeak
+                        ? `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
+                        : unstockedTeams.length > 0
+                          ? `Your last reply offered the customer teams we do NOT stock: ${unstockedTeams.join(', ')}. We stock only these: ${woocommerceService.listTeams().join(', ')}. Send the answer again naming ONLY teams from that list, and never suggest a team we do not carry.`
+                          : `Your last reply used words that are not real Tamil: ${languageProblems.join('; ')}. Send the SAME answer again in natural Tanglish that a Chennai shop owner would actually type, keeping it to two short sentences. Where you are not certain a Tamil word is real, use the plain English word instead.`
               });
               continue;
             }
-            // The model repeated the leak even after the nudge — stop trusting its free-text
-            // narration and build a deterministic reply directly from real search results
-            // instead of sending a non-answer to the customer.
-            const isTanglish = session.language === 'tanglish';
-            if (lastSearchResults && lastSearchResults.length > 0) {
-              const top = lastSearchResults.slice(0, 3);
-              const intro = isTanglish ? "Idhu iruku bro! 🔥" : "Here's what we have for you! 🔥";
-              const outro = isTanglish ? "Enna size venum, sollunga!" : "Which one would you like, and what size?";
-              resultText = intro + "\n\n" + top.map(p =>
-                `• *${p.name}* — ₹${p.price}${p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
-              ).join('\n') + "\n\n" + outro;
-            } else {
-              resultText = isTanglish
-                ? "Andha exact jersey kidaikala bro — team illa player name sollunga innoru thadava? Illa website la paarunga: https://theaurax.in"
-                : "Hmm, I couldn't find that exact jersey — could you tell me the team or player name again? Or browse the full range here: https://theaurax.in";
+            // The model failed the same way twice. Only a STRUCTURAL failure justifies
+            // throwing its answer away: a reply whose single fault is an odd word still
+            // answers the customer's question, and the cleaned version of it is far better
+            // than replacing it with an unrelated product list.
+            if (structuralFailure) {
+              const isTanglish = session.language === 'tanglish';
+              // A reply naming teams we don't carry is asking "which one?" about a range that
+              // isn't ours. The catalogue answers that exactly, so swap in the real list
+              // rather than a product list the customer never asked to see.
+              const teamsReply = unstockedTeams.length > 0 ? this.teamListReply(session.language, session) : null;
+              if (teamsReply) {
+                resultText = teamsReply;
+              } else if (lastSearchResults && lastSearchResults.length > 0) {
+                const top = lastSearchResults.slice(0, 3);
+                const intro = isTanglish ? "Idhu iruku bro! 🔥" : "Here's what we have for you! 🔥";
+                const outro = isTanglish ? "Enna size venum, sollunga!" : "Which one would you like, and what size?";
+                resultText = intro + "\n\n" + top.map(p =>
+                  `• *${p.name}* — ₹${p.price}${p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
+                ).join('\n') + "\n\n" + outro;
+              } else {
+                resultText = isTanglish
+                  ? "Andha exact jersey kidaikala bro — team illa player peru innoru vaati sollunga? Illa website la paarunga: https://theaurax.in"
+                  : "Hmm, I couldn't find that exact jersey — could you tell me the team or player name again? Or browse the full range here: https://theaurax.in";
+              }
             }
           }
 

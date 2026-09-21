@@ -9,7 +9,6 @@
     "sync": "node src/services/woocommerce.js --sync",
     "test-agent": "node src/test_agent.js",
     "test-whatsapp": "node src/test_whatsapp.js",
-    "test-search": "node test_product_search.js",
     "test-embeddings": "node src/test_embeddings.js",
     "test-catchup": "node src/test_catchup.js",
     "test-followup": "node src/test_followup.js",
@@ -21,7 +20,8 @@
     "admin-user": "node src/admin_user.js",
     "check-woo": "node src/check_woo.js",
     "test-search": "node src/test_search.js",
-    "test-order-flow": "node src/test_order_flow.js"
+    "test-order-flow": "node src/test_order_flow.js",
+    "test-tanglish": "node src/test_tanglish.js"
   },
   "overrides": {
     "sharp": "^0.35.3"

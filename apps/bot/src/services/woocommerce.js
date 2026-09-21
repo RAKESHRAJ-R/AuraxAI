@@ -466,6 +466,137 @@ class WooCommerceService {
     const vocabulary = this.catalogueVocabulary();
     return tokens.some(tok => vocabulary.has(tok) || vocabulary.has(this.normalizeName(tok)));
   }
+  /**
+   * Is the customer asking WHICH teams we stock, rather than for a specific team?
+   *
+   * "Enna enna team la iruke?" / "what all teams do you have?" carries no search term, so
+   * searchProducts() on those words returns nothing. Before 2026-09-22 the agent therefore
+   * had no grounded answer and free-styled one from its own knowledge. See listTeams().
+   */
+  asksWhichTeams(text) {
+    const t = String(text || '').toLowerCase();
+    if (!t) return false;
+    // Must be asking about the RANGE (teams/clubs/collection), not about one specific shirt.
+    const subject = /\b(team|teams|club|clubs|country|countries|collection|options|varieties|models|brands)\b/.test(t)
+      || /\benna\s+enna\b/.test(t);
+    if (!subject) return false;
+    const asking = /\b(what|which|whats|list|show|available|all|have|got|stock|enna|entha|ethu|iruke|iruku|irukku|iruka|irukka|sollu|sollunga|kaatu|kaattu)\b/.test(t)
+      || t.includes('?');
+    if (!asking) return false;
+    // "Real Madrid team jersey iruka?" names a team -- that is a search, not a range question.
+    return this.extractSubject(t) === null;
+  }
+
+  /**
+   * The team/club/country names we actually stock, most-stocked first.
+   *
+   * Added 2026-09-22 after a live Tanglish chat (2026-09-21 15:27-15:30) in which the customer
+   * asked three times which teams were available and was answered each time with another
+   * question plus an invented list -- "Messi, Ronaldo, Mbappe, Haaland laam irukum... IPL team
+   * ah irundha CSK, Mumbai Indians, Rajasthan Royals kooda iruku" -- none of which came from
+   * the catalogue. Answering from the cache is deterministic, honest and free.
+   *
+   * Categories are filtered down to real teams: the store also uses categories for print style
+   * (RN:HS, CLR:FS), sleeve length (5-SLV), audience (Kids) and merchandising (LIMITED TIME
+   * DROP, Signature Embroidery) -- none of which is an answer to "which teams do you have".
+   */
+  listTeams(limit = 12) {
+    const NON_TEAM = /^(signature embroidery|limited time drop|player version|fan version|pv|fv|pv hf|pv fs|kids|tees|ball|football|new arrivals|uncategori[sz]ed|sale|offers?|combo|accessories|tracksuit|shorts|socks)$/i;
+    const NON_TEAM_PATTERN = /^(rn|clr|pv|fv)\s*[:\-]|^\d+\s*-?\s*slv$|sleeve/i;
+    const counts = new Map();
+    for (const p of this.getLocalProducts()) {
+      if (p.stock_status && p.stock_status !== 'instock') continue;
+      for (const raw of p.categories || []) {
+        const name = String(raw).trim();
+        if (!name || NON_TEAM.test(name) || NON_TEAM_PATTERN.test(name)) continue;
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([name]) => this.titleCaseTeam(name));
+  }
+
+  // Categories are typed inconsistently in wp-admin ("LiverPool", "GERMANY", "FC Barcelona"),
+  // so a customer-facing list has to be normalised or it reads like three different lists.
+  titleCaseTeam(name) {
+    return String(name)
+      .toLowerCase()
+      .replace(/\b([a-z])/g, (m, c) => c.toUpperCase())
+      .replace(/\bFc\b/g, 'FC')
+      .replace(/\bIpl\b/g, 'IPL')
+      .replace(/\bAc\b/g, 'AC');
+  }
+
+  /**
+   * Clubs and national sides a football-literate model reaches for unprompted. This list is
+   * ONLY ever used to CHECK a reply -- never to search, never to suggest. A name here that
+   * the catalogue does not carry is a name the bot must not offer.
+   *
+   * Names the store DOES stock are not excluded by hand: unstockedTeamsMentioned() checks
+   * each one against the real catalogue, so publishing a PSG shirt tomorrow silently makes
+   * PSG a legal thing to say with no code change.
+   */
+  knownTeamNames() {
+    return [
+      // European clubs
+      'psg', 'paris saint germain', 'inter milan', 'inter', 'ac milan', 'juventus', 'napoli',
+      'as roma', 'lazio', 'atalanta', 'atletico madrid', 'sevilla', 'valencia', 'villarreal',
+      'real betis', 'tottenham', 'arsenal', 'newcastle', 'aston villa', 'west ham', 'everton',
+      'leicester', 'borussia dortmund', 'dortmund', 'rb leipzig', 'leverkusen', 'ajax', 'psv',
+      'porto', 'benfica', 'sporting', 'celtic', 'rangers', 'marseille', 'lyon', 'monaco',
+      'galatasaray', 'fenerbahce', 'al nassr', 'al hilal', 'inter miami',
+      // National sides
+      'france', 'spain', 'england', 'italy', 'netherlands', 'belgium', 'croatia', 'uruguay',
+      'colombia', 'mexico', 'japan', 'south korea', 'morocco', 'nigeria', 'senegal', 'ghana',
+      'switzerland', 'denmark', 'sweden', 'poland', 'serbia', 'ecuador', 'chile', 'peru',
+      // IPL sides -- the 2026-09-21 chat offered Mumbai Indians and Rajasthan Royals
+      'mumbai indians', 'rajasthan royals', 'kolkata knight riders', 'delhi capitals',
+      'sunrisers hyderabad', 'punjab kings', 'lucknow super giants', 'gujarat titans',
+      'royal challengers', 'chennai super kings',
+    ];
+  }
+
+  // Every product name and category as one space-normalised string, memoised. Used for whole
+  // phrase containment, which single-word vocabulary lookup cannot do: "milan" is in the
+  // catalogue (AC Milan) while "inter milan" very much is not.
+  catalogueText() {
+    if (!this._catalogueText) {
+      this._catalogueText = ' ' + this.getLocalProducts()
+        .map(p => `${p.name} ${(p.categories || []).join(' ')}`)
+        .join(' ')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim() + ' ';
+    }
+    return this._catalogueText;
+  }
+
+  /**
+   * Team names a reply is offering that we do not actually stock.
+   *
+   * Observed live 2026-09-21 and again on 2026-09-22 after the first round of fixes: asked
+   * what was available, the agent answered "say PSG, Real Madrid, Inter Milan" and, earlier,
+   * "IPL team ah irundha CSK, Mumbai Indians, Rajasthan Royals kooda iruku". Real Madrid and
+   * CSK are real; PSG, Inter Milan, Mumbai Indians and Rajasthan Royals are not in the
+   * catalogue at all. NEVER INVENT PRODUCTS covers naming a product -- this covers sending
+   * the customer off to ask for a team that will never arrive.
+   */
+  unstockedTeamsMentioned(text) {
+    const haystack = ' ' + String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+    if (haystack.trim().length === 0) return [];
+    const catalogue = this.catalogueText();
+    const found = [];
+    for (const name of this.knownTeamNames()) {
+      const needle = ' ' + name.replace(/[^a-z0-9]+/g, ' ') + ' ';
+      if (!haystack.includes(needle)) continue;
+      if (catalogue.includes(needle)) continue;
+      found.push(name);
+    }
+    // "inter milan" also matches the bare "inter" entry; keep only the longest form of each.
+    return found.filter(n => !found.some(other => other !== n && other.includes(n)));
+  }
 
   /**
    * Search local products cache based on queries using token-matching for natural language compatibility.
@@ -480,6 +611,8 @@ class WooCommerceService {
    *   matchQuality 'exact'   -- real matches, every stated constraint satisfied
    *                'partial' -- real matches, but a constraint could not be met
    *                'none'    -- nothing matched; `suggestions` holds browse-anyway items
+   *                'broad'   -- the query named nothing to match ON ("3 jersey venum"), so
+   *                             neither a hit nor a miss; ask which team instead
    *
    * `suggestions` is deliberately a SEPARATE field from `products`. Until 2026-09-21 the
    * cheapest five in-stock items were returned in the products slot on a zero-result search
@@ -553,7 +686,13 @@ class WooCommerceService {
       // so a chunk of the catalogue scored on a word that carries no meaning at all.
       'bro', 'anna', 'akka', 'boss', 'machi', 'sir', 'madam', 'thanks', 'hello',
       'iruka', 'irukka', 'irukku', 'irukkinga', 'venum', 'venuma', 'sollunga',
-      'pannunga', 'panna', 'enna', 'ethu', 'idhu', 'adhu', 'vera', 'konjam'
+      'pannunga', 'panna', 'enna', 'ethu', 'idhu', 'adhu', 'vera', 'konjam',
+      // Tanglish pronouns and politeness. "Yennaku 3 jersey venum" ("I want 3 jerseys")
+      // otherwise searches on 'yennaku', which matches nothing and reports 'none' -- a miss,
+      // when the truth is the customer simply has not named a team yet. With these dropped
+      // the query reduces to nothing and is correctly classified 'broad' below.
+      'yennaku', 'yenaku', 'enaku', 'enakku', 'enakkum', 'naan', 'naanga', 'neenga',
+      'unga', 'ungalukku', 'kitta', 'kudunga', 'venumnu', 'thevai'
     ]);
     if (queryVersion) {
       stopWords.add('player');
@@ -648,6 +787,32 @@ class WooCommerceService {
         }),
         { bareConstraint: true }
       );
+    }
+
+    // A query carrying no distinguishing term at all -- "jersey", "jerseys venum",
+    // "Yennaku 3 jersey venum". Every token that survived the stop-word list is gone, and
+    // there is no season, version, price or bestseller angle to rank on either.
+    //
+    // This USED to fall through to the scoring loop, where the substring rule below matched
+    // the whole catalogue on the word "JERSEY" in the product name -- 136 shirts, every one
+    // of them scoring 15, all labelled 'exact'. That is how "Yennaku 3 jersey venum" was
+    // answered with "Bro kandippa iruku! 🔥" ("we definitely have it!") over three unrelated
+    // shirts. It is the same class of bug as the old in-stock-weight one: a match on
+    // something that carries no meaning is not a match.
+    //
+    // 'broad' is its own quality rather than 'none' because nothing FAILED here -- the
+    // customer simply has not said what they want yet, and telling them "sorry, couldn't
+    // find it" would be just as dishonest in the other direction.
+    const isBroadQuery = queryTokens.length === 0 && !querySeasons.present && !queryVersion
+      && priceLimit === null && !isCheapSearch && !isBestsellerSearch && !isKidsSearch;
+    if (isBroadQuery) {
+      return {
+        products: [],
+        suggestions: this.getFallbackProducts(products, isAdultSearch),
+        matchQuality: 'broad',
+        constraints,
+        unmatched: [],
+      };
     }
 
     // Handle pure budget queries (e.g. "jerseys under 700") with no specific keywords

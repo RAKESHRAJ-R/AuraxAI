@@ -90,19 +90,40 @@ class FollowUpService {
     const hasCartItems = lead.cart && lead.cart.length > 0;
     const followUpCount = lead.followUpCount || 0;
 
+    // Follow-ups were English-only regardless of who they went to, so a customer who had
+    // held their entire conversation in Tanglish got an unprompted English message hours
+    // later — the same mismatch the bilingual FAQ work fixed on 2026-08-04, just on the one
+    // path that speaks first. The session is the authority on language (it is locked there
+    // for the whole conversation); a lead we cannot read a session for gets English, which
+    // is what it would have got anyway.
+    let language = 'english';
+    try {
+      const session = await dbService.getSession(lead.userId);
+      if (session?.language === 'tanglish') language = 'tanglish';
+    } catch { /* keep English */ }
+    const isTanglish = language === 'tanglish';
+
     let message;
     if (hasCartItems) {
       const item = lead.cart[0];
       if (followUpCount === 0) {
-        message = `Hey ${firstName}! 👋 You were checking out the *${item.name}* earlier.\n\nStill interested? Just reply and I'll pick up right where we left off! 🔥`;
+        message = isTanglish
+          ? `Hey ${firstName}! 👋 Neenga *${item.name}* paathinga illa?\n\nInnum venuma? Reply pannunga, naan continue panren! 🔥`
+          : `Hey ${firstName}! 👋 You were checking out the *${item.name}* earlier.\n\nStill interested? Just reply and I'll pick up right where we left off! 🔥`;
       } else {
-        message = `${firstName}, this is your last reminder! 😊 The *${item.name}* is still waiting in your cart.\n\nReply YES to complete your order, or let me know if you need help! ⚽`;
+        message = isTanglish
+          ? `${firstName}, last reminder bro! 😊 *${item.name}* unga cart la wait panidu iruku.\n\nOrder mudikka "yes" nu reply pannunga, illa help venumna sollunga! ⚽`
+          : `${firstName}, this is your last reminder! 😊 The *${item.name}* is still waiting in your cart.\n\nReply YES to complete your order, or let me know if you need help! ⚽`;
       }
     } else {
       if (followUpCount === 0) {
-        message = `Hey ${firstName}! 👋 Still looking for jerseys? Drop your favorite team name and I'll find the best one for you! 🏆`;
+        message = isTanglish
+          ? `Hey ${firstName}! 👋 Jersey thedringala? Unga favourite team peru sollunga, naan best options kaatturen! 🏆`
+          : `Hey ${firstName}! 👋 Still looking for jerseys? Drop your favorite team name and I'll find the best one for you! 🏆`;
       } else {
-        message = `${firstName}, we have some amazing new arrivals! 🔥 What team are you supporting this season? ⚽`;
+        message = isTanglish
+          ? `${firstName}, pudhusa nalla collection vanthiruku! 🔥 Indha season enna team support panringa? ⚽`
+          : `${firstName}, we have some amazing new arrivals! 🔥 What team are you supporting this season? ⚽`;
       }
     }
 

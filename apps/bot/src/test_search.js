@@ -236,6 +236,19 @@ console.log('\n9. The reply the customer actually gets');
   check('a miss is admitted to the customer', /couldn't find an exact match/i.test(miss.replyText), miss.replyText.slice(0, 160));
   check('...and is not dressed up as a find', !/(Great pick|Yes, we have it|This one's a favorite)/i.test(miss.replyText), miss.replyText.slice(0, 160));
 
+  // A query that names nothing to match on. Before 2026-09-22 the substring rule matched the
+  // whole catalogue on the word "JERSEY" and the reply opened "Yes, we have it!" over three
+  // unrelated shirts -- the last surviving case of the bot sounding certain about nothing.
+  session = { state: 'IDLE', language: 'english', cart: [], history: [], firstContactLogged: true };
+  stubLLM('jerseys');
+  const broad = await aiService.answerQuery('91777@c.us', 'I need 3 jerseys');
+  check('a query naming no team does not claim a find',
+    !/(Great pick|Yes, we have it|This one's a favorite|couldn't find)/i.test(broad.replyText), broad.replyText.slice(0, 160));
+  check('...and answers with the teams we really stock', /Real Madrid/i.test(broad.replyText), broad.replyText.slice(0, 200));
+  check('...and asks which one they want', /which team/i.test(broad.replyText), broad.replyText.slice(0, 200));
+  check('...and leaves no shown-product list for a later "1st one" to select from',
+    (session.lastShownProducts || []).length === 0, JSON.stringify((session.lastShownProducts || []).slice(0, 2)));
+
   // The model tries to clarify without searching: the guard must force a search instead.
   session = { state: 'IDLE', language: 'english', cart: [], history: [], firstContactLogged: true };
   let turn = 0;
