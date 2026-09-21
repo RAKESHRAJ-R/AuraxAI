@@ -343,6 +343,79 @@ class AIService {
     return full;
   }
 
+  /* ────────────────────────────────────────────────────────────────────────────
+   * GUIDED BROWSE (added 2026-09-22)
+   *
+   * Every path the bot had assumed the customer could already name what they wanted. Someone
+   * who has never seen this shop cannot: asked "which team?" they have nothing to answer
+   * with, and the 2026-09-21 chat is four turns of exactly that standoff.
+   *
+   * So: show the kinds of product we stock → they pick one → show that kind's actual best
+   * sellers → they pick a number and the normal size/quantity flow takes over. Two taps from
+   * "I don't know" to a cart.
+   *
+   * Deterministic end to end, and not only to save the LLM calls: a customer being shown the
+   * shape of the shop is precisely when an invented category or a team we do not carry does
+   * the most damage, because they have no way to tell it is wrong.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * "Here is everything we stock" — the kinds of product, numbered, each with real examples.
+   * Arms the session to read the customer's next message as a choice from THIS list.
+   * Returns null when the cache is empty so the caller can fall through.
+   */
+  browseMenuReply(language, session) {
+    const groups = woocommerceService.listCatalogueGroups();
+    if (groups.length === 0) return null;
+
+    // What the numbers in the message mean, so the next turn resolves them against the list
+    // the customer actually saw rather than against whatever the catalogue looks like then.
+    session.browseGroups = groups.map(g => ({ key: g.key, label: g.label }));
+    session.pendingBrowse = true;
+    // Nothing product-shaped was shown, so a reply of "1" is a CATEGORY, never a product.
+    session.lastShownProducts = [];
+    session.pendingProductIndex = null;
+
+    const isTanglish = language === 'tanglish';
+    const lines = groups.map((g, i) => {
+      const eg = g.examples.length > 0 ? ` — ${g.examples.join(', ')}…` : '';
+      return `${i + 1}. ${g.emoji} *${g.label}* (${g.count})${eg}`;
+    }).join('\n');
+
+    return isTanglish
+      ? `Namma kitta idhellaam iruku bro 👇\n\n${lines}\n\nEdhu paarkanum? Number sollunga (1, 2, 3…) — andha category la adhigam vikkura top jerseys naan kaatturen! 🔥`
+      : `Here's everything we stock 👇\n\n${lines}\n\nWhich one would you like to see? Just send the number (1, 2, 3…) and I'll show you the best sellers in it! 🔥`;
+  }
+
+  /**
+   * The best sellers in one group, numbered and ready to order from.
+   *
+   * Sets `lastShownProducts`, which is what hands the customer straight into the existing
+   * deterministic paths: "2" is parseProductSelection, "2 M 3" is parseSizeQtyReply. That is
+   * the "then proceed" half — no new ordering code, and no LLM call anywhere in the journey.
+   */
+  bestSellersReply(groupKey, session) {
+    const group = woocommerceService.listCatalogueGroups().find(g => g.key === groupKey);
+    const top = woocommerceService.bestSellersInGroup(groupKey, 3);
+    if (!group || top.length === 0) return null;
+
+    session.lastShownProducts = top.map(p => ({
+      productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [],
+    }));
+    session.pendingProductIndex = null;
+    session.pendingBrowse = false;
+
+    const isTanglish = session.language === 'tanglish';
+    const lines = top.map((p, i) => {
+      const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
+      return `${i + 1}. *${p.name}* — ₹${p.price}${sizeText}${p.permalink ? `\n${p.permalink}` : ''}`;
+    }).join('\n');
+
+    return isTanglish
+      ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
+      : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
+  }
+
   // Said only when sanitizeOutgoing() found nothing worth sending. Deliberately asks the
   // customer to restate rather than guessing: we know the model's last output was broken,
   // so anything we invented on top of it would be a guess about a guess.
@@ -2026,7 +2099,11 @@ ${sessionContext}`;
     if (!result || typeof result.replyText !== 'string') return result;
 
     const cleaned = this.sanitizeOutgoing(result.replyText);
-    if (cleaned && cleaned !== result.replyText) {
+    // Compare with whitespace ignored. The sanitiser also tidies spacing, and some product
+    // names in WooCommerce genuinely carry double spaces ("HOME —  MESSI"), so a plain !==
+    // logged a leak warning on perfectly healthy replies — which is how a real warning ends
+    // up being ignored.
+    if (cleaned && cleaned.replace(/\s+/g, '') !== result.replyText.replace(/\s+/g, '')) {
       console.warn(`[AI Service] Egress sanitiser cleaned a ${result.intent} reply before sending:`,
         result.replyText.slice(0, 160));
     }
@@ -2175,6 +2252,31 @@ ${sessionContext}`;
       }
 
 
+
+      // --- Guided browse, step 2: the customer picked a category off the menu ---
+      // Read and CLEAR the flag first, whether or not it resolves. A customer who ignores the
+      // menu and asks something else must not leave a live "pick a category" state behind for
+      // a later, unrelated "2" to be swallowed by.
+      const awaitingGroupPick = session.pendingBrowse === true;
+      const offeredGroups = Array.isArray(session.browseGroups) ? session.browseGroups : [];
+      if (awaitingGroupPick) {
+        session.pendingBrowse = false;
+        const picked = woocommerceService.matchGroupChoice(userQuery, offeredGroups);
+        // null falls through to the normal agent, which is always safe -- "Real Madrid" typed
+        // at the menu is a search, not a bad category guess.
+        const reply = picked ? this.bestSellersReply(picked, session) : null;
+        if (reply) {
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: reply });
+          await dbService.saveSession(senderId, session);
+          return {
+            replyText: reply,
+            intent: 'deterministic_browse_pick',
+            requiresEscalation: false,
+            suggestedProductIds: (session.lastShownProducts || []).map(p => p.productId),
+          };
+        }
+      }
       // --- Deterministic "which teams do you have?" answer (added 2026-09-22) ---
       // "Enna enna team la iruke?" has no search term in it, so search_products returns
       // nothing and there is no tool that answers it. Left to the LLM, the 2026-09-21 chat
@@ -2192,6 +2294,20 @@ ${sessionContext}`;
           session.history.push({ role: 'assistant', content: reply });
           await dbService.saveSession(senderId, session);
           return { replyText: reply, intent: 'deterministic_teams', requiresEscalation: false, suggestedProductIds: [] };
+        }
+      }
+
+      // --- Guided browse, step 1: "what do you actually sell?" ---
+      // Runs AFTER the teams check on purpose. "Enna enna team la iruke?" satisfies both, and
+      // a question about teams deserves the team list -- this is the broader case, where the
+      // customer has not seen the shop and cannot name anything to ask for.
+      if (woocommerceService.asksWhatWeSell(userQuery)) {
+        const reply = this.browseMenuReply(session.language, session);
+        if (reply) {
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: reply });
+          await dbService.saveSession(senderId, session);
+          return { replyText: reply, intent: 'deterministic_browse', requiresEscalation: false, suggestedProductIds: [] };
         }
       }
 

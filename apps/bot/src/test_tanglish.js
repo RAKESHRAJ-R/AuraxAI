@@ -379,7 +379,10 @@ aiService.callLLMWithRetry = async (messages) => {
   }
   return stubbedCompletion('Sure! Try PSG, Inter Milan or Napoli — which one?');
 };
-const offeredUnstocked = await aiService.answerQuery(SENDER, 'what do you have');
+// The query has to be one that actually reaches the LLM. "what do you have" no longer does —
+// it is answered by the deterministic browse menu — and a guard test that never runs the guard
+// passes for the wrong reason.
+const offeredUnstocked = await aiService.answerQuery(SENDER, 'I want a ronaldo jersey');
 aiService.callLLMWithRetry = originalCall;
 check('offering unstocked teams triggers a rewrite', nudgedAboutTeams, 'the model was never nudged');
 check('...and PSG never reaches the customer', !/psg/i.test(offeredUnstocked.replyText), offeredUnstocked.replyText.slice(0, 200));
@@ -413,6 +416,114 @@ check('...that does not answer with another bare question', /Real Madrid/i.test(
 check('...and adds no further invented Tamil', aiService.tanglishProblems(confused.replyText, 'tanglish').length === 0, confused.replyText.slice(0, 200));
 
 if (originalFallback) aiService.getFallbackEntries = originalFallback;
+
+/* ──────────── 8b. Guided browse: "I don't know what you sell" to a cart ─────────── */
+
+section('8b. A customer who has never seen the shop can still order');
+
+// Grouping is read from product NAMES as well as categories, because 21 of the 99 in-stock
+// products carry no team category at all in wp-admin.
+const groups = woocommerceService.listCatalogueGroups();
+check('the catalogue yields browsable groups', groups.length >= 3, JSON.stringify(groups.map(g => g.key)));
+check('...led by club jerseys, the biggest shelf', groups[0].key === 'club', groups[0] && groups[0].key);
+check('...each with a real count', groups.every(g => g.count > 0));
+check('...and no empty group is offered', groups.every(g => woocommerceService.bestSellersInGroup(g.key, 3).length > 0),
+  JSON.stringify(groups.map(g => [g.key, woocommerceService.bestSellersInGroup(g.key, 3).length])));
+check('the example teams on each line are real catalogue teams',
+  groups.every(g => woocommerceService.unstockedTeamsMentioned(g.examples.join(' ')).length === 0),
+  JSON.stringify(groups.map(g => g.examples)));
+
+// Name-based grouping is the point: category-only would lose these.
+const uncategorised = woocommerceService.getLocalProducts()
+  .filter(p => p.stock_status === 'instock' && (p.categories || []).length === 0);
+check('products with no category at all are still grouped',
+  uncategorised.length === 0 || uncategorised.every(p => woocommerceService.productGroup(p) !== null),
+  `${uncategorised.length} uncategorised, ungrouped: ${uncategorised.filter(p => !woocommerceService.productGroup(p)).length}`);
+
+check('best sellers really are sorted by sales',
+  (() => {
+    const top = woocommerceService.bestSellersInGroup('cricket', 3);
+    return top.length > 1 && (top[0].total_sales || 0) >= (top[1].total_sales || 0);
+  })(), JSON.stringify(woocommerceService.bestSellersInGroup('cricket', 3).map(p => p.total_sales)));
+
+const ASKS_WHAT_WE_SELL = [
+  'what products do you have', 'show me your collection', 'I dont know what to buy',
+  'suggest something', 'enna enna iruku bro', 'what all do you have',
+];
+for (const q of ASKS_WHAT_WE_SELL) {
+  check(`open-ended ask recognised: "${q}"`, woocommerceService.asksWhatWeSell(q));
+}
+// A question that names something must stay a search, and a TEAM question must stay the team
+// list -- "enna enna team la iruke" satisfies both and the team answer has to win.
+const NOT_BROWSE = ['Real Madrid jersey iruka', 'M size 2', 'yes', 'where is my order 77992'];
+for (const q of NOT_BROWSE) {
+  check(`NOT treated as an open-ended ask: "${q}"`, !woocommerceService.asksWhatWeSell(q));
+}
+check('"enna enna team la iruke" still goes to the TEAM list, not the menu',
+  woocommerceService.asksWhichTeams('Enna enna team la iruke'));
+check('...while bare "enna enna iruku bro" does not', !woocommerceService.asksWhichTeams('enna enna iruku bro'));
+
+// The whole journey, with the LLM rigged to throw: if anything below reaches it, the flow is
+// not deterministic and the test fails loudly instead of quietly costing money.
+const guardLLM = aiService.callLLMWithFallback;
+aiService.callLLMWithFallback = async () => { throw new Error('LLM must not be reached in the browse flow'); };
+
+const BROWSER = '919000000077@c.us';
+await dbService.saveSession(BROWSER, {
+  state: 'IDLE', cart: [], address: null, history: [], language: 'english',
+  lastShownProducts: [], firstContactLogged: true,
+});
+
+const menu = await aiService.answerQuery(BROWSER, 'what products do you have');
+check('step 1 — the menu is deterministic', menu.intent === 'deterministic_browse', menu.intent);
+check('...and names every kind we stock', groups.every(g => menu.replyText.includes(g.label)), menu.replyText.slice(0, 200));
+check('...and offers no team we do not carry', woocommerceService.unstockedTeamsMentioned(menu.replyText).length === 0,
+  JSON.stringify(woocommerceService.unstockedTeamsMentioned(menu.replyText)));
+
+const picked = await aiService.answerQuery(BROWSER, '1');
+check('step 2 — a number picks that category', picked.intent === 'deterministic_browse_pick', picked.intent);
+check('...and shows its best sellers', /₹/.test(picked.replyText), picked.replyText.slice(0, 160));
+const afterPick = await dbService.getSession(BROWSER);
+check('...and arms the normal product selection', (afterPick.lastShownProducts || []).length > 0);
+
+const carted = await aiService.answerQuery(BROWSER, '1 M 2');
+check('step 3 — picking a product goes straight to the cart', carted.intent === 'deterministic_cart', carted.intent);
+const afterCart = await dbService.getSession(BROWSER);
+check('...with the right product, size and quantity',
+  afterCart.cart.length === 1 && afterCart.cart[0].size === 'M' && afterCart.cart[0].qty === 2,
+  JSON.stringify(afterCart.cart));
+check('...and the session moves on to collecting the address', afterCart.state === 'COLLECTING_ADDRESS', afterCart.state);
+
+// A category named in words rather than by number.
+await dbService.saveSession(BROWSER, {
+  state: 'IDLE', cart: [], address: null, history: [], language: 'tanglish',
+  lastShownProducts: [], firstContactLogged: true,
+});
+await aiService.answerQuery(BROWSER, 'enna enna iruku bro');
+const byWord = await aiService.answerQuery(BROWSER, 'cricket');
+check('a category can be named in words too', byWord.intent === 'deterministic_browse_pick', byWord.intent);
+check('...and the Tanglish is clean', aiService.tanglishProblems(byWord.replyText, 'tanglish').length === 0,
+  JSON.stringify(aiService.tanglishProblems(byWord.replyText, 'tanglish')));
+
+// Ignoring the menu must NOT be swallowed: naming a team is a search, and the pending state
+// must not survive to hijack an unrelated "2" three turns later.
+await dbService.saveSession(BROWSER, {
+  state: 'IDLE', cart: [], address: null, history: [], language: 'english',
+  lastShownProducts: [], firstContactLogged: true,
+});
+await aiService.answerQuery(BROWSER, 'show me your collection');
+const armed = await dbService.getSession(BROWSER);
+check('the menu arms the next turn', armed.pendingBrowse === true);
+// This turn IS allowed to reach the agent, so it gets a canned reply rather than the real
+// provider — the whole suite must stay free to run.
+aiService.callLLMWithFallback = async () => ({
+  choices: [{ message: { role: 'assistant', content: 'Here are our Real Madrid shirts!' } }],
+  usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+});
+await aiService.answerQuery(BROWSER, 'Real Madrid').catch(() => {});
+const disarmed = await dbService.getSession(BROWSER);
+check('...and ignoring it disarms the state rather than leaving it live', disarmed.pendingBrowse !== true);
+aiService.callLLMWithFallback = guardLLM;
 
 /* ───────────────────────────── 9. Tool list stays in sync ───────────────────────────── */
 

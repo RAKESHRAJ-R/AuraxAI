@@ -472,13 +472,18 @@ class WooCommerceService {
    * "Enna enna team la iruke?" / "what all teams do you have?" carries no search term, so
    * searchProducts() on those words returns nothing. Before 2026-09-22 the agent therefore
    * had no grounded answer and free-styled one from its own knowledge. See listTeams().
+   *
+   * ⚠️ The question must actually say TEAM (or club/country). A bare "enna enna iruku bro"
+   * ("what all do you have") is NOT this question — it is someone who has not seen the shop
+   * at all, and it belongs to asksWhatWeSell(), which answers with the kinds of product
+   * rather than a wall of club names. This used to accept "enna enna" on its own and so
+   * swallowed every open-ended Tanglish opener before the browse menu could see it.
    */
   asksWhichTeams(text) {
     const t = String(text || '').toLowerCase();
     if (!t) return false;
     // Must be asking about the RANGE (teams/clubs/collection), not about one specific shirt.
-    const subject = /\b(team|teams|club|clubs|country|countries|collection|options|varieties|models|brands)\b/.test(t)
-      || /\benna\s+enna\b/.test(t);
+    const subject = /\b(team|teams|club|clubs|country|countries|brands)\b/.test(t);
     if (!subject) return false;
     const asking = /\b(what|which|whats|list|show|available|all|have|got|stock|enna|entha|ethu|iruke|iruku|irukku|iruka|irukka|sollu|sollunga|kaatu|kaattu)\b/.test(t)
       || t.includes('?');
@@ -596,6 +601,240 @@ class WooCommerceService {
     }
     // "inter milan" also matches the bare "inter" entry; keep only the longest form of each.
     return found.filter(n => !found.some(other => other !== n && other.includes(n)));
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────────
+   * WHAT DO YOU ACTUALLY SELL? (added 2026-09-22)
+   *
+   * Everything below answers a customer who does not know the shop yet. They cannot name a
+   * team because they have never seen the range, and until now the bot's only move was to
+   * ask them to name one anyway.
+   *
+   * ⚠️ All of it reads the CATALOGUE, never a model. The lists of club/country/cricket names
+   * here are used ONLY to recognise what is already in the cache -- a name in one of these
+   * lists that the shop does not stock never appears anywhere, because nothing is emitted
+   * unless a real in-stock product matched it. Same contract as unstockedTeamsMentioned().
+   *
+   * ⚠️ Matching is on the product NAME as well as its categories, and that is the whole
+   * point. Measured on the live cache: 21 of 99 in-stock products carry NO team category at
+   * all -- "REAL MADRID HOME 17/18 FULL SLEEVE", "PORTUGAL AWAY WC RN", "ASTON VILLA 2020-21"
+   * are all uncategorised in wp-admin. Category-only grouping loses a fifth of the shop, and
+   * it badly understates the rest: Portugal has ONE product in its category and six by name,
+   * including the best-selling shirt in the whole catalogue.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Team names to look for, with the label a customer should see. Labels are already in
+   * display form -- they are not run through titleCaseTeam(), which would turn "Sporting CP"
+   * into "Sporting Cp".
+   *
+   * "Baryen Munich" is not a typo here: it is the spelling used by one product in the live
+   * catalogue, and without it that shirt is invisible to the Bayern grouping.
+   */
+  teamPatterns() {
+    if (this._teamPatterns) return this._teamPatterns;
+    const clubs = [
+      ['Real Madrid', /real\s*madrid/], ['FC Barcelona', /barcelona|barca/],
+      ['AC Milan', /\bac\s*milan\b/], ['Inter Milan', /\binter\s*milan\b/],
+      ['Manchester United', /manchester\s*united|man\s*united|man\s*utd/],
+      ['Manchester City', /manchester\s*city|man\s*city/],
+      ['Chelsea', /chelsea/], ['Liverpool', /liverpool/], ['Arsenal', /arsenal/],
+      ['Tottenham', /tottenham|spurs/], ['Juventus', /juventus|juve\b/],
+      ['Bayern Munich', /bayern\s*munich|baryen\s*munich/],
+      ['Borussia Dortmund', /dortmund/], ['Napoli', /napoli/], ['AS Roma', /\bas\s*roma\b/],
+      ['Atletico Madrid', /atletico\s*madrid/], ['Sevilla', /sevilla/],
+      ['Ajax', /\bajax\b/], ['FC Porto', /\bporto\b/], ['Benfica', /benfica/],
+      ['Sporting CP', /sporting\s*cp|sporting\s*lisbon/],
+      ['Celtic', /\bceltic\b/], ['Marseille', /marseille/], ['Lyon', /\blyon\b/],
+      ['Monaco', /\bmonaco\b/], ['Aston Villa', /aston\s*villa/],
+      ['Newcastle', /newcastle/], ['Everton', /everton/], ['Leicester', /leicester/],
+      ['West Ham', /west\s*ham/], ['Boca Juniors', /boca\s*juniors/],
+      ['River Plate', /river\s*plate/], ['Santos', /\bsantos\b/],
+      ['Flamengo', /flamengo/], ['Palmeiras', /palmeiras/], ['Inter Miami', /inter\s*miami/],
+      ['Al Nassr', /al\s*nassr/], ['Al Hilal', /al\s*hilal/], ['PSG', /\bpsg\b|paris\s*saint/],
+    ];
+    const countries = [
+      ['Portugal', /portugal/], ['Argentina', /argentina/], ['Brazil', /brazil|brasil/],
+      ['Germany', /germany|deutschland/], ['France', /\bfrance\b/], ['Spain', /\bspain\b/],
+      ['England', /\bengland\b/], ['Italy', /\bitaly\b/], ['Netherlands', /netherlands|holland/],
+      ['Belgium', /belgium/], ['Croatia', /croatia/], ['Uruguay', /uruguay/],
+      ['Colombia', /colombia/], ['Mexico', /mexico/], ['Japan', /\bjapan\b/],
+      ['Morocco', /morocco/], ['Nigeria', /nigeria/], ['Senegal', /senegal/],
+    ];
+    const cricket = [
+      ['Chennai Super Kings (CSK)', /chennai\s*super\s*kings|\bcsk\b/],
+      ['Royal Challengers (RCB)', /royal\s*challengers|\brcb\b/],
+      ['Mumbai Indians', /mumbai\s*indians|\bmi\b/],
+      ['Rajasthan Royals', /rajasthan\s*royals/],
+      ['Kolkata Knight Riders', /kolkata\s*knight|\bkkr\b/],
+      ['Delhi Capitals', /delhi\s*capitals/], ['Sunrisers Hyderabad', /sunrisers/],
+      ['Punjab Kings', /punjab\s*kings/], ['Gujarat Titans', /gujarat\s*titans/],
+      ['India', /\bindia\b(?!n)/],
+    ];
+    this._teamPatterns = [
+      ...clubs.map(([label, re]) => ({ label, re, group: 'club' })),
+      ...countries.map(([label, re]) => ({ label, re, group: 'country' })),
+      ...cricket.map(([label, re]) => ({ label, re, group: 'cricket' })),
+    ];
+    return this._teamPatterns;
+  }
+
+  // Name + categories, lowercased, for one product. Memoised per product id.
+  productHaystack(p) {
+    if (!this._haystacks) this._haystacks = new Map();
+    let hit = this._haystacks.get(p.id);
+    if (hit === undefined) {
+      hit = `${p.name} ${(p.categories || []).join(' ')}`.toLowerCase();
+      this._haystacks.set(p.id, hit);
+    }
+    return hit;
+  }
+
+  /**
+   * Which of the shop's product kinds this item belongs to, or null if we cannot tell.
+   *
+   * Exclusive and ordered: a kids CSK shirt is a kids jersey, because that is the aisle the
+   * customer would look in. Anything unrecognised returns null and is simply left out of the
+   * browse menu rather than dumped into a catch-all -- a menu entry we cannot describe is
+   * worse than one fewer entry.
+   */
+  productGroup(p) {
+    const hay = this.productHaystack(p);
+    if (this.isKidsProduct(p)) return 'kids';
+    if (/\b(match\s*ball|football\s*ball)\b|\bball\b/.test(hay)) return 'gear';
+    if (/\b(tee|tees|t-shirt|tshirt|shorts|socks|tracksuit)\b/.test(hay)) return 'gear';
+    for (const { re, group } of this.teamPatterns()) {
+      if (group === 'cricket' && re.test(hay)) return 'cricket';
+    }
+    if (/\bipl\b/.test(hay)) return 'cricket';
+    for (const { re, group } of this.teamPatterns()) {
+      if (group === 'country' && re.test(hay)) return 'country';
+    }
+    for (const { re, group } of this.teamPatterns()) {
+      if (group === 'club' && re.test(hay)) return 'club';
+    }
+    return null;
+  }
+
+  /**
+   * The kinds of product we can actually show right now, biggest first, each with a few real
+   * team names as examples. Groups with nothing in stock are omitted entirely -- the menu
+   * never offers an aisle that turns out to be empty.
+   */
+  listCatalogueGroups() {
+    const LABELS = {
+      club:    { label: 'Club football jerseys', emoji: '⚽' },
+      country: { label: 'Country & World Cup jerseys', emoji: '🌍' },
+      cricket: { label: 'Cricket / IPL jerseys', emoji: '🏏' },
+      kids:    { label: 'Kids jerseys', emoji: '🧒' },
+      gear:    { label: 'Footballs & other gear', emoji: '🥅' },
+    };
+    const buckets = new Map();
+    for (const p of this.getLocalProducts()) {
+      if (p.stock_status && p.stock_status !== 'instock') continue;
+      if (!this.hasValidPrice(p)) continue;
+      const key = this.productGroup(p);
+      if (!key || !LABELS[key]) continue;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(p);
+    }
+    return [...buckets.entries()]
+      .map(([key, items]) => ({
+        key,
+        label: LABELS[key].label,
+        emoji: LABELS[key].emoji,
+        count: items.length,
+        examples: this.teamsWithin(items, 3),
+      }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  // The team names present in a set of products, most-stocked first. Used for the "e.g. Real
+  // Madrid, Barcelona, Man United" hint on a menu line, so the hint always reflects the real shelf.
+  teamsWithin(items, limit) {
+    const counts = new Map();
+    for (const p of items) {
+      const hay = this.productHaystack(p);
+      for (const { label, re } of this.teamPatterns()) {
+        if (re.test(hay)) counts.set(label, (counts.get(label) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([label]) => label);
+  }
+
+  /**
+   * The best-selling in-stock products in one group, by the `total_sales` figure synced from
+   * WooCommerce (74 of 99 in-stock products carry a real one). Ties and zero-sales items fall
+   * back to cheapest-first so the ordering is stable rather than whatever the file order is.
+   */
+  bestSellersInGroup(groupKey, limit = 3) {
+    return this.getLocalProducts()
+      .filter(p => (!p.stock_status || p.stock_status === 'instock')
+        && this.hasValidPrice(p)
+        && this.productGroup(p) === groupKey)
+      .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0)
+        || parseFloat(a.price) - parseFloat(b.price))
+      .slice(0, limit);
+  }
+
+  /**
+   * Resolve what the customer typed against a menu we just showed them: "2", "cricket",
+   * "IPL", "kids ku", "football club jersey". Returns the group key or null.
+   *
+   * Deliberately strict — null falls through to the normal agent, which is always a safe
+   * outcome. Guessing a group from a vague reply would show the customer the wrong shelf.
+   */
+  matchGroupChoice(text, groups) {
+    const t = String(text || '').toLowerCase().trim();
+    if (!t || !Array.isArray(groups) || groups.length === 0) return null;
+
+    // "2", "2nd one", "option 3" -- the position in the list we printed.
+    const num = t.match(/^(?:option\s*)?(\d{1,2})(?:st|nd|rd|th)?\b/);
+    if (num) {
+      const idx = parseInt(num[1], 10) - 1;
+      if (idx >= 0 && idx < groups.length) return groups[idx].key;
+      return null;
+    }
+
+    const WORDS = {
+      club: /\b(club|clubs|football\s*club|league|epl|laliga|la\s*liga|premier)\b/,
+      country: /\b(country|countries|national|international|world\s*cup|worldcup|\bwc\b)\b/,
+      cricket: /\b(cricket|ipl|t20)\b/,
+      kids: /\b(kid|kids|child|children|boy|boys|girl|girls|small\s*size|chinna)\b/,
+      gear: /\b(ball|balls|gear|tee|tees|shorts|socks|accessor)/,
+    };
+    for (const g of groups) {
+      if (WORDS[g.key] && WORDS[g.key].test(t)) return g.key;
+    }
+    return null;
+  }
+
+  /**
+   * Is the customer asking what we sell, without naming anything?
+   *
+   * Distinct from asksWhichTeams(), which is specifically about TEAMS and answers with the
+   * team list. This is the broader "I don't know what you have" case and answers with the
+   * kinds of product. Both refuse when the message actually names something we stock, so a
+   * real query is never intercepted.
+   */
+  asksWhatWeSell(text) {
+    const t = String(text || '').toLowerCase().trim();
+    if (!t || t.length < 2) return false;
+    if (this.extractSubject(t)) return false;        // they named a team -- that is a search
+
+    const unsure = /\b(don'?t know|dont know|no idea|not sure|theriyala|theriyathu|puriyala|new here|first time)\b/.test(t);
+    const askingRange = /\b(what|whats|what's|which|list|show|tell)\b.*\b(have|has|sell|selling|got|stock|available|product|products|item|items|collection|range|variety|varieties|option|options|model|models)\b/.test(t)
+      || /\b(show|send|share)\b.*\b(me|your|unga)?\s*(collection|catalogue|catalog|products|items|list|range|varieties)\b/.test(t)
+      || /\b(suggest|recommend|recommendation|ideas?)\b/.test(t)
+      || /\b(what|enna)\s+(all|ellam|laam)\b/.test(t)
+      || /\benna\s+enna\b/.test(t)
+      || /\b(enna|edhu|ethu)\b.*\b(iruku|irukku|iruke|irukka|iruka|vikuringa|sellinga)\b/.test(t)
+      || /\b(collection|catalogue|catalog|varieties|variety)\b/.test(t);
+
+    return unsure || askingRange;
   }
 
   /**

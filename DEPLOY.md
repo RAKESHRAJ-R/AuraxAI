@@ -325,13 +325,15 @@ Bot-only: no new dependencies, no new env vars, no `apps/admin` changes. So `git
 `pm2 restart` is the whole deploy — `npm ci` is not needed (the only `package.json` change is
 the new `test-tanglish` script and the removal of a dead duplicate `test-search` key).
 
-One thing IS worth doing on the box: the new "which teams do you have?" answer is read live from
-`apps/bot/src/data/products_cache.json`, so a stale cache means a stale team list shown to real
+One thing IS worth doing on the box: the new "which teams do you have?" answer AND the
+new browse menu are read live from
+`apps/bot/src/data/products_cache.json`, so a stale cache means a stale range shown to real
 customers. Run `npm run check-woo` and then `npm run sync` before restarting, and sanity-check
 the result:
 
 ```bash
 node -e "import('./src/services/woocommerce.js').then(m=>console.log(m.default.listTeams().join(', ')))"
+node -e "import('./src/services/woocommerce.js').then(m=>console.log(m.default.listCatalogueGroups().map(g=>g.label+' ('+g.count+')').join(' | ')))"
 ```
 
 After the restart, these lines are new and are the ones to grep for. All three mean a guard
