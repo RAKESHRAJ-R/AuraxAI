@@ -1,7 +1,240 @@
 # Theaurax AI Sales Assistant — Project Context
 
 ## Last Updated
-2026-08-04
+2026-09-21
+
+---
+
+## Session 2026-09-20 — summary
+
+### 1. WooCommerce REST was blocked for ~6 weeks — sync AND order creation were both dead
+`npm run sync` and `woocommerce.createOrder()` use the same authenticated `wp-json/wc/v3`
+client, so one block took out both. Last successful sync: **2026-08-05**. Last bot-created
+order: **#77992, 2026-08-07**. Everything after that silently failed.
+
+Two separate gates were found on theaurax.in, both returning HTTP 401:
+
+| Request | Response |
+|---|---|
+| any REST route, no credential | `rest_login_required` — "REST API restricted to authenticated users." |
+| any REST route + a **valid** consumer key | `{"success":false,"message":"API is working, Site Connected"}` |
+| any REST route + a well-formed **fake** key | `rest_login_required` |
+
+The second one is the important one: it only fires for a consumer key that **exists in the
+database**, on every REST route (not just `wc/v3`), and regardless of whether the secret is
+correct. That is code doing a deliberate key lookup, not a generic security plugin. It is why
+the key's **Last access** in WooCommerce read *Unknown* — WooCommerce stamps that field only
+after it authenticates a request itself, and the request never got that far.
+
+**Workaround shipped: WordPress Application Passwords.** An app password is not a consumer
+key, so the interceptor ignores it, and it authenticates as a real WP user, which also
+satisfies the `Disable WP REST API` plugin. Same endpoints, different credential.
+
+- `WOOCOMMERCE_APP_USER` / `WOOCOMMERCE_APP_PASSWORD` in `.env`; the Woo client prefers them
+  over the consumer key when both are set (`config.js`, `woocommerce.js` constructor).
+- The WP user must be **Administrator or Shop Manager**, else auth succeeds and `wc/v3` 403s.
+- `npm run check-woo` (`src/check_woo.js`) tests both credentials against products AND orders
+  and names the exact failure. Order *read* access is checked because it needs the same
+  capability as order creation — it proves the write path without placing a live order.
+
+⚠️ Mid-session the consumer key started returning 200 again while the store owner was in
+wp-admin. The interceptor's trigger is therefore not fully understood and may come back. The
+app password is the primary credential regardless.
+
+### 2. The site itself looks tampered with — UNRESOLVED
+WP Admin → Plugins lists **4** plugins. Confirmed present on disk by fetching their
+`readme.txt`: WooCommerce, Elementor, Duplicator, CMP, Disable WP REST API, WP Social Ninja
+Pro, Site Reviews, WebToffee Invoices, Advanced Product Fields Pro. **WooCommerce itself is
+not in the list.** Of the 4 that ARE listed, only WPCode exists as a real plugin folder —
+`storesum-connect`, `smart-stock-display` and `reviews-showcase` all 404. "Storesum Connect"
+is credited to Jeff Starr, who actually wrote *Disable WP REST API* — a real plugin wearing a
+fake name.
+
+Something filters WordPress's plugin list, and it is the prime suspect for the key
+interceptor too. Either aggressive white-labelling by whoever built the site, or a
+compromise. **Still to check: the Must-Use plugin (1), `wp-content/mu-plugins/`, the full
+`wp-content/plugins/` folder, the WooCommerce API-key list for keys nobody created, and
+Users for unknown Administrators.**
+
+### 3. The catalogue was never stale — 655 products are sitting in DRAFT
+Post-fix sync returned the same 136 products, same prices, same stock as the 2026-08-05 cache
+(one `total_sales` value moved). But WooCommerce holds **791** products:
+
+| status | count |
+|---|---|
+| publish | 136 |
+| **draft** | **655** — of which 566 priced, 541 in stock |
+
+Among the drafts: **139 Player Version `(PV)`**, **111 Fan Version `(FV)`**, 321 × 25/26,
+14 × 26/27, 66 Real Madrid. The 26/27 drafts are complete and sellable — price, stock, image,
+sizes, category and description all filled in, e.g. `REAL MADRID SPECIAL WHITE 26/27` ₹949
+Player Version, in stock.
+
+This is the root cause behind the tester's reviews: the shop's whole modern catalogue is
+unpublished, so neither the website nor the bot can see it. **Publishing is the store owner's
+decision and has not been done.**
+
+### 4. Tester reviews (2026-09-20) — the bot fakes a match instead of admitting a miss
+Five reviews, reproduced locally against the real cache:
+
+```
+"Real Madrid 26/27 all kit jerseys" → REAL MADRID 14-15 / 17-18 / 11-12  (season ignored)
+"Player version 26/27"             → CSK 2025 ₹350, RCB 2026 ₹360       (cheapest fallback)
+"Ac Milan jerseys iruka bro?"      → "Can you be more Specific"          (no search at all)
+```
+
+Four code causes, none of them data-related:
+1. **Season is invisible to search.** `woocommerce.js:295` drops tokens failing `isNaN(t)` and
+   shorter than 3 chars, so `26/27` → `26`,`27` → both discarded. Every Real Madrid jersey
+   from 1998 on scores identically.
+2. **Zero matches silently become the cheapest 5 products** (`getFallbackProducts`,
+   `woocommerce.js:423`) and the tool result labels them `"Found products"`.
+3. **The hype opener is unconditional** (`ai.js:1906`). "Semma choice bro! 😍" is prepended to
+   whatever came back, including fallback junk. The multi-match reply is templated in code, so
+   the LLM never sees those products and cannot self-correct.
+4. **Search context dies each turn** — the follow-up "Player version 26/27" was searched
+   without "Real Madrid".
+
+Fix plan P1–P5 (constraint-aware search · honest partial/no-match replies · carry constraints
+across turns · always search before asking to clarify · regression tests from these four
+transcripts) — ✅ **ALL FIVE IMPLEMENTED 2026-09-21.** See "Constraint-aware product search" in
+CLAUDE.md. The same three queries now answer:
+
+```
+"Real Madrid 26/27 all kit jerseys" → "We don't have 26/27 in stock right now 😕 Here's what
+                                      we do have:" + REAL MADRID 25-26 MBAPPE, 25-26, 17-18
+"Player version 26/27" (follow-up)  → team carried; Player Version reported unavailable;
+                                      no IPL filler
+"Ac Milan jerseys iruka bro?"       → 7 AC Milan shirts, exact match
+```
+
+`npm run test-search` (56 checks) pins all of it, including the real reply path.
+
+Two further bugs surfaced while fixing this: `"bro"` was scoring against the category
+*"Signature Embroidery"* by substring match, and *FC BARCELONA X ED SHEERAN 25-26* carries an
+**"AC Milan" category** in WooCommerce — the first is fixed in code, the second is a catalogue
+error for the store owner to correct in wp-admin.
+
+### 5. ✅ FIXED 2026-09-21 — a failed order used to tell the customer "Your order is confirmed!"
+The most damaging bug found this session. Live from 2026-08-07 until 2026-09-21.
+
+**What it does now:** `_confirmOrderNow()` returns an explicit `created` flag that is true only
+with a real WooCommerce order ID. On failure the bot says plainly that the order did not go
+through and that nothing was charged, KEEPS the cart, stays in `CONFIRMING_ORDER` so a later
+"yes" retries in one word, opens an `order_failed` support ticket, gives the customer its
+reference, and WhatsApps the owner the cart, address and error. The LLM path returns
+`status:"error"` with explicit instructions not to thank, confirm, invent an order ID or hand
+out a link. The proforma PDF is gone from the failure path entirely. 43 checks in
+`npm run test-order-flow`. Original description below.
+
+When `createOrder()` fails, **both** confirmation paths still send a success message:
+- Deterministic path (`ai.js:1753`): *"Awesome! 🎉 Your order is confirmed! Our team will reach
+  out shortly to confirm payment."* — no order ID, no payment link.
+- LLM path (`ai.js:2081`): the tool result is `status: "success"`, "Order noted manually" — so
+  the model confirms warmly too.
+
+Then, on both paths, `session.cart`, `address` and `history` are **wiped**, and the lead is
+saved with `status: 'completed'`. The PDF proforma invoice attached in place of a payment link
+makes it look even more official.
+
+Net effect: the customer believes they ordered, no order exists in WooCommerce, the cart is
+unrecoverable, the lead reads "completed", and **nobody is alerted** — no owner ping, no
+ticket, no retry. Redesigning this flow is the next work item.
+
+### 6. Agreed order-flow rework — DECIDED 2026-09-20, NOT YET IMPLEMENTED
+
+Signed off by the client. Build in this order:
+
+1. ✅ **Purge COD — DONE 2026-09-21.** Every COD claim is gone from `faq.json` (English +
+   Tanglish), both worked examples and all three confirmation templates, and a
+   `PAYMENT — PREPAID ONLY (CRITICAL)` block tells the agent to refuse COD even when pressed.
+   **The open shipping question was resolved by assumption:** the FAQ said "free for prepaid,
+   ₹50 for COD", and with COD gone the prepaid rate is the only rate — so it now says shipping
+   is FREE on every order. ⚠️ Confirm with the owner; if delivery is ever charged, `faq.json[1]`
+   and `[2]` need correcting.
+2. ✅ **Never claim an order that does not exist — DONE 2026-09-21.** All of it except the
+   automatic retry queue: the cart survives and the session stays in `CONFIRMING_ORDER`, so the
+   customer's next "yes" retries in one word, but nothing retries in the background. That was
+   deliberate — without an idempotency key against WooCommerce a background retry can place the
+   same order twice, and duplicate pending orders against a 60-minute `hold stock` window are
+   their own mess. Revisit with the payment lifecycle (item 4), which needs order tracking anyway.
+3. ✅ **Boot health check — DONE 2026-09-21.** `woocommerceService.checkOrderingHealth()` probes
+   `GET /orders` 6s after boot and every 15 minutes into `orderingAvailable`. While false, the
+   agent skips `createOrder()` entirely and goes to the honest failure path + owner alert. Only
+   401/403 flips the flag, so a timeout cannot send every customer to a human. Verified live
+   against theaurax.in: `[WooCommerce] Ordering health: OK (app-password).`
+4. **Payment lifecycle.** Order created → reply carries order ID + itemised line + total +
+   payment link (link and ID only ever appear when WooCommerce actually returned them). Poll for
+   payment with ONE bulk call (`GET /orders?status=processing&modified_after=…`) against a
+   DB-tracked list, not one call per order.
+   - Reminders at **+15 min** and **+40 min**, then stop. Two, and no more.
+   - WooCommerce cancels the unpaid order at 60 min (`hold stock`); the bot goes quiet then.
+   - If the customer comes back later asking to pay, and ONLY then: re-check the order, and if
+     it was cancelled create a fresh one and send a new link.
+   - On payment: send order ID, amount, items and the invoice, and **suppress all follow-ups to
+     that customer for 24 hours**.
+   - Route reminders through the existing `chatBudget()` pacing, and exclude anyone in the
+     payment-reminder flow from the cold-lead follow-up so they never get both.
+5. ~~Low-stock hold~~ — **dropped for now** at the client's request, revisit later. It is not
+   buildable as specified anyway: the store carries no stock counts (see the table in CLAUDE.md),
+   so "below 5" has no number to compare against. When it returns, the options are an
+   owner-approval hold keyed on ORDER QUANTITY (works today), or enabling WooCommerce stock
+   management across ~680 published variations first.
+6. ✅ **P1–P5 search fixes from the tester reviews — DONE 2026-09-21** (§4 above). Built ahead of
+   item 4 because item 4 is still blocked on the client answers below, and these were the
+   failures the tester could actually see.
+
+⬜ Still needed from the client before 4 can ship: the dispatch promise to quote a paid customer
+("ships in 24–48 hrs"?), and whether the invoice PDF needs GSTIN / business address / a tax
+breakdown, sent as a WhatsApp attachment or a link.
+
+### 7. Test-order cleanup — done 2026-09-20
+Cancelled the 8 bot test orders left `pending` from development: #77984–77991. Two pending
+orders remain and were deliberately **not** touched — #76504 (2026-05-12, ₹0) and #71489
+(2026-02-21, ₹48,000). Neither is a bot order and both have **zero line items**, i.e. empty
+shells rather than real orders. Clear them only on the owner's say-so.
+
+### 8. New requirement — wholesale new-stock broadcasts
+The client keeps a list of bulk buyers and, when stock arrives, shares photos and messages,
+collects requirements and delivers. Plan written up for the client at
+**https://claude.ai/code/artifact/8276115c-e553-4f54-b20f-090a83e7026b** (private until shared).
+
+The short version: **this must never run on the bot's number.** Broadcasting images to a
+customer list from `whatsapp-web.js` is a stronger version of exactly what got the number
+restricted on 2026-09-17. The plan is two numbers — the existing one stays reply-only, and a
+second number on Meta's official WhatsApp Business Platform carries the campaigns. Marketing
+templates cost ~₹0.86/message in India (≈₹172/month for 100 buyers × 2 sends); customer replies
+and the following 24h are free; a new number is capped at 250 business-initiated conversations
+per day and steps up automatically. Connect to **Meta directly** — the reseller BSPs (Wati,
+AiSensy, Interakt) add ₹2,000–₹5,000/month plus a 15–35% per-message markup for a dashboard we
+already have. `.env.example` already carries `WHATSAPP_ACCESS_TOKEN` and
+`WHATSAPP_PHONE_NUMBER_ID` slots for it.
+
+Build: a wholesale customer list in the admin console (teams, sizes, typical qty, last order,
+opt-in state), a campaign screen (template + photo + audience filter + preview + paced send),
+and replies landing back in the normal bot chat where the requirement is logged and the owner
+alerted. Blocked on the client providing a second SIM, Meta Business verification, the existing
+customer list, and sample messages to turn into templates.
+
+### 9. Deploy checklist for the next server visit
+Nothing from 2026-09-20 or 2026-09-21 has been deployed — it is all local, and commit
+`5e70944` (the clipboard fix) is also still sitting unpushed. On the VPS (`/root/AuraxAI`,
+pm2 process `aurax-ai`):
+
+1. `git pull` — brings `check_woo.js`, the app-password support in `config.js` /
+   `woocommerce.js`, and the docs.
+2. Add to `/root/AuraxAI/apps/bot/.env`:
+   `WOOCOMMERCE_APP_USER=TheAurax` and `WOOCOMMERCE_APP_PASSWORD=<app password>`.
+   ⚠️ The password generated on 2026-09-20 was shared in plain chat — **revoke it and generate
+   a fresh one** (WP Admin → Users → Profile → Application Passwords) rather than reusing it.
+3. `pm2 restart aurax-ai`
+4. `npm run check-woo` from `apps/bot` — must show ✅ on both READ and ORDER access.
+5. `npm run sync` — confirms the catalogue refreshes against the live store.
+6. Boot log should read `[WooCommerce] Auth mode: app-password (user "TheAurax")` followed a few
+   seconds later by `[WooCommerce] Ordering health: OK (app-password).` If that second line says
+   ORDERING IS DOWN, checkout is being handed to a human — fix the credential before anything else.
+7. `npm run test-search` and `npm run test-order-flow` — both should be all-green. Neither
+   places an order, sends a message, or calls an LLM, so they are safe to run on the VPS.
 
 ---
 

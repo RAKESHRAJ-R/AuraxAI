@@ -612,6 +612,14 @@ app.listen(PORT, () => {
   setTimeout(runProductSync, 8000);
   setInterval(runProductSync, PRODUCT_SYNC_INTERVAL_MS);
 
+  // Can we create orders at all? Probe at boot and every 15 minutes. While the answer is no,
+  // the agent hands checkout to a human instead of walking customers into a dead end. This is
+  // the check that would have surfaced the 2026-08-07 REST block on the day it started
+  // instead of six weeks later, after every order in between had silently failed.
+  const ORDERING_HEALTH_INTERVAL_MS = 15 * 60 * 1000;
+  setTimeout(() => { woocommerceService.checkOrderingHealth(); }, 6000);
+  setInterval(() => { woocommerceService.checkOrderingHealth({ quiet: true }); }, ORDERING_HEALTH_INTERVAL_MS);
+
   // Preload the local embedding model so the first customer question after a restart
   // doesn't pay the model-load latency inside its own reply. Only worth doing when
   // there is something indexed to search — with no knowledge sources the retrieval

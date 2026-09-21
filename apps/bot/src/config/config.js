@@ -32,6 +32,20 @@ const config = {
     url: (process.env.WOOCOMMERCE_URL || 'https://theaurax.in').trim(),
     consumerKey: (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim(),
     consumerSecret: (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim(),
+    // WordPress Application Password — an ALTERNATIVE credential for the exact same
+    // wc/v3 endpoints, used in preference to the consumer key when both are set.
+    // Added 2026-09-20: a plugin on theaurax.in intercepts any request carrying a
+    // recognised WooCommerce consumer key and answers
+    // `{"success":false,"message":"API is working, Site Connected"}` with HTTP 401 —
+    // on EVERY REST route, valid secret or not. That killed both product sync and
+    // order creation (so customers got a PDF invoice with no payment link). An app
+    // password is not a consumer key, so the interceptor ignores it, and it
+    // authenticates as a real WP user, which also satisfies the site's
+    // "Disable WP REST API" plugin. The user must be Administrator or Shop Manager,
+    // otherwise wc/v3 authenticates but then 403s on permissions.
+    appUser: (process.env.WOOCOMMERCE_APP_USER || '').trim(),
+    // WP prints it in "abcd EFGH ijkl" groups; the spaces are cosmetic but harmless.
+    appPassword: (process.env.WOOCOMMERCE_APP_PASSWORD || '').trim(),
   },
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',

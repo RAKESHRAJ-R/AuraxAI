@@ -18,7 +18,10 @@
     "review": "node src/review_conversations.js",
     "seed-tickets": "node src/seed_tickets.js",
     "migrate-mongo": "node src/migrate_to_mongo.js",
-    "admin-user": "node src/admin_user.js"
+    "admin-user": "node src/admin_user.js",
+    "check-woo": "node src/check_woo.js",
+    "test-search": "node src/test_search.js",
+    "test-order-flow": "node src/test_order_flow.js"
   },
   "overrides": {
     "sharp": "^0.35.3"

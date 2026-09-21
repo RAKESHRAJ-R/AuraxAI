@@ -8,18 +8,18 @@
     "answerTanglish": "Vanakkam bro! 👋 Naan Aura, Theaurax.in la unga assistant — premium football jerseys ku best place! Latest 25/26 season jerseys ellam stock la iruku. Enna team illa player jersey venum? Sollunga! ⚽🔥"
   },
   {
-    "category": "COD & Payment",
-    "keywords": ["cod", "cash on delivery", "payment methods", "pay", "gpay", "phonepe", "upi", "online pay", "pay pannalama", "panam eppadi"],
-    "question": "Do you support Cash on Delivery (COD) or online payments?",
-    "answer": "Yes, we support both Cash on Delivery (COD) and Online Payments (UPI, GPAY, PhonePe, Cards). For online payments, there is no extra charge. For COD, there is a flat extra fee of ₹50 charged by the courier partner. You can choose your preferred method at checkout on Theaurax.in.",
-    "answerTanglish": "Rendumey iruku bro — COD um Online Payment um (UPI, GPay, PhonePe, Cards). Online pay panna extra charge kidayaathu. COD la courier partner flat ₹50 extra fee vaanguvaanga. Checkout la ungalukku ethu venumo select pannikonga!"
+    "category": "Payment",
+    "keywords": ["cod", "cash on delivery", "cash on delivary", "payment methods", "pay", "gpay", "phonepe", "paytm", "upi", "online pay", "card", "net banking", "netbanking", "razorpay", "pay pannalama", "panam eppadi", "cod iruka", "cash la tharalama"],
+    "question": "What payment methods do you accept? Is Cash on Delivery available?",
+    "answer": "We're prepaid only right now — Cash on Delivery isn't available. You can pay securely by UPI (GPay, PhonePe, Paytm), debit/credit card, net banking or wallet through our Razorpay checkout. Shipping is FREE on every order, and we send you a payment link right here on WhatsApp once your order is placed.",
+    "answerTanglish": "Bro, ippo prepaid mattum dhaan — Cash on Delivery kidaiyaathu. UPI (GPay, PhonePe, Paytm), debit/credit card, net banking, wallet — ellaam Razorpay checkout la pay pannalaam. Shipping ellaa order ku-um FREE! Order place aana odane payment link inga WhatsApp la anuppiduven."
   },
   {
     "category": "Shipping & Delivery",
     "keywords": ["delivery time", "shipping time", "how long", "when will i get", "shipping charge", "delivery charge", "charges", "ethana naal", "ethana naa", "evlo naal", "evvalavu naal", "naal aagum", "eppo varum", "eppo delivery", "delivery evlo", "shipping evlo", "delivery eppo"],
     "question": "What are the shipping charges and delivery timelines?",
-    "answer": "We ship all across India! Shipping is FREE for all online prepaid orders. For Cash on Delivery (COD) orders, a flat fee of ₹50 applies. Delivery takes 3 to 5 business days for metro cities, and 5 to 7 business days for the rest of India. You will receive a tracking link via WhatsApp/SMS once your order is shipped.",
-    "answerTanglish": "India full ah ship pannuvom bro! Online prepaid order ku shipping FREE. COD ku flat ₹50 aagum. Metro cities ku 3-5 business days, matha oorunga ku 5-7 business days la delivery aagidum. Order ship aana odane tracking link WhatsApp/SMS la varum!"
+    "answer": "We ship all across India and shipping is FREE on every order — there are no delivery charges. Delivery takes 3 to 5 business days for metro cities, and 5 to 7 business days for the rest of India. Orders are prepaid, so you'll get a secure payment link on WhatsApp, and a tracking link once your order ships.",
+    "answerTanglish": "India full ah ship pannuvom bro, shipping ellaa order ku-um FREE — delivery charge ethuvum kidaiyaathu! Metro cities ku 3-5 business days, matha oorunga ku 5-7 business days la delivery aagidum. Order prepaid dhaan, so payment link WhatsApp la varum, ship aana odane tracking link-um varum!"
   },
   {
     "category": "Sizing & Fit",

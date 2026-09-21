@@ -6,7 +6,9 @@ import knowledgeService from './knowledge.js';
 import retrievalService from './retrieval.js';
 import woocommerceService from './woocommerce.js';
 import dbService from './db.js';
-import { generateInvoicePDF } from './invoice.js';
+// NOTE: invoice.js is no longer imported here. The proforma PDF used to be attached when
+// WooCommerce order creation FAILED, which made a non-existent order look official. The
+// generator still exists for the paid-order invoice in the payment-lifecycle work.
 import whatsappWebBot from './whatsapp-web-bot.js';
 import sheetsService from './sheets.js';
 
@@ -236,12 +238,12 @@ Idhu top matches bro, innum options website la irukku. Ethu venum, enna size? �
   Tool (confirm_order) returns: { paymentUrl: "https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc" }
   → Reply: "Order confirm aayiduchi bro! 🎉 Idhu unga payment link:
 https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
-Indha link ah open pannunga, UPI illa COD select pannunga, order confirm aayidum!"
+Indha link ah open pannunga, UPI / card / net banking la pay pannunga, order confirm aayidum!"
   (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
 
-[Tanglish] FAQ query — COD:
+[Tanglish] FAQ query — payment (we are PREPAID ONLY, COD is NOT available):
   Customer: "COD available ah bro?"
-  → Reply directly (NO tool call needed): "Aama bro, COD available! 🚚 Courier flat ₹50 COD fee iruku. UPI illa card la online pay panna extra charge illa."
+  → Reply directly (NO tool call needed): "Sorry bro, COD kidaiyaathu — prepaid mattum dhaan. 🚚 UPI, card, net banking la pay pannalaam, shipping ellaa order ku-um FREE!"
 
 [Tanglish] Quick FAQ — crisp, 2-3 sentences, straight to the answer (do NOT repeat the question back):
   Customer: "how many days for delivery to chennai?"
@@ -276,12 +278,12 @@ These are the top matches — more options on our website. Which one would you l
   Tool (confirm_order) returns: { paymentUrl: "https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc" }
   → Reply: "Order confirmed! 🎉 Here's your payment link:
 https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
-Open the link, choose UPI or COD, and your order is placed!"
+Open the link, pay by UPI, card or net banking, and your order is placed!"
   (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
 
-[English] FAQ query — COD:
+[English] FAQ query — payment (we are PREPAID ONLY, COD is NOT available):
   Customer: "Do you support cash on delivery?"
-  → Reply directly (NO tool call needed): "Yes, we support Cash on Delivery (COD)! 🚚 There's a flat ₹50 COD fee from the courier. You can also pay online via UPI or cards at no extra charge."`;
+  → Reply directly (NO tool call needed): "Sorry, we don't offer Cash on Delivery — we're prepaid only. 🚚 You can pay by UPI, card or net banking, and shipping is FREE on every order!"`;
 
     // PROMPT-CACHING NOTE: everything above the "Current Session Context" line below is a
     // stable prefix (identical byte-for-byte across every call within a language), so the
@@ -299,7 +301,7 @@ Your goal is to build a friendly connection and aggressively but politely guide 
 
 ---
 COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
-whenever the customer is idle with an empty cart (shipping, COD/payment, sizing, returns,
+whenever the customer is idle with an empty cart (shipping, payment, sizing, returns,
 customization, bulk orders). If one of these topics comes up mid-flow (cart non-empty or
 collecting address) and you need to answer it yourself, keep it brief and accurate — don't
 invent policy details you're not sure of.
@@ -324,12 +326,26 @@ Instructions:
 12. NEVER call 'confirm_order' unless the customer's last message is PURELY a plain confirmation (yes/ok/confirm/seri, nothing else added). If they mention any change, correction, different item, different quantity, or a negation ("illa", "no", "wait", "change it") — do NOT confirm. Instead use 'update_cart' to fix the item first, then show the corrected summary and ask them to confirm again.
 
 ---
+PAYMENT — PREPAID ONLY (CRITICAL):
+- Razorpay is the ONLY payment gateway enabled on theaurax.in. Cash on Delivery is DISABLED.
+- NEVER offer, promise, or agree to Cash on Delivery, "pay on delivery", "cash la tharen",
+  or any pay-later arrangement — not even if the customer insists or says they always pay
+  that way. Accepting one means an order nobody can collect money for.
+- The accepted methods are UPI (GPay/PhonePe/Paytm), debit/credit card, net banking and
+  wallets, all through the payment link. Shipping is FREE on every order.
+- If they ask for COD, say plainly that we're prepaid only, then move straight on to the
+  payment link — apologise once, don't dwell on it.
+
+---
 NEVER INVENT PRODUCTS (CRITICAL — ZERO TOLERANCE):
 - You may ONLY name, price, or link a product that appears in a 'search_products' tool result in THIS conversation. Every product name, price, size, and URL must come verbatim from a tool result.
 - NEVER make up a product, a price, a size, or a theaurax.in/product/... link from your own knowledge (e.g. "PSG Home 2022", "CR7 Home 2022", "Manchester United 2023"). If it isn't in a tool result, it does not exist for you.
 - To suggest ANY product — including when the customer says "any other options?", "vera ethuvum iruka?", "show me more" — you MUST call 'search_products' again first (for "any other", search the SAME team/player they were just asking about, e.g. still "ronaldo"), then reply ONLY with what the tool returns.
 - If 'search_products' returns nothing, say so honestly and ask them to name a specific team or player — e.g. "Sorry bro, adhu ippo stock la illa. Vera enna team venum? Real Madrid, Barcelona, Chelsea?" — do NOT paper over it with invented items.
 - Kids jerseys are only offered when the customer explicitly asks for kids/child sizes. Never push a (KIDS) product to someone asking for a normal/adult jersey.
+- SEARCH BEFORE YOU ASK. Never reply "could you be more specific?" / "which team?" to a jersey question before calling 'search_products' with the customer's own words. Search first, then ask a narrowing question only if the result is genuinely empty.
+- The tool result tells you how good the match is. 'exact' means these really are what they asked for — hype them up. 'partial' means a detail could NOT be matched (the 'unmatched' list — e.g. a season or Player Version): say plainly and in ONE short sentence that it is unavailable, THEN show the alternatives. 'none' means we found nothing: say so honestly and ask which team or player they want. NEVER present a partial or no-match result as though it were what the customer asked for.
+- A follow-up that only narrows ("player version", "26/27", "the 25-26 one") refers to the SAME team or player as the previous search. Keep the team in the query when you search again.
 
 ---
 AFTER-SALES SUPPORT (you are ALSO the customer-support agent, not just sales):
@@ -517,6 +533,52 @@ ${sessionContext}`;
         }
       }
     ];
+  }
+
+  /**
+   * Tell the model exactly what the search did and did not find.
+   *
+   * "Found products" was sent for every non-empty result, including the cheapest-five filler
+   * returned on a zero-match search, so the model had no way of knowing it was about to
+   * present unrelated shirts as answers.
+   */
+  _searchResultMessage(found, searchQuery) {
+    if (found.matchQuality === 'exact') return 'Found products. These genuinely match what the customer asked for.';
+    if (found.matchQuality === 'partial') {
+      return `PARTIAL MATCH. We do NOT have: ${found.unmatched.join(', ')}. `
+        + `The products listed are the closest alternatives we DO stock. Say plainly and briefly that `
+        + `${found.unmatched.join(' and ')} is unavailable, then offer these. Never imply they are what was asked for.`;
+    }
+    return `NO MATCH for "${searchQuery}". The products listed (if any) are generic popular suggestions, NOT matches. `
+      + `Tell the customer honestly that you couldn't find it, ask which team or player they want, and you may offer `
+      + `these as alternatives. Do NOT present them as the thing they asked for. Website: https://theaurax.in/?s=`
+      + encodeURIComponent(searchQuery || '');
+  }
+
+  /**
+   * Carry the subject of a search across turns.
+   *
+   * Tester review, 2026-09-20: "Real Madrid 26/27 all kit jerseys" followed by "Player version
+   * 26/27" searched the second message verbatim. With the team gone there was nothing to match
+   * on, so it fell through to the cheapest in-stock products and answered a Real Madrid
+   * question with a CSK shirt. A follow-up that states only constraints means "the same thing
+   * as before, but this way".
+   */
+  _mergeSearchContext(session, query) {
+    const raw = (query || '').trim();
+    const subject = woocommerceService.extractSubject(raw);
+    if (subject) {
+      // A new subject replaces the old one -- they have moved on to a different team.
+      session.searchSubject = subject;
+      return raw;
+    }
+    const hasConstraint = woocommerceService.parseSeasons(raw).present || Boolean(woocommerceService.parseVersion(raw));
+    if (session.searchSubject && hasConstraint) {
+      const merged = `${session.searchSubject} ${raw}`.trim();
+      console.log(`[AI Service] Search context carried: "${raw}" -> "${merged}"`);
+      return merged;
+    }
+    return raw;
   }
 
   sendEscalationAlert(senderId, userQuery, session) {
@@ -1331,6 +1393,9 @@ ${sessionContext}`;
   _buildNoLLMFallback(userQuery, language = 'english') {
     const isTanglish = language === 'tanglish';
     try {
+      // searchProducts returns ONLY genuine matches since 2026-09-21, so a miss falls through
+      // to the generic "we're busy" message below rather than offering unrelated shirts under
+      // "I found these for you" -- which is the same false-match problem in a quieter place.
       const products = woocommerceService.searchProducts(userQuery || '');
       if (products && products.length > 0) {
         const topProducts = products.slice(0, 3);
@@ -1532,6 +1597,19 @@ ${sessionContext}`;
       address: session.address || '',
       pincode: ''
     };
+    // Ordering is known to be down (boot/periodic health check) — don't walk the customer
+    // into a dead end. Report it as a failure so the caller escalates to a human instead.
+    if (woocommerceService.orderingAvailable === false) {
+      console.warn(`[AI Service] Skipping createOrder for ${senderId} — WooCommerce ordering is flagged unavailable.`);
+      return {
+        ok: true,
+        created: false,
+        orderId: null,
+        checkoutUrl: null,
+        error: woocommerceService.orderingError || 'WooCommerce ordering unavailable',
+      };
+    }
+
     const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
     // Remember orders created in this session so the customer can always track them later
     // without the billing-phone match (they entered a delivery number, we placed it here).
@@ -1541,11 +1619,126 @@ ${sessionContext}`;
         session.orderIds.push(String(orderResult.orderId));
       }
     }
+    // `created` is the ONLY field a caller may read as "a real order exists". It requires an
+    // actual WooCommerce order ID, not merely the absence of an exception. Until 2026-09-21
+    // this returned a bare `ok: true` on failure too, and both callers took that for success.
     return {
       ok: true,
+      created: Boolean(orderResult.success && orderResult.orderId),
       orderId: orderResult.success ? orderResult.orderId : null,
-      checkoutUrl: orderResult.success ? orderResult.paymentUrl : null
+      checkoutUrl: orderResult.success ? orderResult.paymentUrl : null,
+      error: orderResult.success ? null : (orderResult.error || 'WooCommerce did not return an order'),
     };
+  }
+
+  /**
+   * The side-effects of a failed order, shared by the deterministic path (which then writes
+   * its own reply) and the LLM path (where the model writes the reply from the tool result).
+   * Keeps the cart, flags the session for escalation, opens a ticket and pings the owner.
+   */
+  async _recordOrderFailure(senderId, session, result) {
+    console.error(`[AI Service] ORDER CREATION FAILED for ${senderId}: ${result.error || 'unknown error'} — cart preserved, owner alerted.`);
+
+    // Cart, address and history are deliberately NOT cleared -- the order still has to happen.
+    session.state = 'CONFIRMING_ORDER';
+    session.requiresEscalation = true;
+    session.lastOrderError = result.error || 'unknown error';
+
+    let ticket = null;
+    try {
+      const cartLine = (session.cart || [])
+        .map(i => `${i.name} (size ${i.size || 'n/a'}) x${i.qty}`)
+        .join('; ');
+      ticket = await dbService.saveTicket({
+        userId: senderId,
+        name: session.customerName || 'Customer',
+        phone: session.customerPhone || senderId.replace(/\D/g, ''),
+        email: '',
+        orderId: '',
+        issueType: 'order_failed',
+        description: `Order creation FAILED at WhatsApp checkout. Reason: ${result.error || 'unknown'}. `
+          + `Cart: ${cartLine}. Address: ${session.address || 'not provided'}. `
+          + `The customer was NOT told the order succeeded -- place it manually and send them the payment link.`,
+        hasPhoto: false,
+      });
+      session.lastTicketId = ticket.id;
+    } catch (ticketErr) {
+      console.error('[AI Service] Could not raise order-failure ticket:', ticketErr.message);
+    }
+
+    this.sendOrderFailureAlert(senderId, session, result, ticket);
+    return ticket;
+  }
+
+  /**
+   * WooCommerce refused to create the order.
+   *
+   * The one thing we must NOT do here is tell the customer it worked. That is exactly what
+   * shipped on 2026-08-07 and ran unnoticed until 2026-09-21: both confirm paths sent
+   * "Your order is confirmed!", wiped the cart and address, marked the lead 'completed', and
+   * attached a proforma PDF in place of a payment link -- with no owner alert and no ticket.
+   * The customer believed they had ordered, no order existed, and the cart was unrecoverable.
+   *
+   * So instead: keep the cart, stay in CONFIRMING_ORDER (a later "yes" retries it in one
+   * word), say plainly that it did not go through, ping the owner, and open a support ticket
+   * so it lands in a queue a human actually reads. No PDF -- a proforma invoice with no
+   * payment link is what made the false confirmation look official.
+   */
+  async _handleOrderFailure(senderId, session, userQuery, result) {
+    const isTanglish = session.language === 'tanglish';
+    const ticket = await this._recordOrderFailure(senderId, session, result);
+
+    const ref = ticket
+      ? (isTanglish ? ` Reference: ${ticket.id}.` : ` Your reference is ${ticket.id}.`)
+      : '';
+    const reply = isTanglish
+      ? `Aiyo sorry bro 🙏 order ippo place panna mudiyala — engaluku oru technical problem. Ungalukku ethuvum charge aagala, cart safe ah iruku.${ref} Namma team ku alert poyiduchu, seekiram unga kitta contact pannuvaanga. Konja neram kazhichu "yes" nu reply pannunga, naan marubadiyum try pannuren!`
+      : `I'm really sorry — I couldn't place that order just now, there's a technical issue on our side. 🙏 You have NOT been charged and your cart is safe.${ref} Our team has been alerted and will contact you shortly to complete it. You can also reply "yes" in a few minutes and I'll try again.`;
+
+    session.history.push({ role: 'user', content: userQuery });
+    session.history.push({ role: 'assistant', content: reply });
+
+    await dbService.saveSession(senderId, session);
+    await dbService.saveLead({
+      userId: senderId,
+      name: session.customerName || 'Customer',
+      phone: senderId.replace(/[^0-9]/g, ''),
+      channel: 'whatsapp',
+      cart: session.cart || [],
+      address: session.address || null,
+      requiresEscalation: true,
+      status: 'active',
+      conversation: session.history || [],
+    });
+
+    return { replyText: reply, intent: 'order_failed', requiresEscalation: true, suggestedProductIds: [] };
+  }
+
+  // Owner ping for a checkout that could not be completed. Separate from the wholesale-lead
+  // and support-ticket alerts because the urgency is different: a customer is sitting there
+  // having just been told their order did not go through, and the sale is still winnable.
+  sendOrderFailureAlert(senderId, session, result, ticket) {
+    const phone = session.customerPhone || senderId.toString().replace(/[^0-9]/g, '');
+    const items = (session.cart || [])
+      .map(i => `• ${i.name} — size ${i.size || 'n/a'} x ${i.qty} — ₹${i.price}`)
+      .join('\n') || '(cart empty)';
+    const md = `⚠️ *ORDER FAILED — action needed*\n\n`
+      + `A customer confirmed an order and WooCommerce refused it. They have been told it did NOT go through.\n\n`
+      + `👤 Name: ${session.customerName || 'Customer'}\n`
+      + `📱 Phone: ${phone}\n`
+      + (ticket ? `🎫 Ticket: ${ticket.id}\n` : '')
+      + `\n*Cart:*\n${items}\n\n`
+      + `*Address:*\n${session.address || 'Not provided'}\n\n`
+      + `*Error:* ${result.error || 'unknown'}\n\n`
+      + `Place this order manually and send them the payment link.`;
+
+    const ownerNumber = config.owner?.whatsappNumber;
+    if (ownerNumber && whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
+      const cleanOwner = ownerNumber.replace(/[^0-9]/g, '') + '@c.us';
+      whatsappWebBot.sendText(cleanOwner, md).catch(err => {
+        console.error('[AI Service] Failed to send WhatsApp order-failure alert:', err.message);
+      });
+    }
   }
 
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
@@ -1606,6 +1799,9 @@ ${sessionContext}`;
 
     let resultText = "";
     let isConfirmed = false;
+    // Whether search_products actually ran this turn -- used to stop the model asking the
+    // customer to "be more specific" about something it never looked up. See the guard below.
+    let searchRanThisTurn = false;
     let requiresEscalation = false;
     let checkoutUrl = null;
     let quotaExhaustedWaitMs = null;
@@ -1748,31 +1944,32 @@ ${sessionContext}`;
       const isConfirmReply = /^\s*(yes+|yeah|yep|ye+p|confirm(ed)?|ok(ay)?|okey|sure|correct|right|seri|sari|proceed|go ahead|order pannunga|book pannunga|place (the )?order)\s*[!.]*\s*$/i.test(userQuery.trim());
       if (isConfirmReply) {
         const result = await this._confirmOrderNow(session, senderId);
+        // WooCommerce refused the order (or ordering is known to be down). Say so honestly,
+        // keep the cart, alert the owner -- never send a confirmation for an order that does
+        // not exist. See _handleOrderFailure for the full history of why.
+        if (result.ok && !result.created) {
+          return await this._handleOrderFailure(senderId, session, userQuery, result);
+        }
         if (result.ok) {
           const isTanglish = session.language === 'tanglish';
-          let reply = result.checkoutUrl
+          // The order ID and the payment link are printed ONLY when WooCommerce actually
+          // returned them -- we are past `created`, so the ID is real either way.
+          const reply = result.checkoutUrl
             ? (isTanglish
-                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}\nUPI or COD select pannunga. Thanks for shopping with Theaurax! ⚽🔥`
-                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}\nChoose UPI or COD. Thanks for shopping with Theaurax! ⚽🔥`)
+                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}\nUPI / card / net banking la pay pannunga. Thanks for shopping with Theaurax! ⚽🔥`
+                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}\nPay by UPI, card or net banking. Thanks for shopping with Theaurax! ⚽🔥`)
             : (isTanglish
-                ? `Semma bro! 🎉 Order confirm aayiduchi! Naanga team soon contact pannuvom payment confirm pannurathukku. Thanks! ⚽🔥`
-                : `Awesome! 🎉 Your order is confirmed! Our team will reach out shortly to confirm payment. Thanks for shopping with Theaurax! ⚽🔥`);
+                ? `Semma bro! 🎉 Order #${result.orderId} place aayiduchi! Payment link konja neram la inga anuppuren — team confirm panniduvaanga. Thanks! ⚽🔥`
+                : `Great news! 🎉 Your order #${result.orderId} has been placed! I'll send your payment link here shortly — our team is confirming it now. Thanks for shopping with Theaurax! ⚽🔥`);
 
           const cartSnapshot = session.cart;
-          if (!result.checkoutUrl && cartSnapshot.length > 0) {
-            try {
-              const fallbackOrderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
-              await generateInvoicePDF(fallbackOrderId, {
-                userId: senderId,
-                customerName: session.customerName || `Customer (${senderId})`,
-                cart: cartSnapshot,
-                address: session.address
-              });
-              const baseUrl = config.baseUrl || 'http://localhost:3000';
-              reply += `\n\n📄 *Proforma Invoice*: ${baseUrl}/invoices/invoice_${fallbackOrderId}.pdf`;
-            } catch (invoiceErr) {
-              console.error('[AI Service] Fallback PDF invoice failed (deterministic confirm):', invoiceErr.message);
-            }
+          // A real order with no payment link still needs a human to send one. There is no
+          // proforma PDF here any more: an invoice with no way to pay reads as a completed
+          // purchase, which is precisely what made the old false confirmation convincing.
+          if (!result.checkoutUrl) {
+            this.sendOrderFailureAlert(senderId, session, {
+              error: `Order #${result.orderId} was created but WooCommerce returned no payment link — send the customer one manually.`
+            }, null);
           }
 
           session.history.push({ role: 'user', content: userQuery });
@@ -1881,12 +2078,20 @@ ${sessionContext}`;
             let toolResultObj = {};
 
             if (fnName === "search_products") {
-              const products = woocommerceService.searchProducts(args.query || "");
-              matchedProductIds = products.map(p => p.id);
-              lastSearchResults = products;
+              // Carry the team/player from the previous search when this query is nothing but
+              // constraints ("player version 26/27"), then search with those constraints
+              // applied as real filters rather than as tokens that get silently dropped.
+              const searchQuery = this._mergeSearchContext(session, args.query || "");
+              const found = woocommerceService.searchProductsDetailed(searchQuery);
+              searchRanThisTurn = true;
+              // `shown` is what the customer will actually see. On a miss that is a list of
+              // generic suggestions, and every message built from it says so.
+              const shown = found.products.length > 0 ? found.products : found.suggestions;
+              matchedProductIds = shown.map(p => p.id);
+              lastSearchResults = shown;
               // Persisted so a later turn (e.g. "1st one, M size 2") can resolve which
               // product the customer means without an LLM call — see parseSizeQtyReply.
-              session.lastShownProducts = products.slice(0, 10).map(p => ({
+              session.lastShownProducts = shown.slice(0, 10).map(p => ({
                 productId: p.id, name: p.name, price: p.price, sizes: p.sizes || []
               }));
               // A fresh search invalidates any earlier "customer picked #2" memory —
@@ -1900,15 +2105,32 @@ ${sessionContext}`;
               // instead of asking once at the end, and vary the list format turn to turn).
               // Templating deterministically for 1-3 matches guarantees correct formatting,
               // a numbered list customers can reply to ("1st one"), and saves an LLM turn.
-              if (products.length >= 1 && responseMessage.tool_calls.length === 1) {
-                const top = products.slice(0, 3);
+              if (shown.length >= 1 && responseMessage.tool_calls.length === 1) {
+                const top = shown.slice(0, 3);
                 const isTanglish = session.language === 'tanglish';
-                const hypeOpeners = isTanglish
-                  ? ['Bro kandippa iruku! 🔥', 'Semma choice bro! 😍', 'Idhu vera level bro! 🏆']
-                  : ['Yes, we have it! 🔥', 'Great pick! 😍', 'This one\'s a favorite! 🏆'];
-                const opener = hypeOpeners[Math.floor(Math.random() * hypeOpeners.length)];
+                // What we could NOT give them comes FIRST, ahead of any hype. Until 2026-09-21
+                // the hype opener was unconditional, so "Semma choice bro! 😍" was printed over
+                // the five cheapest in-stock shirts when the search had found nothing at all --
+                // the single biggest reason the 2026-09-20 tester reviews read as the bot faking
+                // a match. Hype is now reserved for a genuine, fully-constrained hit.
+                let opener;
+                if (found.matchQuality === 'none') {
+                  opener = isTanglish
+                    ? `Sorry bro, "${searchQuery}" ku exact ah kidaikala 😕 Idhu namma popular collection \u2014 paarunga:`
+                    : `Sorry, I couldn't find an exact match for "${searchQuery}" 😕 Here are some popular ones instead:`;
+                } else if (found.matchQuality === 'partial') {
+                  const miss = found.unmatched.join(' / ');
+                  opener = isTanglish
+                    ? `Bro, ${miss} ippo stock la illa 😕 Aana idhellaam iruku, paarunga:`
+                    : `We don't have ${miss} in stock right now 😕 Here's what we do have:`;
+                } else {
+                  const hypeOpeners = isTanglish
+                    ? ['Bro kandippa iruku! 🔥', 'Semma choice bro! 😍', 'Idhu vera level bro! 🏆']
+                    : ['Yes, we have it! 🔥', 'Great pick! 😍', 'This one\'s a favorite! 🏆'];
+                  opener = hypeOpeners[Math.floor(Math.random() * hypeOpeners.length)];
+                }
 
-                if (top.length === 1) {
+                if (top.length === 1 && found.matchQuality === 'exact') {
                   const p = top[0];
                   const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
                   resultText = isTanglish
@@ -1928,13 +2150,18 @@ ${sessionContext}`;
                   role: "tool",
                   tool_call_id: toolCall.id,
                   name: fnName,
-                  content: JSON.stringify({ products, message: "Found products" })
+                  content: JSON.stringify({ products: shown, matchQuality: found.matchQuality, unmatched: found.unmatched, message: this._searchResultMessage(found, searchQuery) })
                 });
                 keepLooping = false;
                 break;
               }
 
-              toolResultObj = { products: products.length > 0 ? products : null, message: products.length > 0 ? "Found products" : "No matching products found. Advise user to search website: https://theaurax.in/?s=" + encodeURIComponent(args.query || "") };
+              toolResultObj = {
+                products: shown.length > 0 ? shown : null,
+                matchQuality: found.matchQuality,
+                unmatched: found.unmatched,
+                message: this._searchResultMessage(found, searchQuery),
+              };
             } else if (fnName === "update_cart") {
               // Re-derive the product from a trusted source (the list shown to this
               // customer, then the cache) instead of trusting the LLM's raw productId,
@@ -2048,18 +2275,23 @@ ${sessionContext}`;
                 continue;
               }
 
-              isConfirmed = true;
-              session.state = 'IDLE';
-
               const addrDetails = session.addressDetails || {
                 name: session.customerName || 'Customer',
                 phone: session.customerPhone || senderId.replace(/\D/g, ''),
                 address: session.address || '',
                 pincode: ''
               };
-              const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
 
-              if (orderResult.success) {
+              // Ordering is known to be down -- don't place the customer in a dead end.
+              const orderResult = woocommerceService.orderingAvailable === false
+                ? { success: false, error: woocommerceService.orderingError || 'WooCommerce ordering unavailable' }
+                : await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
+
+              // `isConfirmed` is what wipes the cart, address and history further down, so it
+              // is set ONLY once a real order ID exists. It used to be set before the call ran.
+              if (orderResult.success && orderResult.orderId) {
+                isConfirmed = true;
+                session.state = 'IDLE';
                 checkoutUrl = orderResult.paymentUrl;
                 // Remember this order so the customer can track it here later regardless of
                 // which phone they entered vs. their WhatsApp number (see lookup_order).
@@ -2073,10 +2305,26 @@ ${sessionContext}`;
                   status: "success",
                   orderId: orderResult.orderId,
                   paymentUrl: checkoutUrl,
-                  message: `Order #${orderResult.orderId} created! Share this payment link with the customer so they can complete checkout: ${checkoutUrl}. Tell them to tap the link, choose UPI or COD, and confirm. Be warm and enthusiastic!`
+                  message: `Order #${orderResult.orderId} created! Share this payment link with the customer so they can complete checkout: ${checkoutUrl}. Tell them to tap the link and pay by UPI, card or net banking. Be warm and enthusiastic!`
                 };
               } else {
-                toolResultObj = { status: "success", message: "Order noted manually. Tell the customer our team will reach out shortly to confirm payment. Be warm and end on a positive note." };
+                // status MUST be "error". It said "success" / "Order noted manually" until
+                // 2026-09-21, so the model warmly confirmed an order that never existed while
+                // the code below wiped the cart. Keep the cart, keep CONFIRMING_ORDER, and
+                // tell the model in no uncertain terms what it may not say.
+                const ticket = await this._recordOrderFailure(senderId, session, {
+                  error: orderResult.error || 'WooCommerce did not return an order'
+                });
+                toolResultObj = {
+                  status: "error",
+                  message: "The order could NOT be created — a technical failure on our side. "
+                    + "Tell the customer plainly that it did NOT go through, that they have NOT been charged, "
+                    + "that their cart is saved, and that our team has been alerted and will contact them shortly. "
+                    + "Invite them to reply 'yes' again in a few minutes so you can retry. "
+                    + (ticket ? `Give them the reference ${ticket.id}. ` : '')
+                    + "Do NOT thank them for their order, do NOT say it is confirmed or placed, "
+                    + "do NOT invent an order ID, and do NOT give a payment link. Apologise once, warmly, and be brief."
+                };
               }
             } else if (fnName === "lookup_order") {
               const res = await woocommerceService.getOrder(args.orderId);
@@ -2176,14 +2424,23 @@ ${sessionContext}`;
           const looksLikeGreetingLeak = /welcome to theaurax\.in/i.test(resultText)
             || (greetingFaq && resultText.toLowerCase().includes(greetingFaq.question.toLowerCase()));
           const looksLikeRawJsonLeak = rawContentLookedLikeJson || wasStrippedToGarbage;
-          if (looksLikeGreetingLeak || looksLikeRawJsonLeak) {
+          // (d) it asks the customer to narrow down a jersey it never actually looked up.
+          // Tester review 2026-09-20: "Ac Milan jerseys iruka bro?" was answered with "Can you
+          // be more Specific" — AC Milan is in the catalogue, and no search had been run. If
+          // the model wants to clarify, it has to look first.
+          const askedToClarifyWithoutSearching = !searchRanThisTurn
+            && /(more specific|be specific|bit specific|which team|what team|which player|which club|please specify|could you specify|enna team|entha team|konjam detail|details sollunga)/i.test(resultText)
+            && woocommerceService.looksLikeProductQuery(userQuery);
+          if (looksLikeGreetingLeak || looksLikeRawJsonLeak || askedToClarifyWithoutSearching) {
             if (!forcedSearchRetryDone && loops < 5) {
               forcedSearchRetryDone = true;
               messages.push({
                 role: "system",
                 content: looksLikeRawJsonLeak
                   ? `Your last reply was broken raw JSON, not a real answer or a proper tool call. The customer's last message was: "${userQuery}". Call the search_products tool NOW (as an actual tool call, not text) with that exact query to answer it.`
-                  : `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
+                  : askedToClarifyWithoutSearching
+                    ? `You asked the customer to be more specific without searching first. The customer's last message was: "${userQuery}" — that names something we stock. Call the search_products tool NOW with that exact query and answer from the result. Only ask a narrowing question if the search genuinely comes back with nothing.`
+                    : `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
               });
               continue;
             }
@@ -2234,22 +2491,15 @@ ${sessionContext}`;
     session.history.push({ role: 'assistant', content: resultText });
 
     if (isConfirmed) {
-      if (!checkoutUrl && session.cart && session.cart.length > 0) {
-        // Fallback: WooCommerce order creation failed — generate PDF invoice instead
-        try {
-          const fallbackOrderId = `order_${Date.now()}_${senderId.toString().substring(0, 4)}`;
-          await generateInvoicePDF(fallbackOrderId, {
-            userId: senderId,
-            customerName: session.customerName || `Customer (${senderId})`,
-            cart: session.cart,
-            address: session.address
-          });
-          const baseUrl = config.baseUrl || 'http://localhost:3000';
-          resultText += `\n\n📄 *Proforma Invoice*: ${baseUrl}/invoices/invoice_${fallbackOrderId}.pdf`;
-          console.log(`[AI Service] Fallback PDF invoice created for ${fallbackOrderId}`);
-        } catch (invoiceErr) {
-          console.error('[AI Service] Fallback PDF invoice failed:', invoiceErr.message);
-        }
+      // `isConfirmed` now means a real WooCommerce order exists, so this only wipes a session
+      // whose order was genuinely placed. The proforma-PDF fallback that used to live here is
+      // gone: it fired on the FAILURE path, and an official-looking invoice with no payment
+      // link was the most convincing part of the false confirmation. A created order that
+      // somehow has no link gets a human sent after it instead.
+      if (!checkoutUrl) {
+        this.sendOrderFailureAlert(senderId, session, {
+          error: 'Order was created but WooCommerce returned no payment link — send the customer one manually.'
+        }, null);
       }
       session.cart = [];
       session.address = null;
