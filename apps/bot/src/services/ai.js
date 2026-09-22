@@ -11,6 +11,7 @@ import dbService from './db.js';
 // generator still exists for the paid-order invoice in the payment-lifecycle work.
 import whatsappWebBot from './whatsapp-web-bot.js';
 import sheetsService from './sheets.js';
+import orderState from './orderState.js';
 
 class AIService {
   // --- Per-(provider, key) rate-limit throttling ---
@@ -84,6 +85,12 @@ class AIService {
   }
 
   constructor() {
+    // Per-customer turn lock — see answerQuery(). Keyed by senderId, value is the tail of
+    // that customer's promise chain.
+    this._senderLocks = new Map();
+    // Per-turn bookkeeping for the optimistic-version retry (conflict / side effects).
+    this._turnMeta = new Map();
+
     // --- Primary LLM Provider (Groq) — supports multiple API keys for rotation ---
     this.groqClients = (config.groq.apiKeys || []).map(key => new OpenAI({
       apiKey: key,
@@ -400,9 +407,10 @@ class AIService {
     if (!group || top.length === 0) return null;
 
     session.lastShownProducts = top.map(p => ({
-      productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [],
+      productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '',
     }));
     session.pendingProductIndex = null;
+    session.productListPending = true;
     session.pendingBrowse = false;
 
     const isTanglish = session.language === 'tanglish';
@@ -594,10 +602,21 @@ Open the link, pay by UPI, card or net banking, and your order is placed!"
     // discount. The ONLY per-call-varying content (cart, address) is deliberately placed
     // LAST — if it sat near the top (as it used to) it would break the cache prefix and
     // nothing after it could be cached. Keep dynamic session state at the very end.
+    const locked = orderState.lockedProduct(session);
+    const known = this._knownAddress(session);
+    const missingAddr = orderState.missingAddressFields(known);
+    const item = session.cart?.[0];
     const sessionContext = `---
 Current Session Context (this is the ONLY part that changes per turn):
-Cart: ${JSON.stringify(session.cart || [])}
-Address: ${session.address || 'Not provided'}`;
+ORDER STATE (authoritative — code-maintained, do not contradict):
+- Current step: ${orderState.computeStep(session)}
+- Selected product: ${locked ? `${locked.name} (id ${locked.productId}) — ₹${locked.price}` : 'none yet'}
+- Size: ${item?.size || session.pendingSize || 'not given yet'}
+- Quantity: ${item?.qty || session.pendingQty || 'not given yet'}
+- Cart: ${JSON.stringify(session.cart || [])}
+- Customer name: ${known.name || 'missing'} | Mobile: ${known.phone || 'missing'} | Pincode: ${known.pincode || 'missing'}
+- Address: ${known.address || 'missing'}
+- Shipping details still needed: ${missingAddr.length ? missingAddr.join(', ') : 'NONE — all on file, never ask again'}`;
 
     return `You are "Aura", the friendly AI assistant for "Theaurax.in" (a premium football jerseys retailer in India). You handle BOTH sales and after-sales customer support. If a customer asks your name or who they're talking to, tell them you're Aura from Theaurax.
 Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout — and to resolve support issues with genuine care.
@@ -629,13 +648,23 @@ Instructions:
 12. NEVER call 'confirm_order' unless the customer's last message is PURELY a plain confirmation (yes/ok/confirm/seri, nothing else added). If they mention any change, correction, different item, different quantity, or a negation ("illa", "no", "wait", "change it") — do NOT confirm. Instead use 'update_cart' to fix the item first, then show the corrected summary and ask them to confirm again.
 
 ---
+ORDER STATE IS AUTHORITATIVE (CRITICAL):
+- The ORDER STATE block at the end of this prompt is maintained by code and is the single source of truth.
+- Never invent or change the product, size, quantity, price, availability, address or payment information.
+- Never replace the customer's selected product unless the customer explicitly asks for a different product in their latest message.
+- Never ask for anything the ORDER STATE already has. If it says a detail is on file, use it.
+- Short replies ("2", "M", "yes", "same", "already sent") are answers to YOUR last question — read them against the ORDER STATE.
+- If the latest message is ambiguous, ask ONE short clarification question.
+- Never restart product discovery or list teams while an order is in progress, unless the customer explicitly asks to browse or change the product.
+
+---
 PAYMENT — PREPAID ONLY (CRITICAL):
 - Razorpay is the ONLY payment gateway enabled on theaurax.in. Cash on Delivery is DISABLED.
 - NEVER offer, promise, or agree to Cash on Delivery, "pay on delivery", "cash la tharen",
   or any pay-later arrangement — not even if the customer insists or says they always pay
   that way. Accepting one means an order nobody can collect money for.
-- The accepted methods are UPI (GPay/PhonePe/Paytm), debit/credit card, net banking and
-  wallets, all through the payment link. Shipping is FREE on every order.
+- The accepted methods are EXACTLY these, all through the payment link: ${(config.payment?.methods || []).join(', ') || 'the methods shown on the payment page'}.
+  Never name any other payment method or app. Shipping is FREE on every order.
 - If they ask for COD, say plainly that we're prepaid only, then move straight on to the
   payment link — apologise once, don't dwell on it.
 
@@ -1641,6 +1670,10 @@ ${sessionContext}`;
   scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, waitMs) {
     const delay = waitMs + 20000; // 20s buffer past Groq's stated reset time
     const retryAt = Date.now() + delay;
+    // When this message was parked. If the customer has said anything since, replaying it
+    // later would answer an old message against a newer state (a stale "Barcelona" arriving
+    // after they have already picked and sized a jersey) — see the stale_retry check.
+    const queuedAt = Date.now();
 
     // Persist to database so the retry survives server restarts
     dbService.savePendingRetry(senderId, userQuery, customerName, customerPhone, retryAt).catch(() => {});
@@ -1654,10 +1687,12 @@ ${sessionContext}`;
       // otherwise a broken/stale entry replays forever on each restart.
       let shouldDelete = true;
       try {
-        const retryResponse = await this.answerQuery(senderId, userQuery, customerName, customerPhone);
+        const retryResponse = await this.answerQuery(senderId, userQuery, customerName, customerPhone, { queuedAt });
 
         if (retryResponse.intent === 'quota_exhausted') {
           shouldDelete = false;
+        } else if (retryResponse.intent === 'stale_retry') {
+          console.log(`[AI Service] Dropped stale quota retry for ${senderId} — the conversation has moved on.`);
         } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
           try {
             await whatsappWebBot.sendText(senderId, retryResponse.replyText);
@@ -1697,11 +1732,14 @@ ${sessionContext}`;
             entry.senderId,
             entry.userQuery,
             entry.customerName,
-            entry.customerPhone
+            entry.customerPhone,
+            { queuedAt: entry.createdAt ? Date.parse(entry.createdAt) : null }
           );
 
           if (retryResponse.intent === 'quota_exhausted') {
             shouldDelete = false;
+          } else if (retryResponse.intent === 'stale_retry') {
+            console.log(`[AI Service] Dropped stale persistent retry for ${entry.senderId} — the conversation has moved on.`);
           } else if (whatsappWebBot.client && whatsappWebBot.status === 'CONNECTED') {
             try {
               await whatsappWebBot.sendText(entry.senderId, retryResponse.replyText);
@@ -1754,121 +1792,540 @@ ${sessionContext}`;
       : "Hey! 🙏 We're getting a lot of messages right now - give me just a few minutes and I'll personally get back to you with an answer. Thanks for your patience!";
   }
 
-  /**
-   * Deterministically parse a "pick size + quantity" reply (e.g. "M size 2",
-   * "1st one, L 3", "XL") against the products shown in the last search, with zero
-   * LLM call. Returns null on anything not confidently parseable — callers must fall
-   * through to the LLM in that case. Never guesses a size the product doesn't actually
-   * sell, and bails on long/sentence-like input to avoid misfiring on an unrelated
-   * message that happens to contain a size letter.
-   */
-  parseSizeQtyReply(userQuery, lastShownProducts, pendingProductIndex = null) {
-    const q = (userQuery || '').toLowerCase().trim();
-    if (!q || q.length > 60) return null;
+  /* ────────────────────────────────────────────────────────────────────────────
+   * DETERMINISTIC ORDER-STATE LAYER (added 2026-09-22)
+   *
+   * The order facts — which product, size, quantity, and the customer's shipping details —
+   * are held in structured session fields and changed ONLY by code reading the customer's
+   * own words (orderState.extractEntities). The LLM never becomes the source of truth for
+   * them: its update_cart / set_shipping_address calls are checked against this state, and
+   * its free-text replies are validated against it before they are sent.
+   *
+   * Session fields:
+   *   selectedProduct  { productId, name, price, sizes, permalink } — locked on explicit pick
+   *   pendingSize / pendingQty — collected before the cart line exists
+   *   cart[0]          the committed line (same product as selectedProduct)
+   *   addressDraft     partial shipping details, merged message by message
+   *   customerProfile  last complete shipping details, kept across orders ("same address")
+   *   productListPending  a numbered list is on screen, so a bare "2" is a pick
+   *   pendingClarify   { type:'product_change', query } — waiting for yes/no
+   *   lastOrder        { orderId, checkoutUrl, at } — so "how pay?" after ordering works
+   * ──────────────────────────────────────────────────────────────────────────── */
 
-    // --- "<product no> <size> <qty>" in ONE message, e.g. "2 M 5", "3 size L 2" ---
-    // Two numbers either side of a size token is unambiguous: the FIRST is the product
-    // being picked from the numbered list, the LAST is the quantity. This is the single
-    // most natural way to answer the bot's own "Which one — 1, 2 or 3? What size and how
-    // many?" question, and it used to parse WRONG TWICE: the leading digit was never
-    // recognised as an ordinal (bare digits only counted next to a word like "option"),
-    // so it defaulted to product #1, AND the quantity regex grabbed that same leading
-    // digit before ever reaching the real quantity. "2 M 5" became product #1, qty 2.
-    const combo = q.match(/^([1-9]\d?)\s*[.)\-]?\s*(?:size\s*)?(xxxl|xxl|xl|s|m|l)\b\s*(?:size)?\s*[-x*,]?\s*([1-9]\d?)\b/i);
-    if (combo) {
-      const idx = parseInt(combo[1], 10) - 1;
-      const p = lastShownProducts[idx];
-      const comboSize = combo[2].toUpperCase();
-      const comboQty = parseInt(combo[3], 10);
-      const sizeOk = p && (!p.sizes?.length || p.sizes.some(s => s.toUpperCase().startsWith(comboSize)));
-      if (p && sizeOk && comboQty >= 1 && comboQty <= 50) {
-        return { productId: p.productId, name: p.name, price: p.price, size: comboSize, qty: comboQty };
-      }
-      // Shaped like a combo but the product number or size doesn't exist — don't fall
-      // through and silently guess a different product; let the LLM ask what they meant.
-      return null;
+  /** The question the bot is currently waiting on — decides what a bare "2" or "M" means. */
+  _awaiting(session) {
+    if (session.productListPending && session.lastShownProducts?.length > 0) return 'product';
+    if (session.cart?.length > 0) return session.state === 'CONFIRMING_ORDER' ? 'confirm' : 'address';
+    if (session.selectedProduct) {
+      if (!session.pendingSize && !session.pendingQty) return 'size_qty';
+      if (!session.pendingSize) return 'size';
+      return 'qty';
     }
+    if (session.lastShownProducts?.length > 0) return 'product';
+    return null;
+  }
 
-    const sizeMatch = q.match(/\b(xxxl|xxl|xl|s|m|l)\b/i);
-    if (!sizeMatch) return null;
-    const size = sizeMatch[1].toUpperCase();
+  _lockProduct(session, p) {
+    session.selectedProduct = {
+      productId: p.productId, name: p.name, price: p.price,
+      sizes: p.sizes || [], permalink: p.permalink || '',
+    };
+    session.productListPending = false;
+    session.pendingProductIndex = null;
+    if (!(session.cart?.length > 0)) session.state = 'COLLECTING_SIZE';
+  }
 
-    // Word-form ordinals ("1st", "first"...) always mean product selection.
-    // A bare digit ("3", "2") only counts as a selector when paired with an explicit
-    // selection word right next to it ("3 okey", "2 option") — a bare number on its own
-    // is ambiguous with the documented qty-only shorthand ("M size 2" = qty 2 for the
-    // default/pending product), so treating every bare digit as an ordinal would break
-    // that shorthand whenever 2+ products were shown. This distinction is what was
-    // silently corrupting both the product AND the quantity in "3 okey bro S size 4
-    // quantities" — the leading "3" (meant to pick product #3) was never recognized as
-    // an ordinal, so it defaulted to product #1 AND got eaten by the quantity regex
-    // instead of the real "4".
-    const wordOrdinals = [
-      ['1st', 0], ['first', 0], ['2nd', 1], ['second', 1],
-      ['3rd', 2], ['third', 2], ['4th', 3], ['fourth', 3]
-    ];
-    let productIndex = pendingProductIndex !== null ? pendingProductIndex : 0;
-    let consumedToken = null;
-    for (const [word, idx] of wordOrdinals) {
-      const m = q.match(new RegExp(`\\b${word}\\b`));
-      if (m) { productIndex = idx; consumedToken = m[0]; break; }
+  /** Forget the product/cart (explicit change or restart). Shipping details are kept. */
+  _clearOrderSelection(session) {
+    session.cart = [];
+    session.selectedProduct = null;
+    session.pendingSize = null;
+    session.pendingQty = null;
+    session.pendingProductIndex = null;
+    session.pendingClarify = null;
+    session.productListPending = false;
+    session.state = 'IDLE';
+  }
+
+  /** Best known shipping details: this order's draft on top of the saved profile. */
+  _knownAddress(session) {
+    let d = orderState.mergeAddress(session.customerProfile || {}, {});
+    if (session.addressDetails) d = orderState.mergeAddress(d, session.addressDetails);
+    if (session.addressDraft) d = orderState.mergeAddress(d, session.addressDraft);
+    if (!d.name && session.customerName && session.customerName !== 'Customer') d.name = session.customerName;
+    return d;
+  }
+
+  _cartTotal(session) {
+    return (session.cart || []).reduce((sum, i) => sum + (parseFloat(i.price) || 0) * (parseInt(i.qty, 10) || 0), 0);
+  }
+
+  _summaryReply(session, lead = '') {
+    const isT = session.language === 'tanglish';
+    const lines = session.cart.map(item =>
+      `• *${item.name}* — ${item.size} size, ${item.qty} qty — ₹${(parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0)}`
+    ).join('\n');
+    const d = session.addressDetails || {};
+    const ship = d.address ? `\n📦 ${d.name}, ${d.address}, ${d.pincode} | 📱 ${d.phone}` : '';
+    const head = lead ? `${lead}\n` : '';
+    return isT
+      ? `${head}Bro, unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm pannunga bro, reply "YES" 🎉`
+      : `${head}Here's your order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nReply "YES" to confirm! 🎉`;
+  }
+
+  _fieldLabel(field, isT) {
+    const en = { name: 'Name', address: 'full address (door no, street, area, city)', pincode: 'Pincode', phone: 'Mobile number' };
+    const ta = { name: 'Name', address: 'full address (door no, street, area, city)', pincode: 'Pincode', phone: 'Mobile number' };
+    return (isT ? ta : en)[field] || field;
+  }
+
+  _askMissingAddress(session, missing, { acknowledgeAlready = false } = {}) {
+    const isT = session.language === 'tanglish';
+    const d = this._knownAddress(session);
+    const have = ['name', 'address', 'pincode', 'phone'].filter(f => !missing.includes(f) && d[f]);
+    const need = missing.map(f => this._fieldLabel(f, isT)).join(', ');
+    if (have.length === 0) {
+      return isT
+        ? `Ippo shipping details sollunga bro — Name, Address, Pincode, Mobile number. 📦`
+        : `Now please share your shipping details — Name, Address, Pincode, Mobile number. 📦`;
     }
-    if (!consumedToken) {
-      const bareDigitMatch = q.match(/\b([1-4])\b\s*(?:st|nd|rd|th)?\s*(?:okey|okay|ok|option|opt|venum|vendum|select|number|no\.?)\b/i);
-      if (bareDigitMatch) {
-        productIndex = parseInt(bareDigitMatch[1], 10) - 1;
-        consumedToken = bareDigitMatch[1];
-      }
+    const got = have.map(f => this._fieldLabel(f, isT).split(' (')[0]).join(', ');
+    if (acknowledgeAlready) {
+      return isT
+        ? `Aama bro, neenga anuppinadhu kedaichiduchu 👍 (${got} save panniten). Innum ${need} mattum venum — adha mattum anuppunga.`
+        : `Yes, I have what you sent 👍 (${got} saved). I just need your ${need} — please send only that.`;
     }
-    const product = lastShownProducts[productIndex];
-    if (!product) return null;
-
-    // Only trust a size the product actually lists — guards against a coincidental
-    // letter match landing on a size that isn't even sold for this item.
-    if (product.sizes && product.sizes.length > 0) {
-      const sizeAvailable = product.sizes.some(s => s.toUpperCase().startsWith(size));
-      if (!sizeAvailable) return null;
-    }
-
-    // Strip the consumed ordinal token and the size token, then take the first
-    // remaining standalone number as quantity. The trailing boundary is intentionally
-    // NOT required, so a qty glued to its unit word with no space (e.g. "2quantites",
-    // a real typo seen in production) still parses instead of silently defaulting to 1.
-    let stripped = q;
-    if (consumedToken) stripped = stripped.replace(consumedToken, '');
-    stripped = stripped.replace(new RegExp(`\\b${size.toLowerCase()}\\b`, 'i'), '');
-    const qtyMatch = stripped.match(/(?<!\d)(\d{1,2})(?!\d)/);
-    const qty = qtyMatch ? parseInt(qtyMatch[1], 10) : 1;
-    if (qty < 1 || qty > 50) return null;
-
-    return { productId: product.productId, name: product.name, price: product.price, size, qty };
+    return isT
+      ? `Thanks bro 👍 ${got} save panniten. Innum ${need} mattum anuppunga.`
+      : `Thanks 👍 I've saved your ${got}. I just need your ${need}.`;
   }
 
   /**
-   * Handles a bare product-selection reply with no size/qty yet (e.g. "2", "1st",
-   * "3rd one") — the exact reply the numbered search-result template invites
-   * ("Ethu venum bro — 1, 2 illa 3?"). Without this, a bare number falls through to the
-   * LLM, which has no tool for "remember this selection" and was observed re-running
-   * search_products instead, returning a different unrelated list each time.
+   * Shipping details are complete: store them, run the bulk check, move to the confirmation
+   * step. Shared by the deterministic path and the set_shipping_address tool.
+   * Returns { bulk: true, totalQty } or { bulk: false }.
    */
-  parseProductSelectionOnly(userQuery, lastShownProducts) {
-    const q = (userQuery || '').toLowerCase().trim();
-    if (!q || q.length > 25) return null;
-    if (/\b(xxxl|xxl|xl|s|m|l)\b/i.test(q)) return null; // has a size — let parseSizeQtyReply handle it
+  _applyAddress(senderId, session, details) {
+    const d = { name: details.name, phone: String(details.phone), address: details.address, pincode: String(details.pincode) };
+    session.addressDetails = d;
+    session.addressDraft = { ...d };
+    session.customerProfile = { ...d };
+    session.address = `${d.name}, ${d.address}, ${d.pincode} | Ph: ${d.phone}`;
+    session.customerPhone = d.phone;
+    if (d.name && d.name !== 'Customer') session.customerName = d.name;
+    dbService.saveCustomer(senderId, d.name, d.phone).catch(() => {});
 
-    const wordOrdinals = [
-      ['1st', 0], ['first', 0], ['2nd', 1], ['second', 1],
-      ['3rd', 2], ['third', 2], ['4th', 3], ['fourth', 3]
-    ];
-    for (const [word, idx] of wordOrdinals) {
-      if (new RegExp(`\\b${word}\\b`).test(q)) return lastShownProducts[idx] ? idx : null;
+    const totalQty = session.cart.reduce((sum, item) => sum + parseInt(item.qty || 0, 10), 0);
+    const bulkThreshold = config.owner?.bulkThreshold || 10;
+    if (totalQty >= bulkThreshold) {
+      session.requiresEscalation = true;
+      session.state = 'IDLE';
+      session.escalationDetails = {
+        reason: `Bulk Order (${totalQty} items)`,
+        name: d.name || session.customerName,
+        phone: d.phone || senderId.replace(/[^0-9]/g, ''),
+        address: session.address,
+      };
+      return { bulk: true, totalQty };
     }
-    const bareMatch = q.match(/^([1-4])\s*(?:st|nd|rd|th)?\s*(?:okey|okay|ok|option|opt|venum|vendum|select|number|no\.?)?$/i);
-    if (bareMatch) {
-      const idx = parseInt(bareMatch[1], 10) - 1;
-      return lastShownProducts[idx] ? idx : null;
+    session.state = 'CONFIRMING_ORDER';
+    return { bulk: false };
+  }
+
+  /** Commit selectedProduct + pending size/qty into the one-line cart. */
+  _commitCart(session) {
+    const p = session.selectedProduct;
+    session.cart = [{
+      productId: p.productId, name: p.name, price: p.price,
+      size: session.pendingSize, qty: session.pendingQty,
+    }];
+    session.pendingSize = null;
+    session.pendingQty = null;
+    session.state = 'COLLECTING_ADDRESS';
+  }
+
+  /** What to say to move the customer on from wherever they are. Never restarts discovery. */
+  _nextStepPrompt(session) {
+    const isT = session.language === 'tanglish';
+    if (session.cart?.length > 0) {
+      if (session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)) {
+        return this._summaryReply(session);
+      }
+      const item = session.cart[0];
+      const missing = orderState.missingAddressFields(this._knownAddress(session));
+      const head = isT
+        ? `Unga cart la *${item.name}* — ${item.size} size, ${item.qty} qty iruku 🛒`
+        : `You have *${item.name}* — Size ${item.size}, Qty ${item.qty} in your cart 🛒`;
+      return `${head}\n${this._askMissingAddress(session, missing)}`;
+    }
+    const p = session.selectedProduct;
+    if (p) {
+      const sizeText = p.sizes?.length ? ` [${p.sizes.join(', ')}]` : '';
+      if (session.pendingSize && !session.pendingQty) {
+        return isT ? `*${p.name}* — ${session.pendingSize} size. Evlo quantity venum bro?` : `*${p.name}* — Size ${session.pendingSize}. How many would you like?`;
+      }
+      if (!session.pendingSize && session.pendingQty) {
+        return isT ? `*${p.name}*${sizeText} — ${session.pendingQty} qty. Enna size venum bro?` : `*${p.name}*${sizeText} — Qty ${session.pendingQty}. Which size would you like?`;
+      }
+      return isT ? `*${p.name}*${sizeText} — enna size, evlo quantity venum bro? 🛍️` : `*${p.name}*${sizeText} — what size, and how many would you like? 🛍️`;
+    }
+    if (session.lastOrder?.orderId && session.lastOrder.checkoutUrl) {
+      return isT
+        ? `Unga order #${session.lastOrder.orderId} ku payment link idhu bro:\n${session.lastOrder.checkoutUrl}`
+        : `Here's the payment link for your order #${session.lastOrder.orderId}:\n${session.lastOrder.checkoutUrl}`;
     }
     return null;
+  }
+
+  /** Payment answer built ONLY from config.payment — the model never names a method. */
+  _paymentReply(session) {
+    const isT = session.language === 'tanglish';
+    const pay = config.payment || { codEnabled: false, methods: [] };
+    const methods = (pay.methods || []).join(', ');
+    let text;
+    if (pay.codEnabled) {
+      text = isT
+        ? `COD available bro 👍 Illana online la pay pannalaam${methods ? ` — ${methods}` : ''}.`
+        : `Cash on Delivery is available 👍 You can also pay online${methods ? ` — ${methods}` : ''}.`;
+    } else {
+      text = isT
+        ? `COD kidaiyaathu bro — prepaid mattum dhaan. 🙏 Order confirm pannadhum oru payment link anuppuven${methods ? `, adhula ${methods} la pay pannalaam` : ''}.`
+        : `COD is not available — prepaid payment is required. 🙏 Once you confirm the order I'll send a secure payment link${methods ? ` where you can pay by ${methods}` : ''}.`;
+    }
+    const lo = session.lastOrder;
+    if (!session.cart?.length && !session.selectedProduct && lo?.orderId && lo.checkoutUrl) {
+      return isT
+        ? `${text}\n\nUnga order #${lo.orderId} ku payment link:\n${lo.checkoutUrl}`
+        : `${text}\n\nHere's the payment link for your order #${lo.orderId}:\n${lo.checkoutUrl}`;
+    }
+    const next = this._nextStepPrompt(session);
+    return next ? `${text}\n\n${next}` : text;
+  }
+
+  /** Did the customer's own message ask for `candidate` rather than the locked product? */
+  _customerNamedProduct(userQuery, candidate, locked) {
+    const generic = new Set(['home', 'away', 'third', 'full', 'half', 'sleeve', 'jersey', 'kit', 'edition', 'version', 'player', 'fan', 'world', 'cup', 'final', 'plain', 'kids', 'retro', 'special']);
+    const toks = s => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !generic.has(w));
+    const lockedToks = new Set(toks(locked?.name));
+    const q = String(userQuery || '').toLowerCase();
+    return toks(candidate?.name).some(w => !lockedToks.has(w) && q.includes(w));
+  }
+
+  /**
+   * Reject an LLM reply that contradicts the authoritative state. Returns a list of
+   * problems (empty = OK). Checked only on free-text LLM replies — templated replies are
+   * built from the state and can't disagree with it.
+   */
+  _validateReplyAgainstState(text, session, { searchRan = false } = {}) {
+    const problems = [];
+    const t = String(text || '');
+    const low = t.toLowerCase();
+    const active = orderState.hasActiveOrder(session);
+    const locked = orderState.lockedProduct(session);
+    const item = session.cart?.[0] || null;
+
+    if (active) {
+      const teams = woocommerceService.listTeams(20);
+      const namedTeams = teams.filter(tm => low.includes(tm.toLowerCase())).length;
+      if (/idhellaam ippo stock la iruku|here's what we've got in stock|which team would you like|enna team venum/i.test(t) || namedTeams >= 4) {
+        problems.push('restarted product discovery (team list) during an active order');
+      }
+    }
+    if (orderState.isAddressComplete(this._knownAddress(session)) && item
+        && /(address|pincode|pin code|mobile number|phone number|shipping details)/i.test(t)
+        && /(\?|share|send|sollunga|anuppunga|kudunga|provide|please give|tell me)/i.test(t)
+        && !/(change|update|different|vera)\s+(address|details)/i.test(t)) {
+      problems.push('asked for shipping details that are already on file');
+    }
+    if ((item?.qty || session.pendingQty) && /(how many|evlo quantity|enna quantity|quantity venum|how much quantity)/i.test(t)) {
+      problems.push('asked for the quantity again');
+    }
+    if (item) {
+      for (const m of t.matchAll(/(?<![\d₹])(\d{1,2})\s*(?:qty|quantity|pcs|pieces)\b|\bqty[:\s]+(\d{1,2})\b/gi)) {
+        const n = parseInt(m[1] || m[2], 10);
+        if (n && n !== parseInt(item.qty, 10)) { problems.push(`quantity ${n} contradicts cart qty ${item.qty}`); break; }
+      }
+      for (const m of t.matchAll(/\b(xxxl|xxl|xl|s|m|l)\s*size\b|\bsize[:\s]+(xxxl|xxl|xl|s|m|l)\b/gi)) {
+        const sz = (m[1] || m[2]).toUpperCase();
+        if (sz !== String(item.size).toUpperCase()) { problems.push(`size ${sz} contradicts cart size ${item.size}`); break; }
+      }
+    }
+    if (locked && !searchRan) {
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const lockedNorm = norm(locked.name);
+      const replyNorm = norm(t);
+      const pool = [...(session.lastShownProducts || []), ...(woocommerceService.getLocalProducts() || [])];
+      const other = pool.find(p => {
+        const n = norm(p.name);
+        return n && n.length >= 12 && n !== lockedNorm && replyNorm.includes(n);
+      });
+      if (other) problems.push(`mentions a different product ("${other.name}") than the locked one`);
+      if (item) {
+        const unit = parseFloat(item.price) || 0;
+        const total = this._cartTotal(session);
+        for (const m of t.matchAll(/₹\s?(\d{2,6})/g)) {
+          const v = parseInt(m[1], 10);
+          if (v !== unit && v !== total) { problems.push(`price ₹${v} matches neither the unit price nor the total`); break; }
+        }
+      }
+    }
+    const codOn = config.payment?.codEnabled;
+    if (!codOn) {
+      for (const sentence of t.split(/[.!?\n]/)) {
+        if (/\b(cod|cash on delivery)\b[^.]{0,25}\b(available|iruku|irukku|possible|accepted|ok)\b/i.test(sentence)
+            && !/\b(not|no|illa|kidaiyathu|kidaiyaathu|isn'?t|don'?t|unavailable)\b/i.test(sentence)) {
+          problems.push('offered Cash on Delivery, which is disabled');
+          break;
+        }
+      }
+    }
+    return problems;
+  }
+
+  /**
+   * The deterministic turn. Reads the customer's message against the current order state and
+   * handles everything that is really a state change — product pick, size, quantity, address,
+   * "already sent", payment question, product change — without asking the model. Returns:
+   *   a reply object      → send it, turn over
+   *   { rewriteQuery }    → state was changed; continue the normal pipeline with this text
+   *   null                → nothing order-shaped here; the normal pipeline handles it
+   */
+  async _handleOrderStateTurn(senderId, session, userQuery) {
+    if (!userQuery || !userQuery.trim()) return null;
+    // Catch-up / retry preambles ("[This message has been waiting…]") are for the model.
+    if (/^\s*\[/.test(userQuery)) return null;
+
+    const isT = session.language === 'tanglish';
+    const shown = session.lastShownProducts || [];
+    const awaiting = this._awaiting(session);
+    let locked = orderState.lockedProduct(session);
+    const ents = orderState.extractEntities(userQuery, {
+      shownCount: shown.length, awaiting, hasSelection: Boolean(locked),
+    });
+
+    const respond = async (text, intent, productIds = []) => {
+      session.history.push({ role: 'user', content: userQuery });
+      session.history.push({ role: 'assistant', content: text });
+      session.orderStep = orderState.computeStep(session);
+      await this._saveSession(senderId, session);
+      if (orderState.hasActiveOrder(session)) {
+        await dbService.saveLead({
+          userId: senderId,
+          name: session.customerName || 'Customer',
+          phone: senderId.replace(/[^0-9]/g, ''),
+          channel: 'whatsapp',
+          cart: session.cart || [],
+          address: session.address || null,
+          requiresEscalation: session.requiresEscalation || false,
+          status: 'active',
+          conversation: session.history || [],
+        });
+      }
+      return { replyText: text, intent, requiresEscalation: false, suggestedProductIds: productIds };
+    };
+
+    // 0. The answer to our own "do you want to change the product?" question.
+    if (session.pendingClarify?.type === 'product_change') {
+      const pending = session.pendingClarify;
+      session.pendingClarify = null;
+      if (ents.confirm || ents.changeProduct || /^\s*(change|maathu|mathu|maathunga|yes change)\b/i.test(userQuery)) {
+        this._clearOrderSelection(session);
+        return { rewriteQuery: pending.query };
+      }
+      if (ents.deny || /\b(continue|same|this one|idhe|ithe|adhe|keep|podhum)\b/i.test(userQuery)) {
+        const lead = isT ? 'Seri bro, andha order ae continue pannalam 👍' : 'No problem — let\'s continue with your order 👍';
+        return respond(`${lead}\n${this._nextStepPrompt(session)}`, 'state_resume');
+      }
+      // Anything else: read it normally below.
+    }
+
+    // 1. An explicit request to change the product unlocks it — and only this does.
+    if (ents.changeProduct && locked) {
+      const was = locked.name;
+      this._clearOrderSelection(session);
+      if (woocommerceService.extractSubject(userQuery)) return { rewriteQuery: userQuery };
+      return respond(isT
+        ? `Seri bro 👍 *${was}* ah remove panniten. Vera enna jersey venum — team illa player peru sollunga!`
+        : `Sure 👍 I've removed *${was}*. Which jersey would you like instead? Tell me the team or player.`,
+      'state_change_product');
+    }
+
+    // 2. Payment questions are answered from config, whatever the step — never with a team list.
+    if (ents.paymentQuery && !ents.looksLikeAddress && (locked || session.lastOrder?.orderId)) {
+      return respond(this._paymentReply(session), 'state_payment');
+    }
+
+    // 3. Picking from the numbered list that is on screen.
+    let picked = false;
+    if (ents.productIndex !== null) {
+      const p = shown[ents.productIndex];
+      if (!p) {
+        if (shown.length > 0 && awaiting === 'product') {
+          return respond(isT
+            ? `Bro, list la ${shown.length} options dhaan iruku — 1${shown.length > 1 ? ` to ${shown.length}` : ''} la ethu venum?`
+            : `There are only ${shown.length} options in the list — which one would you like (1${shown.length > 1 ? `–${shown.length}` : ''})?`,
+          'state_clarify_product');
+        }
+      } else if (!locked || String(p.productId) !== String(locked.productId)) {
+        // An explicit pick from the presented options is the one other thing (besides
+        // "change product") allowed to move the lock.
+        if (session.cart?.length > 0) {
+          const old = session.cart[0];
+          session.cart = [];
+          this._lockProduct(session, p);
+          session.pendingSize = orderState.productHasSize(p, old.size) ? old.size : null;
+          session.pendingQty = old.qty;
+        } else {
+          this._lockProduct(session, p);
+        }
+        picked = true;
+        locked = orderState.lockedProduct(session);
+      } else {
+        session.productListPending = false;
+        picked = true;
+      }
+    } else if (awaiting === 'product' && shown.length === 1 && (ents.size || ents.qty)
+        && (!locked || String(shown[0].productId) !== String(locked.productId))) {
+      // One product on screen, which they searched for themselves: size/qty is for THAT one.
+      if (session.cart?.length > 0) session.cart = [];
+      this._lockProduct(session, shown[0]);
+      picked = true;
+      locked = orderState.lockedProduct(session);
+    } else if (awaiting === 'product' && shown.length > 1 && ents.size && ents.sizeConfident) {
+      // A size with no product. NEVER default to #1 — that is exactly how the Guardiola
+      // shirt ended up in a cart meant for the Messi one. Ask, and keep what they said.
+      session.pendingSize = ents.size;
+      if (ents.qty) session.pendingQty = ents.qty;
+      return respond(isT
+        ? `Bro, list la ethu venum — ${shown.map((_, i) => i + 1).join(', ')}? (${ents.size} size${ents.qty ? `, ${ents.qty} qty` : ''} note panniten 👍)`
+        : `Which one from the list — ${shown.map((_, i) => i + 1).join(', ')}? (I've noted Size ${ents.size}${ents.qty ? `, Qty ${ents.qty}` : ''} 👍)`,
+      'state_clarify_product');
+    }
+
+    if (!locked) return null;
+    const target = session.cart?.[0] || null;
+    const productIds = [locked.productId];
+
+    // 4. Size and quantity — applied to the LOCKED product only.
+    let changed = false;
+    const sizeUsable = ents.size && (ents.sizeConfident || ['size', 'size_qty', 'qty'].includes(awaiting) || picked);
+    if (sizeUsable) {
+      if (!orderState.productHasSize(locked, ents.size)) {
+        const avail = (locked.sizes || []).map(s => String(s).split('-')[0]).join(', ');
+        return respond(isT
+          ? `Sorry bro, *${locked.name}* ku ${ents.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
+          : `Sorry, *${locked.name}* isn't available in ${ents.size} 😕 ${avail ? `Available sizes: ${avail}. ` : ''}Which size would you like?`,
+        'state_size_unavailable', productIds);
+      }
+      if (target) target.size = ents.size; else session.pendingSize = ents.size;
+      changed = true;
+    }
+    if (ents.qty) {
+      if (target) target.qty = ents.qty; else session.pendingQty = ents.qty;
+      changed = true;
+    }
+
+    if (!target) {
+      // Still before the cart: commit once both are known, otherwise ask for what's missing.
+      if (session.pendingSize && session.pendingQty) {
+        this._commitCart(session);
+        const item = session.cart[0];
+        const known = this._knownAddress(session);
+        const added = isT
+          ? `Done bro! 🛒 *${item.name}* — ${item.size} size, ${item.qty} qty cart la potten!`
+          : `Done! 🛒 Added *${item.name}* — Size ${item.size}, Qty ${item.qty} to your cart!`;
+        if (orderState.isAddressComplete(known)) {
+          // Already have their details — don't ask again, go straight to the summary.
+          const res = this._applyAddress(senderId, session, known);
+          if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+          const note = isT ? `${added}\nMunnadi kuduthha address ae use panren 👍` : `${added}\nI'll use the address you already gave me 👍`;
+          return respond(this._summaryReply(session, note), 'deterministic_cart', productIds);
+        }
+        return respond(`${added} ${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'deterministic_cart', productIds);
+      }
+      if (picked || changed) return respond(this._nextStepPrompt(session), picked && !changed ? 'deterministic_selection' : 'state_update', productIds);
+      // Locked product but nothing order-shaped in this message → normal pipeline (LLM),
+      // which gets the locked state in its prompt and is validated against it.
+      return null;
+    }
+
+    // ── From here the cart exists: ADDRESS_COLLECTION or CART_REVIEW. ──
+
+    // 5. Shipping details, in any shape, merged with what we already hold.
+    if (ents.looksLikeAddress && (awaiting === 'address' || awaiting === 'confirm' || ents.address.phone || ents.address.pincode)) {
+      session.addressDraft = orderState.mergeAddress(this._knownAddress(session), ents.address);
+      const missing = orderState.missingAddressFields(session.addressDraft);
+      if (missing.length === 0) {
+        const res = this._applyAddress(senderId, session, session.addressDraft);
+        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+        return respond(this._summaryReply(session, changed ? (isT ? 'Update panniten ✅' : 'Updated ✅') : ''), 'state_address', productIds);
+      }
+      return respond(this._askMissingAddress(session, missing), 'state_address_partial', productIds);
+    }
+
+    // 6. "Already send paniten" — use what we have; never ask for all of it again.
+    if (ents.addressAlreadyGiven) {
+      let known = this._knownAddress(session);
+      // Recover from earlier messages too (covers details sent before this layer existed).
+      for (const m of (session.history || []).filter(h => h.role === 'user')) {
+        const parts = orderState.parseAddressParts(m.content);
+        if (parts.phone || parts.pincode || parts.address) known = orderState.mergeAddress(parts, known);
+      }
+      session.addressDraft = known;
+      const missing = orderState.missingAddressFields(known);
+      if (missing.length === 0) {
+        const res = this._applyAddress(senderId, session, known);
+        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+        const lead = isT ? 'Aama bro, unga address kedaichiduchu 👍' : 'Yes — got your address 👍';
+        return respond(this._summaryReply(session, lead), 'state_address_recalled', productIds);
+      }
+      return respond(this._askMissingAddress(session, missing, { acknowledgeAlready: true }), 'state_address_partial', productIds);
+    }
+
+    // 7. Size/qty corrections on the committed cart.
+    if (changed) {
+      const lead = isT ? 'Update panniten ✅' : 'Updated ✅';
+      if (session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)) {
+        return respond(this._summaryReply(session, lead), 'state_update', productIds);
+      }
+      return respond(`${lead}\n${this._nextStepPrompt(session)}`, 'state_update', productIds);
+    }
+
+    // 8. "yes" before we have an address: ask for exactly what's missing.
+    if (ents.confirm && session.state !== 'CONFIRMING_ORDER') {
+      const missing = orderState.missingAddressFields(this._knownAddress(session));
+      if (missing.length > 0) return respond(this._askMissingAddress(session, missing), 'state_address_partial', productIds);
+    }
+
+    // 9. A bare team/player name mid-order is ambiguous — ask, never restart the flow.
+    const shortMsg = userQuery.trim().split(/\s+/).length <= 4 && !userQuery.includes('?');
+    if (shortMsg && !ents.confirm && woocommerceService.extractSubject(userQuery)) {
+      session.pendingClarify = { type: 'product_change', query: userQuery };
+      return respond(isT
+        ? `Bro, unga cart la ippo *${target.name}* (${target.size}, ${target.qty} qty) iruku. Idha maathi vera "${userQuery.trim()}" jersey venuma? Maathanum na "YES", idhe continue panna "NO" nu reply pannunga.`
+        : `You currently have *${target.name}* (Size ${target.size}, Qty ${target.qty}) in your cart. Do you want to change it to a different "${userQuery.trim()}" jersey? Reply YES to change, or NO to continue with this order.`,
+      'state_clarify_change', productIds);
+    }
+
+    return null;
+  }
+
+  /** Bulk order: hand to the wholesale team, reset the order (mirrors the LLM path). */
+  async _bulkReply(senderId, session, userQuery) {
+    const isT = session.language === 'tanglish';
+    const reply = isT
+      ? `Bro, idhu bulk order (${session.cart.reduce((s, i) => s + parseInt(i.qty || 0, 10), 0)} pcs) 🙌 Namma wholesale team unga kitta seekiram contact pannuvaanga — ${config.support.wholesaleNumber}.`
+      : `This is a bulk order (${session.cart.reduce((s, i) => s + parseInt(i.qty || 0, 10), 0)} pieces) 🙌 Our wholesale team will reach out to you shortly — or call ${config.support.wholesaleNumber}.`;
+    this._markSideEffect(senderId);
+    this.sendEscalationAlert(senderId, userQuery, session);
+    session.cart = [];
+    session.address = null;
+    session.history = [];
+    session.hasEscalated = false;
+    session.requiresEscalation = false;
+    this._clearOrderSelection(session);
+    await this._saveSession(senderId, session);
+    return { replyText: reply, intent: 'bulk_escalation', requiresEscalation: true, suggestedProductIds: [] };
   }
 
   /**
@@ -1950,6 +2407,7 @@ ${sessionContext}`;
       };
     }
 
+    this._markSideEffect(senderId);
     const orderResult = await woocommerceService.createOrder(session.cart, addrDetails, session.customerName);
     // Remember orders created in this session so the customer can always track them later
     // without the billing-phone match (they entered a delivery number, we placed it here).
@@ -2038,7 +2496,7 @@ ${sessionContext}`;
     session.history.push({ role: 'user', content: userQuery });
     session.history.push({ role: 'assistant', content: reply });
 
-    await dbService.saveSession(senderId, session);
+    await this._saveSession(senderId, session);
     await dbService.saveLead({
       userId: senderId,
       name: session.customerName || 'Customer',
@@ -2095,7 +2553,70 @@ ${sessionContext}`;
    * has eleven of them, and the twelfth someone adds next month is covered for free.
    */
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
-    const result = await this._answerQueryImpl(senderId, userQuery, customerName, customerPhone, options);
+    // ONE turn per customer at a time, for EVERY caller. The WhatsApp handler already chains
+    // messages per sender, but three other paths call in here outside that chain — the
+    // in-memory quota retry timer, the persistent retry queue, and the catch-up sweep. Each
+    // does getSession → (seconds of LLM work) → saveSession, so any of them overlapping a live
+    // message let the slower turn write back a stale session over the newer one (a cart, a
+    // size or an address silently reverting). Serialising here covers all of them at once.
+    return this._withSenderLock(senderId, () => this._answerQueryLocked(senderId, userQuery, customerName, customerPhone, options));
+  }
+
+  async _withSenderLock(senderId, fn) {
+    const key = String(senderId || '');
+    const previous = this._senderLocks.get(key) || Promise.resolve();
+    const run = previous.catch(() => {}).then(fn);
+    const tail = run.catch(() => {});
+    this._senderLocks.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (this._senderLocks.get(key) === tail) this._senderLocks.delete(key);
+    }
+  }
+
+  /**
+   * Version-aware save. dbService.saveSession() refuses to overwrite a session that another
+   * writer (a second bot process during a deploy, for instance) saved after we loaded it, and
+   * reports 'conflict'. Recorded here so answerQuery can reload and re-run the turn.
+   */
+  async _saveSession(senderId, session) {
+    const res = await dbService.saveSession(senderId, session);
+    if (res === 'conflict') {
+      const meta = this._turnMeta.get(String(senderId));
+      if (meta) meta.conflict = true;
+    }
+    return res;
+  }
+
+  _markSideEffect(senderId) {
+    const meta = this._turnMeta.get(String(senderId));
+    if (meta) meta.sideEffects = true;
+  }
+
+  async _answerQueryLocked(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
+    let result;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const meta = { conflict: false, sideEffects: false };
+      this._turnMeta.set(String(senderId), meta);
+      try {
+        result = await this._answerQueryImpl(senderId, userQuery, customerName, customerPhone, options);
+      } finally {
+        this._turnMeta.delete(String(senderId));
+      }
+      // Our write lost to a newer one. Re-run the turn on the fresh state — but only when
+      // nothing irreversible happened (an order or ticket must never be created twice).
+      if (meta.conflict && !meta.sideEffects && attempt === 1) {
+        console.warn(`[AI Service] Session version conflict for ${senderId} — reloading state and re-running the turn.`);
+        continue;
+      }
+      if (meta.conflict) {
+        console.error(`[AI Service] Session version conflict for ${senderId} could not be retried safely (side effects already ran). The newer stored state was kept.`);
+      }
+      break;
+    }
+    // A delayed retry that the conversation has already moved past: say nothing.
+    if (result && result.intent === 'stale_retry') return result;
     if (!result || typeof result.replyText !== 'string') return result;
 
     const cleaned = this.sanitizeOutgoing(result.replyText);
@@ -2124,6 +2645,12 @@ ${sessionContext}`;
 
   async _answerQueryImpl(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
     const session = await dbService.getSession(senderId);
+    // A delayed retry of a message the customer has since followed up on. Answering it now
+    // would process an old message against newer state, so drop it (see scheduleQuotaRetry).
+    if (options.queuedAt && session.lastActive
+        && new Date(session.lastActive).getTime() > options.queuedAt + 2000) {
+      return { replyText: '', intent: 'stale_retry', requiresEscalation: false, suggestedProductIds: [] };
+    }
     if (customerName && customerName !== 'Customer') session.customerName = customerName;
     if (customerPhone) session.customerPhone = customerPhone;
     // A photo/image just arrived on WhatsApp — remember it so a support ticket raised in
@@ -2176,7 +2703,12 @@ ${sessionContext}`;
     }
 
     const validHistory = session.history.filter(m => m.role === 'user' || m.role === 'assistant');
-    session.history = validHistory.slice(-4);
+    // Ten messages (five exchanges), up from four. Four meant an address sent two turns
+    // earlier had already scrolled out of the model's view — the root of "already send
+    // paniten" being answered with another request for the address. The order facts no
+    // longer depend on history at all (they live in structured fields, see
+    // _handleOrderStateTurn), but the model still needs enough conversation to read tone.
+    session.history = validHistory.slice(-10);
 
     let resultText = "";
     let isConfirmed = false;
@@ -2215,10 +2747,8 @@ ${sessionContext}`;
       const wantsRestart = /\b(?:(?:new|another|fresh|next|one more|1 more)\s+(?:order|jersey|item|purchase)|start\s+(?:over|again|fresh)|restart|reset|clear\s+(?:my\s+)?cart|vera\s+(?:order|jersey)|innoru\s+(?:order|jersey))\b/i.test(q);
       const isAboutExistingOrder = /\b(where|track|tracking|status|cancel|delivered|arrived|received|refund|return)\b/i.test(q);
       if (wantsRestart && !isAboutExistingOrder) {
-        const hadCart = session.cart.length > 0;
-        session.cart = [];
-        session.state = 'IDLE';
-        session.pendingProductIndex = null;
+        const hadCart = session.cart.length > 0 || Boolean(session.selectedProduct);
+        this._clearOrderSelection(session);
         // Cleared too, so a later bare "1" can't select from the PREVIOUS order's list.
         session.lastShownProducts = [];
         const reply = session.language === 'tanglish'
@@ -2226,9 +2756,22 @@ ${sessionContext}`;
           : `Sure thing! 🔥 ${hadCart ? "Cleared your previous cart. " : ''}Let's start fresh — which team or player are you looking for? Real Madrid, Barcelona, Ronaldo, Messi… just tell me! ⚽`;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
-        await dbService.saveSession(senderId, session);
+        await this._saveSession(senderId, session);
         return { replyText: reply, intent: 'deterministic_reset', requiresEscalation: false, suggestedProductIds: [] };
       }
+    }
+
+    // --- Deterministic order-state turn (added 2026-09-22) ---
+    // Everything that is really a state change — picking from the list, size, quantity,
+    // shipping details, "already sent", a payment question mid-order, "change product" — is
+    // read from the customer's words against the structured state and applied in code. See
+    // _handleOrderStateTurn. Runs before the FAQ/teams paths so a customer mid-order is
+    // never answered with a discovery reply.
+    const stateTurn = await this._handleOrderStateTurn(senderId, session, userQuery);
+    if (stateTurn && stateTurn.rewriteQuery) {
+      userQuery = stateTurn.rewriteQuery;
+    } else if (stateTurn) {
+      return stateTurn;
     }
 
     // --- Pre-AI FAQ Matcher ---
@@ -2247,7 +2790,7 @@ ${sessionContext}`;
         const answer = knowledgeHit.entry.answer;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: answer });
-        await dbService.saveSession(senderId, session);
+        await this._saveSession(senderId, session);
         return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
       }
 
@@ -2268,7 +2811,7 @@ ${sessionContext}`;
         if (reply) {
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
-          await dbService.saveSession(senderId, session);
+          await this._saveSession(senderId, session);
           return {
             replyText: reply,
             intent: 'deterministic_browse_pick',
@@ -2292,7 +2835,7 @@ ${sessionContext}`;
         if (reply) {
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
-          await dbService.saveSession(senderId, session);
+          await this._saveSession(senderId, session);
           return { replyText: reply, intent: 'deterministic_teams', requiresEscalation: false, suggestedProductIds: [] };
         }
       }
@@ -2306,7 +2849,7 @@ ${sessionContext}`;
         if (reply) {
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
-          await dbService.saveSession(senderId, session);
+          await this._saveSession(senderId, session);
           return { replyText: reply, intent: 'deterministic_browse', requiresEscalation: false, suggestedProductIds: [] };
         }
       }
@@ -2328,7 +2871,7 @@ ${sessionContext}`;
           : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
-        await dbService.saveSession(senderId, session);
+        await this._saveSession(senderId, session);
         return { replyText: reply, intent: 'deterministic_clarify', requiresEscalation: false, suggestedProductIds: [] };
       }
       // Skip the canned FAQ fast-path for real order-tracking lookups and complaints so
@@ -2349,53 +2892,14 @@ ${sessionContext}`;
         const answer = faqService.answerFor(faqMatches[0], session.language);
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: answer });
-        await dbService.saveSession(senderId, session);
+        await this._saveSession(senderId, session);
         return { replyText: answer, intent: 'faq', requiresEscalation: false, suggestedProductIds: [] };
       }
     }
 
-    // --- Deterministic size+quantity parser ---
-    // The highest-frequency turn after a product search: customer just needs to pick
-    // size+qty. Parsing it in code is instant, free, and can't hallucinate a wrong
-    // product/size — parseSizeQtyReply returns null on anything not confidently
-    // parseable, which falls straight through to the LLM below as before.
-    if (isIdle && session.cart.length === 0 && session.lastShownProducts?.length > 0 && userQuery) {
-      const parsed = this.parseSizeQtyReply(userQuery, session.lastShownProducts, session.pendingProductIndex ?? null);
-      if (parsed) {
-        session.cart = [{ productId: parsed.productId, name: parsed.name, price: parsed.price, size: parsed.size, qty: parsed.qty }];
-        session.state = 'COLLECTING_ADDRESS';
-        session.pendingProductIndex = null;
-        const isTanglish = session.language === 'tanglish';
-        const reply = isTanglish
-          ? `Done bro! 🛒 *${parsed.name}* — ${parsed.size} size, ${parsed.qty} qty cart la potten! Ippo shipping details sollunga — Name, Address, Pincode, Mobile number.`
-          : `Done! 🛒 Added *${parsed.name}* — Size ${parsed.size}, Qty ${parsed.qty} to your cart! Now share your shipping details — Name, Address, Pincode, Mobile number.`;
-        session.history.push({ role: 'user', content: userQuery });
-        session.history.push({ role: 'assistant', content: reply });
-        await dbService.saveSession(senderId, session);
-        return { replyText: reply, intent: 'deterministic_cart', requiresEscalation: false, suggestedProductIds: [parsed.productId] };
-      }
-
-      // --- Bare product-selection reply (no size/qty yet) ---
-      // e.g. "2", "1st" — exactly what the numbered search-result template invites
-      // ("Ethu venum bro — 1, 2 illa 3?"). Remember the pick and ask for size/qty
-      // specifically for that product, instead of falling to the LLM (which has no tool
-      // for "remember this selection" and was observed re-running search_products,
-      // returning a different unrelated list each time the customer just replied "2").
-      const selectedIdx = this.parseProductSelectionOnly(userQuery, session.lastShownProducts);
-      if (selectedIdx !== null) {
-        session.pendingProductIndex = selectedIdx;
-        const p = session.lastShownProducts[selectedIdx];
-        const isTanglish = session.language === 'tanglish';
-        const sizeText = p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : '';
-        const reply = isTanglish
-          ? `Semma bro! 🔥 *${p.name}*${sizeText} — enna size, evlo quantity venum? 🛍️`
-          : `Great pick! 🔥 *${p.name}*${sizeText} — what size, and how many would you like? 🛍️`;
-        session.history.push({ role: 'user', content: userQuery });
-        session.history.push({ role: 'assistant', content: reply });
-        await dbService.saveSession(senderId, session);
-        return { replyText: reply, intent: 'deterministic_selection', requiresEscalation: false, suggestedProductIds: [p.productId] };
-      }
-    }
+    // (The old size+qty / bare-selection regex fast paths lived here. They defaulted an
+    // unidentified product to #1 and read a leading product number as the quantity — the
+    // Guardiola-instead-of-Messi bug. _handleOrderStateTurn replaces both.)
 
     // --- Deterministic order-confirmation bypass ---
     // Only short-circuits on a message that IS ENTIRELY a confirmation word/phrase —
@@ -2413,12 +2917,14 @@ ${sessionContext}`;
         }
         if (result.ok) {
           const isTanglish = session.language === 'tanglish';
+          // Methods come from config.payment, never hard-coded — see _paymentReply.
+          const payMethods = (config.payment?.methods || []).join(' / ');
           // The order ID and the payment link are printed ONLY when WooCommerce actually
           // returned them -- we are past `created`, so the ID is real either way.
           const reply = result.checkoutUrl
             ? (isTanglish
-                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}\nUPI / card / net banking la pay pannunga. Thanks for shopping with Theaurax! ⚽🔥`
-                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}\nPay by UPI, card or net banking. Thanks for shopping with Theaurax! ⚽🔥`)
+                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''} Thanks for shopping with Theaurax! ⚽🔥`
+                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}${payMethods ? `\nPay by ${payMethods}.` : ''} Thanks for shopping with Theaurax! ⚽🔥`)
             : (isTanglish
                 ? `Semma bro! 🎉 Order #${result.orderId} place aayiduchi! Payment link konja neram la inga anuppuren — team confirm panniduvaanga. Thanks! ⚽🔥`
                 : `Great news! 🎉 Your order #${result.orderId} has been placed! I'll send your payment link here shortly — our team is confirming it now. Thanks for shopping with Theaurax! ⚽🔥`);
@@ -2435,13 +2941,18 @@ ${sessionContext}`;
 
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
-          session.state = 'IDLE';
-          session.cart = [];
+          // Remember the order (so "how pay?" afterwards returns THIS link) and the address
+          // (so the next order can say "same address"), then clear the per-order state.
+          session.lastOrder = { orderId: result.orderId, checkoutUrl: result.checkoutUrl || null, at: Date.now() };
+          if (session.addressDetails) session.customerProfile = { ...session.addressDetails };
+          this._clearOrderSelection(session);
+          session.lastShownProducts = [];
           session.address = null;
           session.addressDetails = null;
+          session.addressDraft = null;
           session.history = [];
 
-          await dbService.saveSession(senderId, session);
+          await this._saveSession(senderId, session);
           await dbService.saveLead({
             userId: senderId,
             name: session.customerName || 'Customer',
@@ -2514,6 +3025,7 @@ ${sessionContext}`;
     let keepLooping = true;
     let loops = 0;
     let forcedSearchRetryDone = false;
+    let stateRetryDone = false;
     let lastSearchResults = null;
 
     while (keepLooping && loops < 5) {
@@ -2553,11 +3065,13 @@ ${sessionContext}`;
               // Persisted so a later turn (e.g. "1st one, M size 2") can resolve which
               // product the customer means without an LLM call — see parseSizeQtyReply.
               session.lastShownProducts = shown.slice(0, 10).map(p => ({
-                productId: p.id, name: p.name, price: p.price, sizes: p.sizes || []
+                productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || ''
               }));
               // A fresh search invalidates any earlier "customer picked #2" memory —
-              // that index referred to the OLD list.
+              // that index referred to the OLD list. It does NOT touch the locked product
+              // or the cart: showing options is not the customer choosing one.
               session.pendingProductIndex = null;
+              session.productListPending = shown.length > 0;
 
               // Skip the second "narration" LLM call entirely — template it directly.
               // Originally only did this for a single confident match; multi-match search
@@ -2574,6 +3088,24 @@ ${sessionContext}`;
                 // there is nothing to list -- the blocker is the missing team, not the
                 // product. Answer it the same way the deterministic "which teams?" path
                 // does: from the catalogue, so the list is real.
+                // Mid-order, a vague search must NOT throw the customer back to team selection
+                // (the "Idhellaam ippo stock la iruku bro … Enna team venum?" regression):
+                // resume their order instead.
+                if (found.matchQuality === 'broad' && orderState.hasActiveOrder(session)) {
+                  session.lastShownProducts = [];
+                  session.productListPending = false;
+                  lastSearchResults = [];
+                  matchedProductIds = [];
+                  resultText = this._nextStepPrompt(session);
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: fnName,
+                    content: JSON.stringify({ products: null, matchQuality: 'broad', message: 'Active order in progress — resumed it instead of listing teams.' })
+                  });
+                  keepLooping = false;
+                  break;
+                }
                 if (found.matchQuality === 'broad' && this.teamListReply(session.language, session)) {
                   // Nothing was shown, so a later "1st one" must not resolve against the
                   // suggestions list the customer never saw.
@@ -2656,69 +3188,114 @@ ${sessionContext}`;
               } else if (!resolved) {
                 console.warn(`[AI Service] update_cart could not resolve product (id=${args.productId}, name="${args.name}") against shown list/cache — using raw args.`);
               }
-              const chosen = resolved || { productId: args.productId, name: args.name, price: args.price };
-              session.cart = [{
-                productId: chosen.productId,
-                name: chosen.name,
-                price: chosen.price,
-                size: args.size,
-                qty: args.qty
-              }];
-              session.state = 'COLLECTING_ADDRESS';
-              toolResultObj = { status: "success", message: "Cart updated successfully. Ask user for their shipping address next." };
-            } else if (fnName === "set_shipping_address") {
-              // Some models emit phone/pincode as bare JSON numbers — normalize to
-              // strings here since downstream code (parseAddressDetails) calls .replace()
-              // on these and would throw on a raw number.
-              const phone = String(args.phone ?? '');
-              const pincode = String(args.pincode ?? '');
-              session.addressDetails = { name: args.name, phone, address: args.address, pincode };
-              session.address = `${args.name}, ${args.address}, ${pincode} | Ph: ${phone}`;
-              session.customerPhone = phone;
-              if (args.name && args.name !== 'Customer') session.customerName = args.name;
-              // Update customer registry with confirmed phone number
-              dbService.saveCustomer(senderId, args.name, phone).catch(() => {});
+              let chosen = resolved || { productId: args.productId, name: args.name, price: args.price };
 
-              const totalQty = session.cart.reduce((sum, item) => sum + parseInt(item.qty || 0), 0);
-              const bulkThreshold = config.owner?.bulkThreshold || 10;
+              // PRODUCT LOCK. Once the customer has picked a product, the model may not swap
+              // it — not for a "more similar" search hit, not for a product from earlier
+              // history. Only the customer's own words can: an explicit change request, or a
+              // message that actually names the new product.
+              const locked = orderState.lockedProduct(session);
+              const ents = orderState.extractEntities(userQuery, {
+                shownCount: (session.lastShownProducts || []).length,
+                awaiting: this._awaiting(session),
+                hasSelection: Boolean(locked),
+              });
+              if (locked && String(chosen.productId) !== String(locked.productId)
+                  && !ents.changeProduct && !this._customerNamedProduct(userQuery, chosen, locked)) {
+                console.warn(`[AI Service] update_cart BLOCKED product swap for ${senderId}: model sent "${chosen.name}" (${chosen.productId}) but the customer's locked product is "${locked.name}" (${locked.productId}). Keeping the locked product.`);
+                chosen = { productId: locked.productId, name: locked.name, price: locked.price };
+              }
 
-              if (totalQty >= bulkThreshold) {
-                requiresEscalation = true;
-                session.requiresEscalation = true;
-                session.state = 'IDLE';
-                session.escalationDetails = {
-                  reason: `Bulk Order (${totalQty} items)`,
-                  name: args.name || session.customerName,
-                  phone: args.phone || senderId.replace(/[^0-9]/g, ''),
-                  address: session.address
-                };
-                toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
+              // Size and quantity also come from the customer's words first. The model's value
+              // is used only when this message didn't state one AND nothing is stored yet, or
+              // when the number it sent actually appears in the customer's message.
+              const current = session.cart?.[0] || {};
+              const mentions = (n) => n != null && new RegExp(`(?<!\\d)${parseInt(n, 10)}(?!\\d)`).test(userQuery);
+              const size = (ents.size && (ents.sizeConfident || !current.size)) ? ents.size
+                : (current.size || session.pendingSize || args.size);
+              const qty = ents.qty
+                || (mentions(args.qty) ? parseInt(args.qty, 10) : null)
+                || current.qty || session.pendingQty || parseInt(args.qty, 10) || 1;
+              const chosenFull = (session.lastShownProducts || []).find(p => String(p.productId) === String(chosen.productId))
+                || (String(locked?.productId) === String(chosen.productId) ? locked : null)
+                || chosen;
+
+              if (size && !orderState.productHasSize(chosenFull, String(size).toUpperCase())) {
+                toolResultObj = { status: "error", message: `Size ${size} is not available for ${chosen.name}. Available sizes: ${(chosenFull.sizes || []).join(', ')}. Ask the customer to pick one of those. Do NOT change the product.` };
               } else {
-                session.state = 'CONFIRMING_ORDER';
-                // Template the order summary deterministically from session.cart instead
-                // of letting the LLM narrate it freely — narration was observed fabricating
-                // a second line item pulled from earlier conversation history that was
-                // never actually added to the cart (the cart is guaranteed single-item by
-                // design, replaced on each update_cart call). Money-facing totals shouldn't
-                // depend on the model reading its own context correctly.
-                const isTanglish = session.language === 'tanglish';
-                const total = session.cart.reduce((sum, item) => sum + (parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0), 0);
-                const itemLines = session.cart.map(item =>
-                  `• *${item.name}* — ${item.size} size, ${item.qty} qty — ₹${(parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0)}`
-                ).join('\n');
-                resultText = isTanglish
-                  ? `Bro, unga order summary:\n${itemLines}\nTotal: ₹${total}\n\nConfirm pannunga bro, reply "YES" 🎉`
-                  : `Here's your order summary:\n${itemLines}\nTotal: ₹${total}\n\nReply "YES" to confirm! 🎉`;
-                messages.push({
-                  role: "tool",
-                  tool_call_id: toolCall.id,
-                  name: fnName,
-                  content: JSON.stringify({ status: "success", message: "Address saved." })
-                });
-                keepLooping = false;
-                break;
+                this._lockProduct(session, { ...chosenFull, ...chosen });
+                session.cart = [{
+                  productId: chosen.productId,
+                  name: chosen.name,
+                  price: chosen.price,
+                  size: String(size || '').toUpperCase(),
+                  qty
+                }];
+                session.pendingSize = null;
+                session.pendingQty = null;
+                session.state = 'COLLECTING_ADDRESS';
+                const known = this._knownAddress(session);
+                if (orderState.isAddressComplete(known)) {
+                  // Their details are already on file — never ask again. Go to the summary.
+                  const res = this._applyAddress(senderId, session, known);
+                  if (res.bulk) {
+                    requiresEscalation = true;
+                    toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${res.totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
+                  } else {
+                    resultText = this._summaryReply(session);
+                    messages.push({ role: "tool", tool_call_id: toolCall.id, name: fnName, content: JSON.stringify({ status: "success" }) });
+                    keepLooping = false;
+                    break;
+                  }
+                } else {
+                  const missing = orderState.missingAddressFields(known);
+                  toolResultObj = {
+                    status: "success",
+                    message: `Cart updated: ${chosen.name}, size ${session.cart[0].size}, qty ${qty}. `
+                      + `Ask the customer ONLY for these missing shipping details: ${missing.join(', ')}. Do not ask for anything else.`
+                  };
+                }
+              }
+            } else if (fnName === "set_shipping_address") {
+              // Some models emit phone/pincode as bare JSON numbers — normalize to strings.
+              // The model's values are MERGED over what we already hold (never replace a
+              // known field with a blank), and nothing is accepted until every field is valid.
+              const merged = orderState.mergeAddress(this._knownAddress(session), {
+                name: args.name && args.name !== 'Customer' ? String(args.name) : '',
+                phone: String(args.phone ?? '').replace(/\D/g, '').slice(-10),
+                address: args.address ? String(args.address) : '',
+                pincode: String(args.pincode ?? '').replace(/\D/g, ''),
+              });
+              session.addressDraft = merged;
+              const missing = orderState.missingAddressFields(merged);
+
+              if (!session.cart || session.cart.length === 0) {
+                toolResultObj = { status: "error", message: "The cart is empty, so there is nothing to ship yet. Details were saved. Ask which jersey, size and quantity they want." };
+              } else if (missing.length > 0) {
+                toolResultObj = { status: "error", message: `Shipping details incomplete. Still missing: ${missing.join(', ')}. Ask the customer ONLY for those — everything else is already saved.` };
+              } else {
+                const res = this._applyAddress(senderId, session, merged);
+                if (res.bulk) {
+                  requiresEscalation = true;
+                  toolResultObj = { status: "success", message: `CRITICAL: Cart quantity is ${res.totalQty}, which is a bulk order. DO NOT ask to confirm order. Tell the user our wholesale team will reach out to them shortly.` };
+                } else {
+                  // Template the order summary deterministically from session.cart instead
+                  // of letting the LLM narrate it — narration was observed fabricating a
+                  // second line item from earlier history. Money-facing totals shouldn't
+                  // depend on the model reading its own context correctly.
+                  resultText = this._summaryReply(session);
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: fnName,
+                    content: JSON.stringify({ status: "success", message: "Address saved." })
+                  });
+                  keepLooping = false;
+                  break;
+                }
               }
             } else if (fnName === "escalate_to_human") {
+              this._markSideEffect(senderId);
               requiresEscalation = true;
               session.requiresEscalation = true;
               session.state = 'IDLE';
@@ -2758,12 +3335,26 @@ ${sessionContext}`;
                 continue;
               }
 
-              const addrDetails = session.addressDetails || {
-                name: session.customerName || 'Customer',
-                phone: session.customerPhone || senderId.replace(/\D/g, ''),
-                address: session.address || '',
-                pincode: ''
-              };
+              // State gate: an order is only created from CART_REVIEW with complete shipping
+              // details and a message that actually confirms. The model deciding "it's time"
+              // is not enough — it once confirmed on a message that was really a correction.
+              const missingAddr = orderState.missingAddressFields(session.addressDetails || this._knownAddress(session));
+              const saysYes = /\b(yes|yeah|yep|confirm|confirmed|ok|okay|okey|sure|seri|sari|proceed|place|book|done)\b/i.test(userQuery)
+                && !/\b(no|not|illa|wait|change|maathu|vendam|cancel)\b/i.test(userQuery);
+              if (missingAddr.length > 0 || session.state !== 'CONFIRMING_ORDER' || !saysYes) {
+                toolResultObj = {
+                  status: "error",
+                  message: missingAddr.length > 0
+                    ? `Cannot place the order yet — shipping details missing: ${missingAddr.join(', ')}. Ask ONLY for those.`
+                    : "Cannot place the order — the customer has not confirmed the summary. Show nothing new; ask them to reply YES to confirm the order summary.",
+                };
+                messages.push({ role: "tool", tool_call_id: toolCall.id, name: fnName, content: JSON.stringify(toolResultObj) });
+                continue;
+              }
+
+              const addrDetails = session.addressDetails;
+              const payMethods = (config.payment?.methods || []).join(', ');
+              this._markSideEffect(senderId);
 
               // Ordering is known to be down -- don't place the customer in a dead end.
               const orderResult = woocommerceService.orderingAvailable === false
@@ -2788,7 +3379,7 @@ ${sessionContext}`;
                   status: "success",
                   orderId: orderResult.orderId,
                   paymentUrl: checkoutUrl,
-                  message: `Order #${orderResult.orderId} created! Share this payment link with the customer so they can complete checkout: ${checkoutUrl}. Tell them to tap the link and pay by UPI, card or net banking. Be warm and enthusiastic!`
+                  message: `Order #${orderResult.orderId} created! Share this payment link with the customer so they can complete checkout: ${checkoutUrl}. Tell them to tap the link and pay${payMethods ? ` (accepted: ${payMethods})` : ''} — name no other payment method. Be warm and enthusiastic!`
                 };
               } else {
                 // status MUST be "error". It said "success" / "Order noted manually" until
@@ -2843,6 +3434,7 @@ ${sessionContext}`;
                 toolResultObj = { status: "error", message: "Couldn't fetch the order right now. Apologise and offer to raise a support ticket so the team can check it manually." };
               }
             } else if (fnName === "create_support_ticket") {
+              this._markSideEffect(senderId);
               const ticket = await dbService.saveTicket({
                 userId: senderId,
                 name: args.customerName || session.customerName || 'Customer',
@@ -2973,6 +3565,31 @@ ${sessionContext}`;
             }
           }
 
+          // RESPONSE VALIDATION against the authoritative order state. A reply that names a
+          // different product, a different size/qty/price, re-asks for details we hold,
+          // offers COD, or restarts team selection mid-order is never sent. One regeneration
+          // with the state spelled out; if that fails too, a deterministic reply built from
+          // the state itself.
+          const stateProblems = this._validateReplyAgainstState(resultText, session, { searchRan: searchRanThisTurn });
+          if (stateProblems.length > 0) {
+            console.warn(`[AI Service] Reply rejected by state validation for ${senderId}: ${stateProblems.join('; ')} | ${resultText.slice(0, 140)}`);
+            if (!stateRetryDone && loops < 5) {
+              stateRetryDone = true;
+              messages.push({
+                role: "system",
+                content: `Your reply was NOT sent because it contradicted the order state: ${stateProblems.join('; ')}. `
+                  + `The order state in the system prompt is authoritative. Answer the customer's last message ("${userQuery}") again `
+                  + `WITHOUT changing the product, size, quantity or price, WITHOUT asking for details already on file, `
+                  + `and WITHOUT listing teams. If you cannot answer safely, ask one short clarification question.`
+              });
+              continue;
+            }
+            const codOnly = stateProblems.every(p => /Cash on Delivery/.test(p));
+            resultText = codOnly
+              ? this._paymentReply(session)
+              : (this._nextStepPrompt(session) || this.brokenReplyFallback(session.language));
+          }
+
           keepLooping = false;
         }
       } catch (err) {
@@ -2980,11 +3597,14 @@ ${sessionContext}`;
           console.warn(`[AI Service] Groq daily token quota exhausted. Will retry this message in ${Math.round(err.waitMs / 1000)}s.`);
           quotaExhaustedWaitMs = err.waitMs;
           // --- No-LLM Fallback: when all providers are exhausted, try local product cache ---
-          resultText = this._buildNoLLMFallback(userQuery, session.language);
+          // Mid-order, a product list would be a jump backwards — restate their order instead.
+          resultText = (orderState.hasActiveOrder(session) && this._nextStepPrompt(session))
+            || this._buildNoLLMFallback(userQuery, session.language);
         } else {
           console.error('[AI Service] Groq API error:', err.error ? JSON.stringify(err.error) : err.message || err);
           // No-LLM fallback for non-quota errors too — show products from local cache
-          resultText = this._buildNoLLMFallback(userQuery, session.language);
+          resultText = (orderState.hasActiveOrder(session) && this._nextStepPrompt(session))
+            || this._buildNoLLMFallback(userQuery, session.language);
         }
         keepLooping = false;
       }
@@ -2993,7 +3613,7 @@ ${sessionContext}`;
     if (quotaExhaustedWaitMs !== null) {
       // Don't persist this placeholder into conversation history - schedule a real
       // re-run of the original query once the daily quota window resets instead.
-      await dbService.saveSession(senderId, session);
+      await this._saveSession(senderId, session);
       this.scheduleQuotaRetry(senderId, userQuery, customerName, customerPhone, quotaExhaustedWaitMs);
       return { replyText: resultText, intent: 'quota_exhausted', requiresEscalation: false, suggestedProductIds: [] };
     }
@@ -3012,23 +3632,29 @@ ${sessionContext}`;
           error: 'Order was created but WooCommerce returned no payment link — send the customer one manually.'
         }, null);
       }
-      session.cart = [];
+      session.lastOrder = { orderId: session.orderIds?.[session.orderIds.length - 1] || null, checkoutUrl: checkoutUrl || null, at: Date.now() };
+      if (session.addressDetails) session.customerProfile = { ...session.addressDetails };
+      this._clearOrderSelection(session);
+      session.lastShownProducts = [];
       session.address = null;
       session.addressDetails = null;
+      session.addressDraft = null;
       session.history = [];
     }
 
     if (requiresEscalation) {
       this.sendEscalationAlert(senderId, userQuery, session);
       // Reset the session so future bulk orders also trigger alerts
-      session.cart = [];
+      this._clearOrderSelection(session);
       session.address = null;
       session.history = [];
       session.hasEscalated = false;
       session.requiresEscalation = false;
     }
 
-    await dbService.saveSession(senderId, session);
+    session.orderStep = orderState.computeStep(session);
+
+    await this._saveSession(senderId, session);
     
     await dbService.saveLead({
       userId: senderId,

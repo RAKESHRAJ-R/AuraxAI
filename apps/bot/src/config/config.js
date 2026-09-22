@@ -152,6 +152,15 @@ const config = {
     email: (process.env.SUPPORT_EMAIL || 'support@theaurax.in').trim(),
     wholesaleNumber: (process.env.WHOLESALE_NUMBER || '9884442049').replace(/[^0-9]/g, ''),
   },
+  // What the store actually accepts. The bot's payment answers are built from THIS, never
+  // from the model's imagination — so a method only reaches a customer if it is listed here.
+  // Defaults mirror the live store: Razorpay is the only gateway, COD is disabled.
+  payment: {
+    codEnabled: String(process.env.PAYMENT_COD_ENABLED || 'false').toLowerCase() === 'true',
+    gateway: (process.env.PAYMENT_GATEWAY || 'Razorpay').trim(),
+    methods: (process.env.PAYMENT_METHODS || 'UPI,Debit/Credit card,Net banking')
+      .split(',').map(s => s.trim()).filter(Boolean),
+  },
   wati: {
     endpoint: process.env.WATI_API_ENDPOINT || '',
     accessToken: process.env.WATI_ACCESS_TOKEN || '',

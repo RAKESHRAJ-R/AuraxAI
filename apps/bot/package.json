@@ -21,7 +21,8 @@
     "check-woo": "node src/check_woo.js",
     "test-search": "node src/test_search.js",
     "test-order-flow": "node src/test_order_flow.js",
-    "test-tanglish": "node src/test_tanglish.js"
+    "test-tanglish": "node src/test_tanglish.js",
+    "test-order-state": "node src/test_order_state.js"
   },
   "overrides": {
     "sharp": "^0.35.3"

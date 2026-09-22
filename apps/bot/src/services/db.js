@@ -157,13 +157,24 @@ class DatabaseService {
 
   // --- Session Methods ---
 
+  // Sessions carry a `stateVersion` counter for optimistic concurrency. getSession() remembers
+  // the version it read in a non-persisted `_baseVersion`; saveSession() only writes if the
+  // stored version is still that one, so a slower turn can never overwrite a newer session
+  // (a cart, size or address silently reverting). A lost race returns 'conflict'.
+  _withBase(session) {
+    Object.defineProperty(session, '_baseVersion', {
+      value: session.stateVersion || 0, writable: true, enumerable: false, configurable: true,
+    });
+    return session;
+  }
+
   async getSession(userId) {
-    if (!userId) return { ...DEFAULT_SESSION };
+    if (!userId) return this._withBase({ ...DEFAULT_SESSION, cart: [], history: [] });
 
     if (this.useMongo) {
       try {
         const session = await this.db.collection('sessions').findOne({ userId });
-        return session ? { ...DEFAULT_SESSION, ...session } : { ...DEFAULT_SESSION, userId };
+        return this._withBase(session ? { ...DEFAULT_SESSION, ...session } : { ...DEFAULT_SESSION, cart: [], history: [], userId });
       } catch (err) {
         console.error('[Database Service] MongoDB getSession error:', err.message);
       }
@@ -173,40 +184,71 @@ class DatabaseService {
     try {
       const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'));
       const session = data[userId];
-      return session ? { ...DEFAULT_SESSION, ...session } : { ...DEFAULT_SESSION, userId };
+      return this._withBase(session ? { ...DEFAULT_SESSION, ...session } : { ...DEFAULT_SESSION, cart: [], history: [], userId });
     } catch (err) {
       console.error('[Database Service] Local JSON read session error:', err.message);
-      return { ...DEFAULT_SESSION, userId };
+      return this._withBase({ ...DEFAULT_SESSION, cart: [], history: [], userId });
     }
   }
 
   async saveSession(userId, sessionData) {
     if (!userId) return false;
 
+    // A session object that never came through getSession() (legacy callers, tests) has no
+    // base version; it is written unconditionally, exactly as before.
+    const base = typeof sessionData._baseVersion === 'number' ? sessionData._baseVersion : null;
+    const nextVersion = (base ?? (sessionData.stateVersion || 0)) + 1;
+    const { _id, ...rest } = sessionData;
     const dataToSave = {
-      ...sessionData,
+      ...rest,
       userId,
+      stateVersion: nextVersion,
       lastActive: new Date().toISOString()
+    };
+    const markSaved = () => {
+      sessionData.stateVersion = nextVersion;
+      if (base !== null) sessionData._baseVersion = nextVersion;
+      sessionData.lastActive = dataToSave.lastActive;
     };
 
     if (this.useMongo) {
       try {
-        await this.db.collection('sessions').updateOne(
-          { userId },
-          { $set: dataToSave },
-          { upsert: true }
-        );
-        return true;
+        const col = this.db.collection('sessions');
+        if (base === null) {
+          await col.updateOne({ userId }, { $set: dataToSave }, { upsert: true });
+          markSaved();
+          return true;
+        }
+        const versionFilter = base === 0
+          ? { userId, $or: [{ stateVersion: { $exists: false } }, { stateVersion: 0 }] }
+          : { userId, stateVersion: base };
+        const res = await col.updateOne(versionFilter, { $set: dataToSave });
+        if (res.matchedCount === 1) { markSaved(); return true; }
+        // Nothing matched: either the session doesn't exist yet, or someone saved a newer one.
+        const existing = await col.findOne({ userId }, { projection: { stateVersion: 1 } });
+        if (!existing) {
+          await col.updateOne({ userId }, { $setOnInsert: dataToSave }, { upsert: true });
+          markSaved();
+          return true;
+        }
+        console.warn(`[Database Service] Session version conflict for ${userId}: read v${base}, stored v${existing.stateVersion} — not overwriting the newer state.`);
+        return 'conflict';
       } catch (err) {
         console.error('[Database Service] MongoDB saveSession error:', err.message);
       }
     }
 
-    // JSON Fallback
+    // JSON Fallback — read-compare-write is synchronous, so nothing can interleave with it.
     try {
       const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'));
+      const stored = data[userId];
+      if (base !== null && stored && (stored.stateVersion || 0) !== base) {
+        console.warn(`[Database Service] Session version conflict for ${userId}: read v${base}, stored v${stored.stateVersion || 0} — not overwriting the newer state.`);
+        return 'conflict';
+      }
       data[userId] = dataToSave;
       fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+      markSaved();
       return true;
     } catch (err) {
       console.error('[Database Service] Local JSON save session error:', err.message);

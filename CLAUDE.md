@@ -279,7 +279,7 @@ Seven of the highest-frequency conversational turns are handled entirely in code
    first in `faq.json`, an unguarded keyword would have returned a canned hello instead of a
    product search. This also closes the same hole on the English side (`"hi do you have real
    madrid jerseys"` used to match Greetings).
-2. **Size + quantity parsing** (`aiService.parseSizeQtyReply()`) — replies like `"M size 2"`, `"1st one, L 3"`, `"2 M 5"`, or `"XL"` are regex-parsed against `session.lastShownProducts` (populated whenever `search_products` runs) and go straight to cart via `update_cart` logic. Returns `null` on anything not confidently parseable — including trusting only sizes the matched product actually lists — and falls through to the LLM in that case. Intent tag: `deterministic_cart`.
+2. **Order-state turn** (`aiService._handleOrderStateTurn()` + `src/services/orderState.js`) — replaced the old `parseSizeQtyReply`/`parseProductSelectionOnly` regexes on 2026-09-22. Product pick, size, quantity, shipping details, "already sent", payment questions and "change product" are read from the customer's words *against the current state* and applied in code. See "Order State Layer" below. Intent tags: `deterministic_selection`, `deterministic_cart`, `state_*`.
 
    **`"<product no> <size> <qty>"` in one message** (`"2 M 5"`, `"3 size L 2"`) is handled by a
    dedicated branch, because it's the most natural answer to the bot's own *"Which one — 1, 2
@@ -300,6 +300,29 @@ Seven of the highest-frequency conversational turns are handled entirely in code
 A further optimization saves an LLM call without skipping it entirely: when `search_products` returns exactly one confident match, the reply is templated directly (randomized hype opener + product details) instead of feeding the result back for a second "narration" LLM call. Multiple matches still get narrated normally so the model can help the customer choose.
 
 Together these cut LLM calls roughly in half on a typical size→address→confirm purchase flow, which matters because free-tier API quotas (Groq/Gemini) are shared across every concurrent customer — every call avoided is capacity freed up for everyone else.
+
+### Order State Layer (added 2026-09-22)
+
+Fixes a real chat where the customer picked the Messi 2009 shirt and the bot carted the Guardiola one at qty 2, asked for an address they had already sent, then showed the team list again ("Idhellaam ippo stock la iruku bro … Enna team venum?").
+
+**Root causes that were fixed:**
+- **Wrong product and wrong qty:** `parseSizeQtyReply` defaulted an unidentified product to **#1** and read the leading "2" of `"2 and one quantity and m size"` as the qty. It also had no word numbers, so "one quantity" was ignored.
+- **LLM could overwrite the cart:** after the cart was filled, every message went to the LLM. `update_cart` took whatever product, size and qty the model sent.
+- **Address asked again:** only 4 history messages were kept, and the address was stored only when the LLM called `set_shipping_address`. Details from earlier turns scrolled out of view.
+- **Back to team selection:** the `search_products` "broad" branch, the unstocked-team fallback and the no-LLM fallback all ignored an order in progress.
+- **Concurrent writes:** the quota-retry timer, the persistent retry queue and catch-up all called `answerQuery` outside the per-sender WhatsApp chain. A stale retry could also replay an old message against newer state.
+
+**The fix:**
+- **Structured fields** (the source of truth): `selectedProduct`, `pendingSize`/`pendingQty`, `cart`, `addressDraft`, `customerProfile` (kept across orders), `productListPending`, `pendingClarify`, `lastOrder`. `orderState.computeStep()` derives the step: DISCOVERY → PRODUCT_SELECTION → SIZE/QUANTITY_SELECTION → ADDRESS_COLLECTION → CART_REVIEW → PAYMENT_PENDING. `session.state` keeps its old values and adds `COLLECTING_SIZE`.
+- **Contextual extraction:** `orderState.extractEntities(text, {awaiting, shownCount, hasSelection})`. A bare "2" is a product pick after a list, and a qty after "how many?". It handles word and Tanglish numbers, labelled or unlabelled addresses sent in several messages, "already sent/paniten", payment questions and "change product".
+- **Product lock:** only an explicit change request or a pick from the list on screen can change the product. `update_cart` blocks a model-initiated swap and prefers the customer's own size/qty.
+- **Mid-order safety:** a bare team name asks "change it? YES/NO". It never restarts discovery.
+- **Response validation:** `_validateReplyAgainstState` rejects LLM replies with a different product, size, qty or price, a re-ask for details on file, a team list mid-order, or a COD offer. It allows one regeneration, then falls back to a deterministic next-step reply.
+- **Payment config:** payment answers come only from `config.payment` (`PAYMENT_COD_ENABLED`, `PAYMENT_METHODS`).
+- **Concurrency:** a per-sender lock inside `answerQuery` covers all callers. Sessions carry `stateVersion`; `saveSession` refuses a stale write (`'conflict'`) and the turn is re-run once if nothing irreversible happened. Delayed retries are dropped (`stale_retry`) if the customer has messaged since.
+- **History:** raised from 4 to 10 messages.
+
+`npm run test-order-state` (`src/test_order_state.js`) replays the production chat and the 10 scenarios against the real pipeline and JSON store, with a scripted fake LLM. Without the lock, the rapid-fire test loses the cart.
 
 ### Knowledge Hub (client-editable, self-service bot corrections)
 
