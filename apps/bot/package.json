@@ -12,6 +12,7 @@
     "test-embeddings": "node src/test_embeddings.js",
     "test-catchup": "node src/test_catchup.js",
     "test-followup": "node src/test_followup.js",
+    "test-watchdog": "node src/test_whatsapp_watchdog.js",
     "test-admin-auth": "node src/test_admin_auth.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",

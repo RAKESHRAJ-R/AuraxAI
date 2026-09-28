@@ -1,4 +1,8 @@
 import { createRequire } from 'module';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs/promises';
+import path from 'path';
 import pkg from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import config from '../config/config.js';
@@ -7,6 +11,7 @@ import catchupService from './catchup.js';
 
 const { Client, LocalAuth, MessageMedia } = pkg;
 const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 
 /**
  * whatsapp-web.js defaults to claiming "Chrome/101 on macOS 10.14" (a 2022 browser) while
@@ -32,6 +37,133 @@ function realChromeUserAgent() {
   return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
+/** Close a client's browser, ignoring every error — it may never have launched, or be gone. */
+async function closeQuietly(client) {
+  try {
+    await client.destroy();
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Resolves to `fallback` if `promise` hasn't settled within `ms`. Never rejects. */
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).catch(() => fallback),
+    new Promise(r => { timer = setTimeout(() => r(fallback), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/** Kill a Chrome and everything it spawned. Puppeteer launches it detached, so pid = group id. */
+function killBrowserTree(pid) {
+  if (!pid || process.platform === 'win32') return;
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+/**
+ * Close a client for good. destroy() alone can hang forever on a wedged browser — and the
+ * 'disconnected' handler awaited exactly that, so a hung Chrome left the bot silent with no
+ * re-init ever scheduled. Give it 20s, then kill the process tree regardless.
+ */
+async function teardown(client) {
+  if (!client) return;
+  const pid = client.pupBrowser?.process?.()?.pid;
+  await withTimeout(closeQuietly(client), 20000);
+  if (pid) killBrowserTree(pid);
+}
+
+/** CPU seconds used so far by a process and all its descendants, from /proc. Linux only. */
+async function treeCpuSeconds(rootPid) {
+  const entries = await fs.readdir('/proc');
+  const stats = new Map();
+  await Promise.all(entries.filter(e => /^\d+$/.test(e)).map(async (pid) => {
+    try {
+      const raw = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
+      // The command name is in parentheses and may contain spaces; fields resume after ')'.
+      const f = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+      stats.set(Number(pid), { ppid: Number(f[1]), ticks: Number(f[11]) + Number(f[12]) });
+    } catch { /* exited mid-scan */ }
+  }));
+  let ticks = 0;
+  const queue = [rootPid];
+  const seen = new Set();
+  while (queue.length) {
+    const pid = queue.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    ticks += stats.get(pid)?.ticks || 0;
+    for (const [child, s] of stats) if (s.ppid === pid) queue.push(child);
+  }
+  return ticks / 100; // USER_HZ is 100 on every mainstream Linux build
+}
+
+/** The Chrome profile folder LocalAuth gives this client — the thing Chrome locks. */
+function sessionDirFor(client) {
+  return client?.authStrategy?.userDataDir
+    || path.resolve('./.wwebjs_auth/', `session-${config.whatsappWeb.clientId}`);
+}
+
+/**
+ * Free a session folder that a leftover Chrome is still holding.
+ *
+ * Chrome allows one browser per profile folder. If a previous browser for this folder is
+ * still alive — leaked by a client torn down mid-launch, or orphaned when an earlier run of
+ * the bot died — every new launch fails with "The browser is already running for …", forever.
+ *
+ * Kills the leftover only when it is provably ours to kill: its parent is THIS process (a
+ * leaked client of ours) or init (its bot process is dead). A browser whose parent is some
+ * other live process belongs to a second copy of the bot — killing it would just start a
+ * tug-of-war over the session — so that case is reported, not "fixed".
+ */
+async function releaseStaleBrowser(dir) {
+  if (process.platform === 'win32') {
+    console.warn(`[WhatsApp Web Bot] Session folder is locked by another Chrome: ${dir}. Close it (Task Manager → chrome.exe) and the bot will retry.`);
+    return;
+  }
+  let rows;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,ppid=,args='], { maxBuffer: 16 * 1024 * 1024 });
+    rows = stdout.split('\n').map((line) => {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      return m ? { pid: Number(m[1]), ppid: Number(m[2]), args: m[3] } : null;
+    }).filter(Boolean);
+  } catch (err) {
+    console.warn('[WhatsApp Web Bot] Could not list processes to free the session folder:', err.message);
+    return;
+  }
+
+  // The browser's main process: carries our profile folder and, unlike its renderer/GPU/
+  // utility children, no --type= switch. Killing its process group takes the children too.
+  const owners = rows.filter(r => r.args.includes(`--user-data-dir=${dir}`) && !r.args.includes('--type='));
+  if (!owners.length) {
+    console.warn(`[WhatsApp Web Bot] Session folder reported locked but no browser holds it: ${dir}`);
+  }
+  for (const owner of owners) {
+    const parent = rows.find(r => r.pid === owner.ppid);
+    // Orphans are reparented to init — or to a subreaper on some hosts, so "any non-node
+    // parent" rather than strictly PID 1.
+    const ours = owner.ppid === process.pid || !parent || !/\bnode\b/.test(parent.args);
+    if (!ours) {
+      console.error(`[WhatsApp Web Bot] The session is held by Chrome PID ${owner.pid}, started by another process (PID ${owner.ppid}: ${parent.args.slice(0, 120)}). ` +
+        'Two copies of the bot are running against one WhatsApp session — stop the duplicate (`pm2 list`, `ps aux | grep node`).');
+      continue;
+    }
+    console.warn(`[WhatsApp Web Bot] Killing leftover Chrome PID ${owner.pid} that was holding the session folder.`);
+    killBrowserTree(owner.pid);
+  }
+
+  // Chrome clears a stale lock itself once its owner is dead; removing it is belt-and-braces.
+  await new Promise(r => setTimeout(r, 1000));
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    await fs.rm(path.join(dir, name), { force: true }).catch(() => {});
+  }
+}
+
 class WhatsAppWebBot {
   constructor() {
     this.status = 'DISCONNECTED'; // DISCONNECTED, CONNECTING, QR_READY, CODE_READY, CONNECTED
@@ -47,6 +179,13 @@ class WhatsAppWebBot {
     // Puppeteer/WhatsApp clients against one LocalAuth session, which corrupts it.
     this.reinitTimer = null;
     this.loggingOut = false;
+    // Self-healing watchdog — see watchdogTick().
+    this.watchdogTimer = null;
+    this.watchdogFailures = 0;
+    this.connectingSince = null;
+    this.cpuSample = null;      // { pid, cpuSeconds, at } from the previous tick
+    this.cpuHotTicks = 0;       // consecutive ticks over cpuLimitPercent
+    this.recovering = false;
     // Phone-number linking (the phone's "Link with phone number instead"). When pairingPhone
     // is set, the next client is built with `pairWithPhoneNumber`, which makes WhatsApp Web
     // hand out an 8-character code instead of a QR. It has to be a fresh client: the library
@@ -259,6 +398,102 @@ class WhatsAppWebBot {
     }, delayMs);
   }
 
+  startWatchdog() {
+    if (this.watchdogTimer || !(config.whatsappWeb.watchdogIntervalMs > 0)) return;
+    this.watchdogTimer = setInterval(() => {
+      this.watchdogTick().catch(err => console.error('[WhatsApp Watchdog] Check failed:', err.message));
+    }, config.whatsappWeb.watchdogIntervalMs);
+    this.watchdogTimer.unref?.();
+  }
+
+  /**
+   * Keeps the bot answering 24/7 without anyone watching it.
+   *
+   * The linked phone is not what fails — a linked device stays linked for as long as the
+   * phone comes online every couple of weeks. What fails is the headless Chrome on the
+   * server, in three ways the library never reports:
+   *   - it hangs (the page stops answering; status still says CONNECTED, nothing is replied to)
+   *   - a launch never finishes (the library loads WhatsApp Web with no timeout)
+   *   - it spins a core at 100% — which got the VPS CPU-throttled by Hostinger on 2026-09-28,
+   *     making everything slower still
+   * Each is recovered by restarting the browser from the saved session: no QR, no re-link,
+   * and the catch-up sweep on 'ready' answers anyone who wrote in the meantime.
+   *
+   * QR_READY / CODE_READY are left alone: they are waiting for a human, not stuck.
+   */
+  async watchdogTick() {
+    const cfg = config.whatsappWeb;
+    const client = this.client;
+    if (!client || this.recovering || this.loggingOut) return;
+
+    if (this.status === 'CONNECTING') {
+      if (this.connectingSince && Date.now() - this.connectingSince > cfg.launchTimeoutMs) {
+        await this.recover(`still starting after ${Math.round(cfg.launchTimeoutMs / 1000)}s`);
+      }
+      return;
+    }
+    if (this.status !== 'CONNECTED') return;
+
+    const state = await withTimeout(client.getState(), 20000, 'NO_RESPONSE');
+    if (this.client !== client) return;
+    if (state === 'CONNECTED') {
+      this.watchdogFailures = 0;
+    } else {
+      this.watchdogFailures += 1;
+      console.warn(`[WhatsApp Watchdog] WhatsApp state is ${state} (${this.watchdogFailures}/${cfg.watchdogMaxFailures}).`);
+      if (this.watchdogFailures >= cfg.watchdogMaxFailures) {
+        await this.recover(`state ${state} for ${this.watchdogFailures} checks in a row`);
+        return;
+      }
+    }
+
+    await this.checkBrowserCpu(client);
+  }
+
+  async checkBrowserCpu(client) {
+    const cfg = config.whatsappWeb;
+    if (process.platform !== 'linux' || !(cfg.cpuLimitPercent > 0)) return;
+    const pid = client.pupBrowser?.process?.()?.pid;
+    if (!pid) return;
+    const cpuSeconds = await treeCpuSeconds(pid).catch(() => null);
+    if (cpuSeconds == null) return;
+    const now = Date.now();
+    const prev = this.cpuSample;
+    this.cpuSample = { pid, cpuSeconds, at: now };
+    if (!prev || prev.pid !== pid) return;
+
+    const percent = ((cpuSeconds - prev.cpuSeconds) / ((now - prev.at) / 1000)) * 100;
+    if (percent < cfg.cpuLimitPercent) {
+      this.cpuHotTicks = 0;
+      return;
+    }
+    this.cpuHotTicks += 1;
+    const hotMs = this.cpuHotTicks * cfg.watchdogIntervalMs;
+    console.warn(`[WhatsApp Watchdog] Chrome at ${Math.round(percent)}% CPU (${Math.round(hotMs / 60000)} min so far).`);
+    if (hotMs >= cfg.cpuLimitMinutes * 60000) {
+      await this.recover(`Chrome at ${Math.round(percent)}% CPU for ${cfg.cpuLimitMinutes} min`);
+    }
+  }
+
+  /** Throw the current browser away and start a new one from the saved session. */
+  async recover(reason) {
+    if (this.recovering) return;
+    this.recovering = true;
+    try {
+      const client = this.client;
+      console.warn(`[WhatsApp Watchdog] Restarting WhatsApp browser: ${reason}. The linked session is kept — no re-link needed.`);
+      this.client = null;
+      this.status = 'DISCONNECTED';
+      this.qrDataUrl = null;
+      this.deviceInfo = null;
+      this.connectedAt = null;
+      await teardown(client);
+      this.scheduleReinit(3000);
+    } finally {
+      this.recovering = false;
+    }
+  }
+
   /**
    * Unlink the currently paired phone and come back up with a fresh QR.
    *
@@ -300,11 +535,7 @@ class WhatsAppWebBot {
       cleared = false;
       console.warn('[WhatsApp Web Bot] logout() failed:', err.message);
     }
-    try {
-      await client.destroy();
-    } catch {
-      /* best-effort: the browser may already be closed */
-    }
+    await teardown(client);
 
     this.loggingOut = false;
     // Short delay (not the 10s reconnect one) so the admin gets a new QR promptly.
@@ -337,13 +568,7 @@ class WhatsAppWebBot {
     this.qrDataUrl = null;
     this.pairingCode = null;
     this.pairingCodeAt = null;
-    if (client) {
-      try {
-        await client.destroy();
-      } catch {
-        /* best-effort: the browser may already be closed */
-      }
-    }
+    await teardown(client);
     this.scheduleReinit(1000);
   }
 
@@ -399,6 +624,11 @@ class WhatsAppWebBot {
 
     console.log('[WhatsApp Web Bot] Initializing client...');
     this.status = 'CONNECTING';
+    this.connectingSince = Date.now();
+    this.watchdogFailures = 0;
+    this.cpuSample = null;
+    this.cpuHotTicks = 0;
+    this.startWatchdog();
 
     try {
       const userAgent = realChromeUserAgent();
@@ -493,12 +723,11 @@ class WhatsAppWebBot {
         this.qrDataUrl = null;
         this.deviceInfo = null;
         this.connectedAt = null;
-        try {
-          await this.client?.destroy();
-        } catch (err) {
-          // ignore
-        }
         this.client = null;
+        await teardown(client);
+        // Without this the bot sat dead after an auth failure until someone restarted it.
+        // A fresh client shows a QR if the saved session really is gone.
+        this.scheduleReinit(10000);
       });
 
       this.client.on('disconnected', async (reason) => {
@@ -510,12 +739,9 @@ class WhatsAppWebBot {
         this.qrDataUrl = null;
         this.deviceInfo = null;
         this.connectedAt = null;
-        try {
-          await this.client.destroy();
-        } catch (err) {
-          // ignore
-        }
+        // Detach before tearing down, and never let a wedged browser block the re-init.
         this.client = null;
+        await teardown(client);
 
         // Auto-reinitialize after 10 seconds
         this.scheduleReinit(10000);
@@ -529,15 +755,39 @@ class WhatsAppWebBot {
         this.enqueueMessage(msg);
       });
 
-      this.client.initialize().catch((error) => {
-        // Destroying a client mid-launch (QR ↔ phone-number switch) rejects its initialize();
-        // that client is already replaced, so don't null out or re-init over the new one.
+      this.client.initialize().then(() => {
+        // Superseded while launching (QR ↔ phone-number switch): restartForLinking()'s
+        // destroy() ran before this client had a browser, so it closed nothing. Close it now,
+        // or it keeps holding the session folder and every later launch fails.
+        if (this.client !== client) {
+          teardown(client);
+          return;
+        }
+        // Chrome crashing or being killed fires no WhatsApp event at all — the bot would keep
+        // reporting CONNECTED while answering nobody. Recover the moment the browser goes.
+        client.pupBrowser?.on('disconnected', () => {
+          if (this.client === client) this.recover('the browser closed unexpectedly');
+        });
+        client.pupPage?.on('error', (err) => {
+          if (this.client === client) this.recover(`the WhatsApp page crashed (${err?.message || err})`);
+        });
+      }, async (error) => {
+        // A launch can fail AFTER Chrome is up (page load, inject), and a superseded client's
+        // launch rejects too. Either way its browser may still be running — always close it.
+        await teardown(client);
+        // That client is already replaced, so don't null out or re-init over the new one.
         if (this.client !== client) return;
         console.error('[WhatsApp Web Bot] Failed to initialize client asynchronously:', error.message);
         this.status = 'DISCONNECTED';
         this.client = null;
         this.deviceInfo = null;
         this.connectedAt = null;
+        if (/already running/i.test(error.message || '')) {
+          // A Chrome from an earlier client (or an earlier run of this process) still holds
+          // the session folder. Retrying cannot help until it is gone — this looped every
+          // 10s for hours on 2026-09-28 and blocked QR and phone-number linking alike.
+          await releaseStaleBrowser(sessionDirFor(client));
+        }
         // Auto-reinitialize after 10 seconds on failure
         this.scheduleReinit(10000);
       });

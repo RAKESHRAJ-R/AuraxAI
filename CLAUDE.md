@@ -57,6 +57,7 @@ npm run check-woo      # WooCommerce REST connectivity — tests BOTH credential
                        # a deploy. Exit code 1 when nothing can both read and order.
 npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
 npm run test-followup  # Cold-lead follow-up guards (no-loop, age, per-run caps) — stubbed, sends nothing
+npm run test-watchdog  # WhatsApp self-healing (hung/crashed/runaway Chrome, leaked session lock) — stubbed, no browser
 npm run test-search    # Product-search regression from the 2026-09-20 tester reviews (60 checks):
                        # season/version constraints, honest partial + no-match replies,
                        # context carried across turns, and the real agent reply path
@@ -1092,6 +1093,27 @@ Verified 2026-08-04 (12 checks, `logout()` driven against a stubbed client): ref
 no session, hides stale device info, detaches the client, clears device state, reports the
 previous number, runs exactly one re-init when a late `disconnected` races it, and degrades
 honestly when the unlink fails.
+
+**Self-healing — the browser dies, not the phone (2026-09-28).** A linked device stays linked
+as long as the phone comes online every ~14 days. What actually failed was the headless Chrome
+on the server, and none of its failure modes fire a whatsapp-web.js event:
+
+| Failure | Seen | Fix |
+|---|---|---|
+| A launch failed AFTER Chrome started, and the client was dropped without closing it | 2026-09-28: leaked Chrome (child of the bot, PID 486854) held `session-theaurax-bot`, so every retry for hours died with *"The browser is already running for …"* — QR and phone-number linking both dead | every failed/superseded launch goes through `teardown()`; on that error `releaseStaleBrowser()` kills the holder if it is ours (parent = this process, or a dead bot) and clears `Singleton*` locks |
+| Switching QR ↔ phone code destroyed a client still launching (no browser yet → nothing closed) | same | `initialize().then` tears down a superseded client once it finishes launching |
+| Chrome pinned at 100% CPU for ~20h | Hostinger applied a CPU limitation to the VPS, starving it further | watchdog samples the Chrome tree's CPU from `/proc`; > `WA_CPU_LIMIT_PERCENT` (80) for `WA_CPU_LIMIT_MINUTES` (10) → restart |
+| Page hangs / socket drops — status says CONNECTED, nobody is answered | — | `getState()` every 60s with a 20s timeout; 3 bad in a row → restart |
+| Launch never finishes (library loads the page with `timeout: 0`) | — | CONNECTING longer than `WA_LAUNCH_TIMEOUT_MS` (4 min) → restart |
+| Chrome crashes | — | `pupBrowser` `disconnected` / `pupPage` `error` → restart immediately |
+| `destroy()` hangs on a wedged browser, and the `disconnected` handler awaited it → no re-init ever | — | `teardown()` gives destroy 20s, then SIGKILLs the process group |
+
+Every restart (`recover()`) reuses the LocalAuth session — no QR, no re-link — and the catch-up
+sweep on `ready` answers whoever wrote meanwhile. QR_READY / CODE_READY are never "stuck": they
+wait for a human. `auth_failure` now re-inits too (it used to leave the bot dead until restart).
+⚠️ Recognise the logs: `[WhatsApp Watchdog] Restarting WhatsApp browser: <reason>`. Several a
+day means something is wrong with the box, not a reason to raise the thresholds.
+`npm run test-watchdog` — 13 checks, stubbed clients, no browser.
 
 **Phone-number linking (added 2026-09-16).** The WhatsApp section has a **Link with phone number
 instead** button: the admin enters the number, the console shows WhatsApp's 8-character code, and

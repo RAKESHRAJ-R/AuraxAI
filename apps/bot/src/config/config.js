@@ -205,6 +205,21 @@ const config = {
     // Extra think-time scaled by reply length (ms per character), capped below.
     replyDelayPerCharMs: parseFloat(process.env.WA_REPLY_DELAY_PER_CHAR_MS || '12'),
     maxReplyDelayMs: parseInt(process.env.WA_MAX_REPLY_DELAY_MS || '4000', 10),
+    // --- Self-healing (added 2026-09-28) ---
+    // A linked phone stays linked; what dies is the headless Chrome running WhatsApp Web on
+    // the server — it can hang, crash, or spin a core at 100% (which got the VPS CPU-throttled
+    // by Hostinger on 2026-09-27/28, starving it further). None of those fire 'disconnected',
+    // so without a watchdog the bot just goes silent. Recovery restarts the browser from the
+    // saved session: no QR, no re-linking.
+    watchdogIntervalMs: parseInt(process.env.WA_WATCHDOG_INTERVAL_MS || '60000', 10),
+    // Consecutive failed health checks (state not CONNECTED, or no answer in 20s) before a restart.
+    watchdogMaxFailures: parseInt(process.env.WA_WATCHDOG_MAX_FAILURES || '3', 10),
+    // A launch still CONNECTING after this long is hung (the library loads the page with no timeout).
+    launchTimeoutMs: parseInt(process.env.WA_LAUNCH_TIMEOUT_MS || '240000', 10),
+    // Chrome using more than this % of one core, sustained for cpuLimitMinutes, is restarted.
+    // An idle WhatsApp Web tab uses a few %. 0 disables the check. Linux only.
+    cpuLimitPercent: parseInt(process.env.WA_CPU_LIMIT_PERCENT || '80', 10),
+    cpuLimitMinutes: parseInt(process.env.WA_CPU_LIMIT_MINUTES || '10', 10),
   },
   // --- Missed-message catch-up ---
   // whatsapp-web.js only emits 'message' for messages that arrive LIVE while the client is
