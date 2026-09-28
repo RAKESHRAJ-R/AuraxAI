@@ -52,7 +52,11 @@ const config = {
     apiKeys: (process.env.GROQ_API_KEY || '').split(',')
       .map(k => k.trim())
       .filter(k => k.length > 0 && !k.includes('your_groq')),
-    model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    // llama-3.3-70b-versatile was REMOVED from Groq (gone from GET /models; every call 404s,
+    // found 2026-09-28). gpt-oss-120b verified the same day against the real prompt + tools:
+    // correct search_products calls and correct Tanglish facts. Free tier throttles hard on
+    // this prompt size (~40s waits), so it is a backstop only.
+    model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
     // Qwen3 (free on Groq) handles Tamil-English code-mixing noticeably better than
     // Llama-3.3, but its free tier caps at 8000 TPM/key — 5 keys = 40,000 TPM total for
     // the WHOLE bot's Tanglish traffic combined. Verified live: a single solo test
@@ -110,7 +114,11 @@ const config = {
     // through to Sarvam. '-0813' is the official release that superseded it (verified
     // live 2026-09-17: tool-calling + Tanglish OK). Dated ids get retired too — if
     // Fireworks starts 404ing again, check the model's deprecationDate first.
-    model: process.env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-pro-0813',
+    // ⚠️ 2026-09-28: -0813 lost serverless too (model record: supportsServerless:false,
+    // no deprecationDate) → 404 on every call, same failure as the undated id before it.
+    // deepseek-v4p1-flash is the DeepSeek model Fireworks still serves serverless. NOT yet
+    // verified live (paid key) — watch for "[Tokens] fireworks" after deploy.
+    model: process.env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4p1-flash',
   },
   sarvam: {
     // Indic-specialised provider (Sarvam AI, Indian). OpenAI-compatible endpoint

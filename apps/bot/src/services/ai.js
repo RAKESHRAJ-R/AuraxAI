@@ -1094,12 +1094,12 @@ ${sessionContext}`;
       : provider === 'openrouter'
       ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
       : provider === 'fireworks'
-      ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
+      ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4p1-flash')
       : provider === 'sarvam'
       ? (config.sarvam?.model || 'sarvam-105b')
       : provider === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
       ? config.groq.tanglishModel
-      : (config.groq?.model || 'llama-3.3-70b-versatile');
+      : (config.groq?.model || 'openai/gpt-oss-120b');
 
     // Qwen3 is a reasoning model — without this it leaks its full <think>...</think>
     // chain-of-thought into the reply content instead of just the final answer.
@@ -1567,14 +1567,14 @@ ${sessionContext}`;
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
           : entry.name === 'fireworks'
-          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4p1-flash')
           : entry.name === 'sarvam'
           ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
           ? config.groq.tanglishModel
-          : (config.groq?.model || 'llama-3.3-70b-versatile');
+          : (config.groq?.model || 'openai/gpt-oss-120b');
 
         // Update token statistics (running totals + input/output/cached splits per provider)
         if (this.providerStats[providerName]) {
@@ -1620,14 +1620,14 @@ ${sessionContext}`;
           : entry.name === 'openrouter'
           ? (config.openrouter?.model || 'meta-llama/llama-3.3-70b-instruct:free')
           : entry.name === 'fireworks'
-          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4-pro-0813')
+          ? (config.fireworks?.model || 'accounts/fireworks/models/deepseek-v4p1-flash')
           : entry.name === 'sarvam'
           ? (config.sarvam?.model || 'sarvam-105b')
           : entry.name === 'gemini'
           ? (config.gemini?.model || 'gemini-2.0-flash')
           : entry.name === 'groq' && language === 'tanglish' && config.groq?.tanglishModel
           ? config.groq.tanglishModel
-          : (config.groq?.model || 'llama-3.3-70b-versatile');
+          : (config.groq?.model || 'openai/gpt-oss-120b');
 
         this.callRecords.push({
           timestamp: Date.now(),

@@ -88,11 +88,11 @@ Create `apps/bot/.env` with:
 
 ```
 GROQ_API_KEY=              # Required: Groq API key for LLaMA inference
-GROQ_MODEL=                # Optional: defaults to llama-3.3-70b-versatile
+GROQ_MODEL=                # Optional: defaults to openai/gpt-oss-120b (llama-3.3-70b removed by Groq 2026-09)
 OPENAI_API_KEY=            # Optional: OpenAI fallback (GPT-4o-mini)
 GEMINI_API_KEY=            # Optional: Gemini fallback (Gemini 2.0 Flash)
 FIREWORKS_API_KEY=         # Optional: Fireworks paid fallback (comma-sep for multiple keys)
-FIREWORKS_MODEL=           # Optional: defaults to accounts/fireworks/models/deepseek-v4-pro-0813
+FIREWORKS_MODEL=           # Optional: defaults to accounts/fireworks/models/deepseek-v4p1-flash
 SARVAM_API_KEY=            # Optional: Sarvam (Indic-native) paid provider — Tanglish-first (comma-sep for multiple keys)
 SARVAM_MODEL=              # Optional: defaults to sarvam-105b (sarvam-30b is RETIRED — 400s)
 WOOCOMMERCE_URL=           # Required: https://theaurax.in
@@ -252,6 +252,16 @@ Tanglish both emit `search_products` in ~2-3s) and on standalone Tanglish replie
 was fine — `gpt-oss-120b` answered on it. **If Fireworks 404s again, check the model's
 `deprecationDate` at `GET https://api.fireworks.ai/v1/accounts/fireworks/models/<id>` first.**
 Also check the server `.env` for a `FIREWORKS_MODEL` override, which beats the code default.
+
+⚠️ **2026-09-28: it happened again, to both fallbacks at once.** `deepseek-v4-pro-0813` lost
+serverless (`supportsServerless:false`, no deprecation date — so the deprecationDate check above
+would NOT have caught it; check `supportsServerless` too) and Groq **removed**
+`llama-3.3-70b-versatile` outright. Found because the owner-rules reader logged 404s from both.
+Defaults are now `deepseek-v4p1-flash` (Fireworks' remaining serverless DeepSeek, not yet
+verified live) and `openai/gpt-oss-120b` on Groq (verified free: correct tool calls and Tanglish
+facts, but ~40s free-tier throttling at this prompt size — backstop only). Both lookups are free
+metadata calls: `GET https://api.groq.com/openai/v1/models` and
+`GET https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue`.
 
 ### Session State Machine
 
