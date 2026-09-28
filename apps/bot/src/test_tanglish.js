@@ -364,7 +364,7 @@ await dbService.saveSession(SENDER, {
 const allGarbage = await replyWithStub(SENDER, 'juventus jersey venum bro', '{"type":"function","name":"search_products","parameters":{"query":"juventus"}}');
 check('a reply that is entirely a leak becomes an honest apology, not blank',
   allGarbage.replyText.trim().length > 20 && !aiService.looksCorrupted(allGarbage.replyText), allGarbage.replyText);
-check('...and that apology is in the session language', /bro/i.test(allGarbage.replyText), allGarbage.replyText);
+check('...and that apology is in the session language', /\b(iruku|sollunga|venum|ippo|pannunga)\b/i.test(allGarbage.replyText), allGarbage.replyText);
 
 // The unstocked-team guard, driven through the real loop: the model offers PSG twice, so the
 // nudge fires and then the deterministic team list replaces the answer.

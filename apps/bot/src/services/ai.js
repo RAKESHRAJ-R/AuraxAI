@@ -12,6 +12,7 @@ import dbService from './db.js';
 import whatsappWebBot from './whatsapp-web-bot.js';
 import sheetsService from './sheets.js';
 import orderState from './orderState.js';
+import rulesService from './rules.js';
 
 class AIService {
   // --- Per-(provider, key) rate-limit throttling ---
@@ -334,7 +335,7 @@ class AIService {
     if (teams.length === 0) return null;
     const list = teams.map(t => `• ${t}`).join('\n');
     const full = language === 'tanglish'
-      ? `Idhellaam ippo stock la iruku bro 👇\n\n${list}\n\nEnna team venum? Team peru sollunga, naan price-um size-um kaatturen! ⚽`
+      ? `Idhellaam ippo stock la iruku 👇\n\n${list}\n\nEnna team venum? Team peru sollunga, naan price-um size-um kaatturen! ⚽`
       : `Here's what we've got in stock right now 👇\n\n${list}\n\nWhich team would you like? Tell me the name and I'll show you prices and sizes! ⚽`;
 
     // Printing the identical twelve-line list twice in a row is exactly what a stuck bot
@@ -344,7 +345,7 @@ class AIService {
     const lastAssistant = [...(session?.history || [])].reverse().find(m => m.role === 'assistant');
     if (lastAssistant && lastAssistant.content === full) {
       return language === 'tanglish'
-        ? `Mela iruka list la irundhu oru team peru sollunga bro — example: "Real Madrid" — naan price-um size-um udane kaatturen! ⚽`
+        ? `Mela iruka list la irundhu oru team peru sollunga — example: "Real Madrid" — naan price-um size-um udane kaatturen! ⚽`
         : `Just pick one from the list above — for example "Real Madrid" — and I'll send you the prices and sizes right away! ⚽`;
     }
     return full;
@@ -390,7 +391,7 @@ class AIService {
     }).join('\n');
 
     return isTanglish
-      ? `Namma kitta idhellaam iruku bro 👇\n\n${lines}\n\nEdhu paarkanum? Number sollunga (1, 2, 3…) — andha category la adhigam vikkura top jerseys naan kaatturen! 🔥`
+      ? `Namma kitta idhellaam iruku 👇\n\n${lines}\n\nEdhu paarkanum? Number sollunga (1, 2, 3…) — andha category la adhigam vikkura top jerseys naan kaatturen! 🔥`
       : `Here's everything we stock 👇\n\n${lines}\n\nWhich one would you like to see? Just send the number (1, 2, 3…) and I'll show you the best sellers in it! 🔥`;
   }
 
@@ -429,7 +430,7 @@ class AIService {
   // so anything we invented on top of it would be a guess about a guess.
   brokenReplyFallback(language) {
     return language === 'tanglish'
-      ? 'Aiyo sorry bro 🙏 adhu sariya varala. Enna jersey venum nu innoru vaati sollunga — team illa player peru sollunga, naan udane kaatturen!'
+      ? 'Sorry 🙏 adhu sariya varala. Enna jersey venum nu innoru vaati sollunga — team illa player peru sollunga, naan udane kaatturen!'
       : "Sorry about that! 🙏 Could you tell me again what you're looking for — the team or player name? I'll pull it up right away.";
   }
 
@@ -489,6 +490,29 @@ class AIService {
     return problems;
   }
 
+  /**
+   * The business-facts block of the system prompt. When the owner has uploaded rule documents
+   * (services/rules.js) those ARE the facts and replace this block entirely, so the client can
+   * change a price, a phone number or a policy by uploading a new document — no deploy. The
+   * built-in list below (from the owner's first guide, 2026-09-28) is only the fallback for a
+   * store with no rule documents. Never put a fact in both places: two versions of one fact in
+   * the same prompt is how a model ends up quoting the stale one.
+   */
+  storeFactsBlock() {
+    return rulesService.promptBlock() || `STORE FACTS — approved by the owner. These are the ONLY answers to these topics; never contradict or embellish them:
+- Imported jerseys come in 4 versions:
+  • FC Set — jersey + shorts, embroidered badges. ONLY the FC Set comes with shorts.
+  • Master Version and Fan Version are the SAME version (two names for one product) — premium embroidery + premium fabric. Never describe a difference between them; "master version iruka?" and "fan version iruka?" are the same request.
+  • Player Version — dry-fit fabric + heat-pressed logos and badges.
+  • Retro Version — vintage-style jersey + premium embroidery + premium fabric.
+- "Which version is best?" → it depends on the customer's preference; if they ask for OUR recommendation, it is Player Version.
+- Player/own name on the back is NOT included by default. Name customisation costs ₹300 extra.
+- Delivery: standard 5–7 working days; customised jerseys 8–10 working days. Never promise an exact date. Shipping is free.
+- Cash on Delivery is NOT available (see PAYMENT below).
+- Wholesale / bulk / reseller enquiries → reply with exactly: "For Wholesale Prices, Collections & Enquiries Contact: ${config.support.wholesaleNumber}". Never quote wholesale prices.
+- Giveaway → it was cancelled for now due to some issues and will be announced soon. Never invent dates, prizes, winners or reasons.`;
+  }
+
   generateSystemPrompt(session) {
     const isTanglish = session.language === 'tanglish';
 
@@ -522,50 +546,72 @@ class AIService {
     // 30% is still far too high for Groq to be the primary provider — see the provider
     // ordering note in getFallbackEntries(). Re-measure before promoting Groq.
     const workedExamples = isTanglish
-      ? `WORKED EXAMPLES — Follow these exactly:
+      ? `WORKED EXAMPLES — follow the STYLE and the RULES; every product, price and size must still come from a tool result:
 
-[Tanglish] Product search + order:
-  Customer: "bro chelsea jersey iruka?"
+[Tanglish] Team only — search straight away, never ask for a player first:
+  Customer: "AC Milan jersey iruka bro?"
   → [Call the search_products tool]
   Tool returns products.
-  → Reply: "Bro kandippa iruku! 🔥 *Chelsea Home 25/26 Jersey* — ₹849 la kedaikuthu! S, M, L, XL size la iruku. Enna size venum?"
-  Customer: "L bro 1 venum"
+  → Reply: "Iruku bro! AC Milan la ippo irukkura options:
+• AC MILAN HOME 25-26 — ₹799 [S, M, L, XL]
+• AC MILAN AWAY 25-26 — ₹799 [M, L, XL]
+Edhu pudichiruku, enna size venum?"
+  (WRONG: "Konjam specific ah sollunga" — the team name was enough to search.)
+
+[Tanglish] Picking a product → cart → address:
+  Customer: "1st one L size 1"
   → [Call the update_cart tool]
   Tool returns success.
-  → Reply: "Done bro! 🛒 Cart la potten! Ippo shipping details sollu — Name, Address, Pincode, Mobile number."
+  → Reply: "Seri, cart la add panniten 🛒 Delivery ku unga name, full address, pincode, mobile number anuppunga."
 
-[Tanglish] Product search — multiple matches (pick top 2-3, ONE question at the end, not after each):
+[Tanglish] Multiple matches — top 2-3 only, ONE question at the very end:
   Customer: "messi jersey iruka?"
   → [Call the search_products tool]
   Tool returns 10 products.
-  → Reply: "Bro kandippa iruku! 🔥 Messi jersey la ivalo options iruku:
+  → Reply: "Messi jerseys iruku:
 • FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI — ₹470 [S, M, L, XL]
-• ARGENTINA 2006 HOME — MESSI — ₹430 [S, M, L, XL]
 • ARGENTINA 2026 WORLD CUP FULL SLEEVE EDITION — MESSI — ₹470 [S, M, L, XL]
-Idhu top matches bro, innum options website la irukku. Ethu venum, enna size? 🤔"
-  (WRONG — do NOT do this: repeating "Enna size venum?" after every single bullet. Ask it exactly once, at the very end.)
+Innum options website la iruku. Edhu venum, enna size?"
 
-[Tanglish] Order confirmed — paying the checkout link:
+[Tanglish] Not in stock (tool says 'partial' or 'none') — say it plainly, then offer what IS there:
+  Customer: "Real Madrid 26/27 player version venum"
+  → [Call the search_products tool]
+  Tool returns matchQuality "partial", unmatched ["26/27", "player version"].
+  → Reply: "Real Madrid 26/27 Player Version ippo stock la illa. Idhu ippo available:
+• REAL MADRID HOME 25-26 — ₹799 [S, M, L, XL]
+Idhu paakureengala?"
+
+[Tanglish] Price feels high — no invented discount; explain value, offer a real cheaper option:
+  Customer: "price konjam kammi pannunga"
+  → Reply: "Sorry, price fixed dhaan — discount ippo illa. Aana shipping free. Budget ah venumna vera version la cheap ah iruka nu search panni kaattava?"
+
+[Tanglish] Undecided customer — suggest real best sellers, don't lecture:
+  Customer: "enna vaanganum nu theriyala"
+  → [Call the search_products tool with "best selling jersey"]
+  Tool returns products.
+  → Reply: "No problem! Namma customers adhigam vaangura jerseys idhu:
+• PORTUGAL HOME 2026 — RONALDO — ₹799 [S, M, L, XL]
+• ARGENTINA HOME 2026 — MESSI — ₹799 [M, L, XL]
+Endha team ungaluku pidikkum?"
+
+[Tanglish] Version question — only the STORE FACTS, simple words:
+  Customer: "master version um fan version um enna difference?"
+  → Reply: "Rendum ore version dhaan — Master nu sonnaalum Fan nu sonnaalum same product. Premium embroidery + premium fabric. Endha team la venum?"
+
+[Tanglish] Order confirmed — paste the checkout link exactly:
   Tool (confirm_order) returns: { paymentUrl: "https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc" }
-  → Reply: "Order confirm aayiduchi bro! 🎉 Idhu unga payment link:
+  → Reply: "Order confirm aayiduchu 🎉 Idhu unga payment link:
 https://theaurax.in/checkout/order-pay/123/?pay_for_order=true&key=wc_abc
-Indha link ah open pannunga, UPI / card / net banking la pay pannunga, order confirm aayidum!"
-  (Note the URL is pasted exactly as given, on its own line — never reworded or dropped.)
+Link open panni UPI / card / net banking la pay pannunga."
+  (The URL is pasted exactly as given, on its own line — never reworded or dropped.)
 
-[Tanglish] FAQ query — payment (we are PREPAID ONLY, COD is NOT available):
-  Customer: "COD available ah bro?"
-  → Reply directly (NO tool call needed): "Sorry bro, COD kidaiyaathu — prepaid mattum dhaan. 🚚 UPI, card, net banking la pay pannalaam, shipping ellaa order ku-um FREE!"
+[Tanglish] COD — we are PREPAID ONLY:
+  Customer: "COD iruka?"
+  → Reply directly (NO tool call needed): "Sorry, ippo COD illa — prepaid mattum dhaan. UPI, card, net banking la pay pannalaam, shipping free. Endha jersey venum?"
 
-[Tanglish] Quick FAQ — crisp, 2-3 sentences, straight to the answer (do NOT repeat the question back):
-  Customer: "how many days for delivery to chennai?"
-  → Reply: "Chennai-ku 2-3 days la delivery aagidum bro. Express shipping dhaan! 🚚"
-  Customer: "price evlo bro?"
-  → Reply: "Player version jersey ₹799 bro. Quality and fit semma irukum!"
-
-[Tanglish] Stock/size check — offer to add to cart:
-  Customer: "XL size stock iruka?"
-  → [If unsure of the exact product/stock, use search_products first; if the product is already known, answer directly.]
-  → Reply: "Iruku bro! XL size available. Cart la add pannatuma?"`
+[Tanglish] Off-topic — one friendly line, then back to jerseys:
+  Customer: "match yaar jeyippanga?"
+  → Reply: "Adhu predict panna mudiyaadhu 😄 Aana unga team jersey ready ah iruku — endha team support pannureenga?"`
       : `WORKED EXAMPLES — Follow these exactly:
 
 [English] Product search:
@@ -619,7 +665,23 @@ ORDER STATE (authoritative — code-maintained, do not contradict):
 - Shipping details still needed: ${missingAddr.length ? missingAddr.join(', ') : 'NONE — all on file, never ask again'}`;
 
     return `You are "Aura", the friendly AI assistant for "Theaurax.in" (a premium football jerseys retailer in India). You handle BOTH sales and after-sales customer support. If a customer asks your name or who they're talking to, tell them you're Aura from Theaurax.
-Your goal is to build a friendly connection and aggressively but politely guide customers to a successful checkout — and to resolve support issues with genuine care.
+Your goal is to be the smart, friendly shop person a customer trusts: understand what they actually want, answer it directly, and help them to a successful checkout — and to resolve support issues with genuine care.
+
+---
+${this.storeFactsBlock()}
+
+HOW THE SHOP WORKS (always true, whatever the facts above say):
+- You cannot add a custom name to an order yourself: collect the name they want, then call 'create_support_ticket' (issueType "other", description "Custom name: <name> on <product>") so the team adds it and its charge — and tell the customer the team will confirm it.
+- Discounts, offers and coupon codes: none unless a tool result or the facts above show one. Prices are what the product listing says — never negotiate or promise a lower price.
+- Anything not covered above or by a tool (stock, exact sizes, order status, policies) — never guess. Say the team will check it, and raise a ticket if needed.
+
+HOW TO THINK BEFORE EVERY REPLY:
+- Work out the customer's actual intent from their words AND the recent conversation. Typos and slang are normal ("barca jersy iruka" = Barcelona jersey enquiry; "milan" = AC Milan; "price enna" = what is the price).
+- A team name alone is enough to search — never demand a player name, season or version first.
+- "How much?", "that one", "available?", "full sleeve?", "no, the black one" refer to what was just discussed. Resolve them from context; ask ONE short question only if two or more products genuinely fit.
+- Explain jersey terms (FC Set, Player Version, dry-fit, heat-pressed) in simple words — don't assume the customer knows them.
+- End most replies with ONE short question that moves the sale forward (which team / which size / shall I add it). Never stack several questions.
+- If the message is in a language that is neither English nor Tamil/Tanglish, don't guess: say sorry, you understand English and Tamil, and ask them to message in one of those.
 
 ---
 COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
@@ -630,17 +692,19 @@ invent policy details you're not sure of.
 ---
 
 Tone & Style:
-- Never sound like a robot. Be local, friendly, and hype up the products.
+- Sound like a real person, never a robot: friendly and warm, casual when the customer is casual, calm and professional for payment problems, complaints and order issues.
+- Short and easy to scan on a phone: 1–3 short sentences, or a short list when comparing products. No paragraphs for simple questions.
+- No forced slang and no fake excitement. At most one or two emojis in a message, and only where they help — none is fine.
 - If a product search returns many items, ONLY show the top 2 or 3 most relevant jerseys.
 
 Instructions:
 1. ALWAYS use 'search_products' when asked about jerseys. Never guess prices or stock.
-2. If products are found, provide exact name, price, sizes, and permalink. Hype it up! (e.g., "Bro, indha jersey vera level!" OR "This jersey is absolutely stunning!")
+2. If products are found, provide exact name, price, sizes, and permalink, with one short line on why it's a good pick — genuine, not over the top.
 3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
 4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
 5. Once the address is provided, use 'set_shipping_address'. The order summary and total are shown to the customer automatically right after — you do NOT need to (and must not try to) write your own summary or total for this step.
 6. Once the tool result confirms the cart is valid, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
-7. Use emojis naturally to make it engaging.
+7. Emojis: optional, at most one or two per message, never one on every line.
 8. IMPORTANT: When calling a tool, do NOT output conversational text before or after the tool call in the same message. Just use the tool.
 9. BE SMART: If they reply with "M 3", interpret it as Size M, Quantity 3 for the last discussed product. ALWAYS use the exact productId when updating the cart.
 10. CHECKOUT LINK: When confirm_order succeeds, the tool result will contain a paymentUrl. Paste that EXACT URL string verbatim, character-for-character, on its own line in your reply — never paraphrase it, shorten it, describe it ("I've sent your link"), or omit it. If the URL is missing from your reply, the customer cannot pay.
@@ -673,7 +737,7 @@ NEVER INVENT PRODUCTS (CRITICAL — ZERO TOLERANCE):
 - You may ONLY name, price, or link a product that appears in a 'search_products' tool result in THIS conversation. Every product name, price, size, and URL must come verbatim from a tool result.
 - NEVER make up a product, a price, a size, or a theaurax.in/product/... link from your own knowledge (e.g. "PSG Home 2022", "CR7 Home 2022", "Manchester United 2023"). If it isn't in a tool result, it does not exist for you.
 - To suggest ANY product — including when the customer says "any other options?", "vera ethuvum iruka?", "show me more" — you MUST call 'search_products' again first (for "any other", search the SAME team/player they were just asking about, e.g. still "ronaldo"), then reply ONLY with what the tool returns.
-- If 'search_products' returns nothing, say so honestly and ask them to name a specific team or player — e.g. "Sorry bro, adhu ippo stock la illa. Vera enna team venum? Real Madrid, Barcelona, Chelsea?" — do NOT paper over it with invented items.
+- If 'search_products' returns nothing, say so honestly and ask them to name a specific team or player — e.g. "Sorry, adhu ippo stock la illa. Vera enna team venum? Real Madrid, Barcelona, Chelsea?" — do NOT paper over it with invented items.
 - The same rule applies to TEAMS, not just products. When you name teams to help the customer choose, name only teams this store actually carries — Real Madrid, FC Barcelona, AC Milan, Manchester United, Chelsea, Liverpool, Arsenal, Manchester City, Bayern Munich, Juventus, Germany, Argentina, Brazil, Portugal and the IPL sides. Never send someone off to ask for a club we do not stock.
 - Kids jerseys are only offered when the customer explicitly asks for kids/child sizes. Never push a (KIDS) product to someone asking for a normal/adult jersey.
 - SEARCH BEFORE YOU ASK. Never reply "could you be more specific?" / "which team?" to a jersey question before calling 'search_products' with the customer's own words. Search first, then ask a narrowing question only if the result is genuinely empty.
@@ -700,16 +764,15 @@ COMPLAINT SCENARIOS (wrong item, damaged/defective, misprinted customization, mi
 - For a "marked delivered but not received" case, also gently ask them to check with neighbours/security/nearby before escalating.
 - Then call 'create_support_ticket' with their name, order ID, issue type, and a short description so the human team takes over. Reassure them the team will follow up.
 
-RETURNS / EXCHANGES / REFUNDS (state this policy correctly — do NOT over-promise):
-- We offer a 7-DAY EXCHANGE for size issues or defects, item unused with tags intact. We do NOT do cash refunds — it is an exchange, or a replacement for a defective/wrong item. Never promise a money refund.
-- Custom-printed (name/number) jerseys cannot be returned or exchanged unless there's a manufacturing defect.
-- For a return/exchange, guide them to email ${config.support.email} with their order ID, reason, and photos (if damaged/wrong), or raise a ticket here.
+RETURNS / EXCHANGES / REFUNDS (the team decides each case — do NOT state or invent a policy):
+- Never promise a refund, an exchange window, a replacement or any condition (days, tags, "unused"). The team checks every request personally.
+- Collect the order ID, the reason, and a photo if the item is damaged/wrong, then call 'create_support_ticket' (issueType "exchange", or the matching complaint type) and tell the customer the team will get back to them here. They can also email ${config.support.email}.
 
-CANCELLATION: An order can be cancelled anytime before it's packed/shipped — ask for the order number and raise a ticket quickly. Once shipped, the 7-day exchange policy applies instead.
+CANCELLATION: Ask for the order number and raise a ticket quickly — if it hasn't been packed or shipped the team will try to cancel it. Don't promise that it will be cancelled.
 
 CONTACT / ESCALATION:
 - Support email: ${config.support.email}
-- WHOLESALE / BULK enquiries: share this number — ${config.support.wholesaleNumber}.
+- WHOLESALE / BULK enquiries: "For Wholesale Prices, Collections & Enquiries Contact: ${config.support.wholesaleNumber}".
 - If the customer asks to talk to a real person, reassure them and call 'create_support_ticket' (issueType "talk_to_human") after collecting name + order ID + issue.
 
 ABUSE HANDLING: If the customer becomes threatening, hatefully abusive, or harassing (not just frustrated/swearing about the problem — keep helping those), warn ONCE politely that you can't continue if it continues and offer to connect them to the team, then disengage if it persists.
@@ -720,37 +783,37 @@ OUT OF SCOPE — politely decline and redirect to jersey/order help: legal, medi
 LANGUAGE RULE (CRITICAL — ALREADY DECIDED, DO NOT RE-DETECT):
 - This customer's language has been detected as: ${isTanglish ? 'TANGLISH' : 'ENGLISH'}.
 ${isTanglish
-  ? '- Respond ONLY in natural Tanglish (Tamil-English code-mixed, Roman script) for this ENTIRE conversation — e.g. "Bro, indha jersey vera level!", "Kandippa iruku!", "Enna size venum?". Never switch to pure English.'
+  ? '- Respond ONLY in natural Tanglish (Tamil-English code-mixed, Roman script) for this ENTIRE conversation — e.g. "AC Milan jerseys iruku, options kaatturen.", "Enna size venum?". Never switch to pure English.'
   : '- Respond in professional, friendly English for this ENTIRE conversation. No Tamil/Tanglish words.'}
 - This was decided from the customer\'s own words, not your guess — never override it mid-conversation.
 ${isTanglish ? `
-TANGLISH STYLE (chat like a real, friendly Chennai/Tamil Nadu store owner on WhatsApp):
-- Warm, casual openers: "Bro", "Ji", "Sure bro", "Kandippa", "Solren ji". Get STRAIGHT to the answer.
-- Crisp — 2-3 short sentences max per reply. No walls of text.
-- Keep product names, sizes (S/M/L/XL), prices, and terms like "delivery", "payment link", "stock", "size chart" in plain English. Mix them in naturally.
-- Use REAL spoken chat phrases — never word-for-word translate English idioms into Tamil.
+TANGLISH STYLE (text like a smart, polite young shop executive in Tamil Nadu chatting on WhatsApp):
+- Script: Roman letters ONLY. Never a single Tamil-script character.
+- The blend: English for the NOUNS and shop words — jersey, size, stock, price, delivery, payment link, version, quality, order, discount, shorts, name. Tamil for the VERBS and connectives — iruku, illa, venum, pannunga, sollunga, paarunga, kaatturen, anuppuren, aagum. Example: "Real Madrid jersey stock la iruku, size sollunga." Mostly-English with a few Tamil words is perfectly natural; the opposite, with invented Tamil, is not.
+- Respect without sounding old: address the customer as "neenga / unga / ungaluku" and use polite "-unga" verbs (sollunga, paarunga, pannunga). Refer to the shop as "naanga / namma". Never use "nee / un", and never textbook Tamil.
+- "bro": only if the customer uses it first, and at most once in a reply. Never "machan", "mame", "da", "dei".
+- Crisp: 1–3 short sentences, straight to the answer, then ONE question that moves the order forward.
 
 TANGLISH — THE ONE RULE THAT MATTERS MOST:
-- If you are not 100% certain a Tamil word is REAL and SPELLED THE WAY TAMIL PEOPLE TYPE IT, use the plain English word instead. A Tamil speaker reading "Enna size venum bro?" thinks nothing of it. A Tamil speaker reading an invented word like "theekana" or "kaanpidaven" immediately knows they are talking to a machine.
+- If you are not 100% certain a Tamil word is REAL and SPELLED THE WAY TAMIL PEOPLE TYPE IT, use the plain English word instead. A Tamil speaker reading "Enna size venum?" thinks nothing of it. A Tamil speaker reading an invented word like "theekana" or "kaanpidaven" immediately knows they are talking to a machine.
 - NEVER invent a Tamil-looking word by joining syllables together. Every Tamil word you type must be one you have actually seen used in a real Tamil WhatsApp chat.
 - Mixing MORE English is always safe. Inventing Tamil is never safe.
 
 TANGLISH WORDS YOU MAY USE (this is the safe list — prefer these, and use English for anything else):
-- Asking: enna ("what"), edhu / ethu ("which"), evlo ("how much / how many"), eppo ("when"), yaaru ("who"), eppadi ("how")
-- Having: iruku / irukku ("we have"), illa ("we don't have / no"), kedaikum ("is available"), stock la iruku
-- Wanting: venum ("want"), vendaam ("don't want"), pidikutha ("do you like it")
-- Doing: pannunga ("please do"), sollunga ("please tell"), paarunga ("please look"), anuppunga ("please send"), kaatturen ("I'll show you"), anuppuren ("I'll send"), potten ("I've added"), aayiduchi ("it's done"), mudichiduven ("I'll finish it")
-- Agreeing: seri ("ok"), sari ("ok"), kandippa ("definitely"), nichayama ("definitely"), okay bro
-- Reacting: semma ("awesome"), vera level ("next level"), super, nalla iruku ("looks good"), aiyo ("oh no"), sorry bro
-- Address words: bro, ji, anna, boss, machan
-- Joiners: aana ("but"), appuram ("then"), ippo ("now"), konjam ("a little"), romba ("very"), kooda ("also"), dhaan ("only/just"), naa ("if")
+- Asking: enna ("what"), edhu / endha ("which"), evlo ("how much / how many"), eppo ("when"), eppadi ("how"), venuma ("do you want")
+- Having: iruku ("we have / it's there"), illa ("no / we don't have"), kedaikum ("is available"), stock la iruku, stock la illa
+- Wanting: venum ("want"), vendaam ("don't want"), pudikkuma ("will you like it")
+- Doing: pannunga ("please do"), sollunga ("please tell"), paarunga ("please look"), anuppunga ("please send"), kaatturen ("I'll show"), anuppuren ("I'll send"), check panren ("I'll check"), add panren ("I'll add"), potten ("I've added"), aayiduchu ("it's done"), aagum ("it will take / it becomes")
+- Agreeing: seri ("ok"), kandippa ("definitely"), aamaa ("yes"), okay
+- Reacting: super, semma ("great"), nalla iruku ("it's good"), sorry
+- Joiners: aana ("but"), appuram ("then"), ippo ("now"), konjam ("a little"), romba ("very"), kooda ("also"), dhaan ("only / just"), mattum ("only"), -na ("if": "venumna")
 
 TANGLISH — STRICTLY NEVER DO THIS (these make you sound like a robot, not a human seller):
-- NEVER use pure Tamil script (e.g. வணக்கம் / நன்றி). ALWAYS Roman letters (Vanakkam, Nandri).
-- NEVER sound like Google Translate. WRONG: "Ungalukku naan eppadi uthavuven?" → RIGHT: "Enna jersey venum bro? Solliyae!"
+- NEVER use Tamil script. ALWAYS Roman letters.
+- NEVER sound like Google Translate. WRONG: "Ungalukku naan eppadi uthavuven?" → RIGHT: "Enna jersey venum nu sollunga."
 - NEVER write these — they are not Tamil words, they are machine noise: "theekana", "Chuuda", "pechu sollu", "kaanpidaven", "uthavuven", "thangaludaya".
 - NEVER repeat the customer's full question back to them. Answer directly.
-- NEVER spam emojis — 1 or 2 relevant ones per message, maximum.
+- NEVER start every reply with the same word ("Bro", "Kandippa", "Semma"). Vary it, or just answer.
 - If the customer says they cannot understand you ("purila", "puriyala", "enna sollura", "what are you saying"), do NOT repeat yourself and do NOT add more Tamil. Apologise in one short line and say the SAME thing again in mostly plain English, with a concrete next step.` : ''}
 
 MESSAGE FORMAT (CRITICAL — this text is sent to a phone exactly as you write it):
@@ -1869,7 +1932,7 @@ ${sessionContext}`;
     const ship = d.address ? `\n📦 ${d.name}, ${d.address}, ${d.pincode} | 📱 ${d.phone}` : '';
     const head = lead ? `${lead}\n` : '';
     return isT
-      ? `${head}Bro, unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm pannunga bro, reply "YES" 🎉`
+      ? `${head}Unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm panna "YES" nu reply pannunga 🎉`
       : `${head}Here's your order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nReply "YES" to confirm! 🎉`;
   }
 
@@ -1886,17 +1949,17 @@ ${sessionContext}`;
     const need = missing.map(f => this._fieldLabel(f, isT)).join(', ');
     if (have.length === 0) {
       return isT
-        ? `Ippo shipping details sollunga bro — Name, Address, Pincode, Mobile number. 📦`
+        ? `Ippo shipping details anuppunga — Name, Address, Pincode, Mobile number. 📦`
         : `Now please share your shipping details — Name, Address, Pincode, Mobile number. 📦`;
     }
     const got = have.map(f => this._fieldLabel(f, isT).split(' (')[0]).join(', ');
     if (acknowledgeAlready) {
       return isT
-        ? `Aama bro, neenga anuppinadhu kedaichiduchu 👍 (${got} save panniten). Innum ${need} mattum venum — adha mattum anuppunga.`
+        ? `Aamaa, neenga anuppinadhu kedaichiduchu 👍 (${got} save panniten). Innum ${need} mattum venum — adha mattum anuppunga.`
         : `Yes, I have what you sent 👍 (${got} saved). I just need your ${need} — please send only that.`;
     }
     return isT
-      ? `Thanks bro 👍 ${got} save panniten. Innum ${need} mattum anuppunga.`
+      ? `Thanks 👍 ${got} save panniten. Innum ${need} mattum anuppunga.`
       : `Thanks 👍 I've saved your ${got}. I just need your ${need}.`;
   }
 
@@ -1965,13 +2028,13 @@ ${sessionContext}`;
         return isT ? `*${p.name}* — ${session.pendingSize} size. Evlo quantity venum bro?` : `*${p.name}* — Size ${session.pendingSize}. How many would you like?`;
       }
       if (!session.pendingSize && session.pendingQty) {
-        return isT ? `*${p.name}*${sizeText} — ${session.pendingQty} qty. Enna size venum bro?` : `*${p.name}*${sizeText} — Qty ${session.pendingQty}. Which size would you like?`;
+        return isT ? `*${p.name}*${sizeText} — ${session.pendingQty} qty. Enna size venum?` : `*${p.name}*${sizeText} — Qty ${session.pendingQty}. Which size would you like?`;
       }
-      return isT ? `*${p.name}*${sizeText} — enna size, evlo quantity venum bro? 🛍️` : `*${p.name}*${sizeText} — what size, and how many would you like? 🛍️`;
+      return isT ? `*${p.name}*${sizeText} — enna size, evlo quantity venum? 🛍️` : `*${p.name}*${sizeText} — what size, and how many would you like? 🛍️`;
     }
     if (session.lastOrder?.orderId && session.lastOrder.checkoutUrl) {
       return isT
-        ? `Unga order #${session.lastOrder.orderId} ku payment link idhu bro:\n${session.lastOrder.checkoutUrl}`
+        ? `Unga order #${session.lastOrder.orderId} ku payment link idhu:\n${session.lastOrder.checkoutUrl}`
         : `Here's the payment link for your order #${session.lastOrder.orderId}:\n${session.lastOrder.checkoutUrl}`;
     }
     return null;
@@ -1989,7 +2052,7 @@ ${sessionContext}`;
         : `Cash on Delivery is available 👍 You can also pay online${methods ? ` — ${methods}` : ''}.`;
     } else {
       text = isT
-        ? `COD kidaiyaathu bro — prepaid mattum dhaan. 🙏 Order confirm pannadhum oru payment link anuppuven${methods ? `, adhula ${methods} la pay pannalaam` : ''}.`
+        ? `Sorry, ippo COD illa — prepaid mattum dhaan. 🙏 Order confirm pannadhum oru payment link anuppuven${methods ? `, adhula ${methods} la pay pannalaam` : ''}.`
         : `COD is not available — prepaid payment is required. 🙏 Once you confirm the order I'll send a secure payment link${methods ? ` where you can pay by ${methods}` : ''}.`;
     }
     const lo = session.lastOrder;
@@ -2133,7 +2196,7 @@ ${sessionContext}`;
         return { rewriteQuery: pending.query };
       }
       if (ents.deny || /\b(continue|same|this one|idhe|ithe|adhe|keep|podhum)\b/i.test(userQuery)) {
-        const lead = isT ? 'Seri bro, andha order ae continue pannalam 👍' : 'No problem — let\'s continue with your order 👍';
+        const lead = isT ? 'Seri, andha order ae continue pannalaam 👍' : 'No problem — let\'s continue with your order 👍';
         return respond(`${lead}\n${this._nextStepPrompt(session)}`, 'state_resume');
       }
       // Anything else: read it normally below.
@@ -2162,7 +2225,7 @@ ${sessionContext}`;
       if (!p) {
         if (shown.length > 0 && awaiting === 'product') {
           return respond(isT
-            ? `Bro, list la ${shown.length} options dhaan iruku — 1${shown.length > 1 ? ` to ${shown.length}` : ''} la ethu venum?`
+            ? `List la ${shown.length} options dhaan iruku — 1${shown.length > 1 ? ` to ${shown.length}` : ''} la ethu venum?`
             : `There are only ${shown.length} options in the list — which one would you like (1${shown.length > 1 ? `–${shown.length}` : ''})?`,
           'state_clarify_product');
         }
@@ -2197,7 +2260,7 @@ ${sessionContext}`;
       session.pendingSize = ents.size;
       if (ents.qty) session.pendingQty = ents.qty;
       return respond(isT
-        ? `Bro, list la ethu venum — ${shown.map((_, i) => i + 1).join(', ')}? (${ents.size} size${ents.qty ? `, ${ents.qty} qty` : ''} note panniten 👍)`
+        ? `List la edhu venum — ${shown.map((_, i) => i + 1).join(', ')}? (${ents.size} size${ents.qty ? `, ${ents.qty} qty` : ''} note panniten 👍)`
         : `Which one from the list — ${shown.map((_, i) => i + 1).join(', ')}? (I've noted Size ${ents.size}${ents.qty ? `, Qty ${ents.qty}` : ''} 👍)`,
       'state_clarify_product');
     }
@@ -2213,7 +2276,7 @@ ${sessionContext}`;
       if (!orderState.productHasSize(locked, ents.size)) {
         const avail = (locked.sizes || []).map(s => String(s).split('-')[0]).join(', ');
         return respond(isT
-          ? `Sorry bro, *${locked.name}* ku ${ents.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
+          ? `Sorry, *${locked.name}* ku ${ents.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
           : `Sorry, *${locked.name}* isn't available in ${ents.size} 😕 ${avail ? `Available sizes: ${avail}. ` : ''}Which size would you like?`,
         'state_size_unavailable', productIds);
       }
@@ -2232,7 +2295,7 @@ ${sessionContext}`;
         const item = session.cart[0];
         const known = this._knownAddress(session);
         const added = isT
-          ? `Done bro! 🛒 *${item.name}* — ${item.size} size, ${item.qty} qty cart la potten!`
+          ? `Done! 🛒 *${item.name}* — ${item.size} size, ${item.qty} qty cart la potten!`
           : `Done! 🛒 Added *${item.name}* — Size ${item.size}, Qty ${item.qty} to your cart!`;
         if (orderState.isAddressComplete(known)) {
           // Already have their details — don't ask again, go straight to the summary.
@@ -2243,6 +2306,12 @@ ${sessionContext}`;
         }
         return respond(`${added} ${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'deterministic_cart', productIds);
       }
+      // "andha first one ku name podalama? messi nu" picks a product AND asks something. The
+      // canned "what size?" answered only the pick and ignored the question (seen live
+      // 2026-09-28). Keep the pick, and let the agent — which now has the product locked in its
+      // prompt — answer the question too.
+      const asksMore = /\b(name|custom\w*|print\w*|podalama|podanum|evlo|price|delivery|quality|shorts|version|original|discount)\b/i.test(userQuery);
+      if (picked && !changed && asksMore) return null;
       if (picked || changed) return respond(this._nextStepPrompt(session), picked && !changed ? 'deterministic_selection' : 'state_update', productIds);
       // Locked product but nothing order-shaped in this message → normal pipeline (LLM),
       // which gets the locked state in its prompt and is validated against it.
@@ -2276,7 +2345,7 @@ ${sessionContext}`;
       if (missing.length === 0) {
         const res = this._applyAddress(senderId, session, known);
         if (res.bulk) return this._bulkReply(senderId, session, userQuery);
-        const lead = isT ? 'Aama bro, unga address kedaichiduchu 👍' : 'Yes — got your address 👍';
+        const lead = isT ? 'Aamaa, unga address kedaichiduchu 👍' : 'Yes — got your address 👍';
         return respond(this._summaryReply(session, lead), 'state_address_recalled', productIds);
       }
       return respond(this._askMissingAddress(session, missing, { acknowledgeAlready: true }), 'state_address_partial', productIds);
@@ -2490,7 +2559,7 @@ ${sessionContext}`;
       ? (isTanglish ? ` Reference: ${ticket.id}.` : ` Your reference is ${ticket.id}.`)
       : '';
     const reply = isTanglish
-      ? `Aiyo sorry bro 🙏 order ippo place panna mudiyala — engaluku oru technical problem. Ungalukku ethuvum charge aagala, cart safe ah iruku.${ref} Namma team ku alert poyiduchu, seekiram unga kitta contact pannuvaanga. Konja neram kazhichu "yes" nu reply pannunga, naan marubadiyum try pannuren!`
+      ? `Sorry 🙏 order ippo place panna mudiyala — engaluku oru technical problem. Ungalukku ethuvum charge aagala, cart safe ah iruku.${ref} Namma team ku alert poyiduchu, seekiram unga kitta contact pannuvaanga. Konja neram kazhichu "yes" nu reply pannunga, naan marubadiyum try pannuren!`
       : `I'm really sorry — I couldn't place that order just now, there's a technical issue on our side. 🙏 You have NOT been charged and your cart is safe.${ref} Our team has been alerted and will contact you shortly to complete it. You can also reply "yes" in a few minutes and I'll try again.`;
 
     session.history.push({ role: 'user', content: userQuery });
@@ -2752,7 +2821,7 @@ ${sessionContext}`;
         // Cleared too, so a later bare "1" can't select from the PREVIOUS order's list.
         session.lastShownProducts = [];
         const reply = session.language === 'tanglish'
-          ? `Sure bro! 🔥 ${hadCart ? 'Pazhaya cart clear pannaachu. ' : ''}Fresh ah start pannalam — enna team illa player jersey venum? Real Madrid, Barcelona, Ronaldo, Messi… sollunga! ⚽`
+          ? `Sure! ${hadCart ? 'Pazhaya cart clear pannaachu. ' : ''}Fresh ah start pannalam — enna team illa player jersey venum? Real Madrid, Barcelona, Ronaldo, Messi… sollunga! ⚽`
           : `Sure thing! 🔥 ${hadCart ? "Cleared your previous cart. " : ''}Let's start fresh — which team or player are you looking for? Real Madrid, Barcelona, Ronaldo, Messi… just tell me! ⚽`;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
@@ -2867,7 +2936,7 @@ ${sessionContext}`;
         const teams = woocommerceService.listTeams(8);
         const list = teams.length > 0 ? `\n\n${teams.map(t => `• ${t}`).join('\n')}\n` : ' ';
         const reply = session.language === 'tanglish'
-          ? `Sorry bro 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
+          ? `Sorry 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
           : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`;
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
@@ -2880,12 +2949,17 @@ ${sessionContext}`;
       // (no order number) still gets the cheap FAQ answer.
       const looksLikeOrderLookup = /\b(order|parcel|package|shipment|tracking|track|delivered|delivery|status)\b/i.test(userQuery) && /\d{3,}/.test(userQuery);
       const looksLikeComplaint = /\b(wrong (item|jersey|name|number|size|team|product)|damaged|broken|defective|torn|stained|misprint|missing|not received|didn'?t (get|receive)|never (got|arrived|received)|haven'?t received)\b/i.test(userQuery);
-      // Refund/money-back is a sensitive money topic — route it to the LLM so the exact
-      // exchange-only policy is stated (never a canned size-chart/other blurb, and never a
-      // refund promise). The prompt instructs: we do NOT do cash refunds, only exchanges.
+      // Refund/money-back is a sensitive money topic — route it to the LLM so it collects the
+      // order details and raises a ticket (never a canned blurb, and never a refund promise).
+      // The owner's 2026-09-28 guide: no return/exchange policy is stated; the team decides.
       const looksLikeRefund = /\b(refund|money back|cashback|return my money|my money back)\b/i.test(userQuery);
 
-      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? [] : faqService.searchFAQs(userQuery);
+      // An FAQ answer that the owner's uploaded rules contradict is never served — that
+      // question goes to the agent, which has the rules in its prompt (services/rules.js).
+      await rulesService.refresh();
+      const overridden = rulesService.disabledFaqCategories();
+      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? []
+        : faqService.searchFAQs(userQuery).filter(f => !overridden.has(f.category));
       if (faqMatches.length > 0) {
         // Language-matched reply — session.language is already locked, and answering a
         // Tanglish customer in English here would contradict the whole conversation.
@@ -2923,10 +2997,10 @@ ${sessionContext}`;
           // returned them -- we are past `created`, so the ID is real either way.
           const reply = result.checkoutUrl
             ? (isTanglish
-                ? `Semma bro! 🎉 Order #${result.orderId} confirm aayiduchi! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''} Thanks for shopping with Theaurax! ⚽🔥`
+                ? `Super! 🎉 Order #${result.orderId} confirm aayiduchu! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''} Thanks for shopping with Theaurax! ⚽🔥`
                 : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}${payMethods ? `\nPay by ${payMethods}.` : ''} Thanks for shopping with Theaurax! ⚽🔥`)
             : (isTanglish
-                ? `Semma bro! 🎉 Order #${result.orderId} place aayiduchi! Payment link konja neram la inga anuppuren — team confirm panniduvaanga. Thanks! ⚽🔥`
+                ? `Super! 🎉 Order #${result.orderId} place aayiduchu! Payment link konja neram la inga anuppuren — team confirm panniduvaanga. Thanks! ⚽🔥`
                 : `Great news! 🎉 Your order #${result.orderId} has been placed! I'll send your payment link here shortly — our team is confirming it now. Thanks for shopping with Theaurax! ⚽🔥`);
 
           const cartSnapshot = session.cart;
@@ -2971,6 +3045,7 @@ ${sessionContext}`;
       }
     }
 
+    await rulesService.refresh(); // generateSystemPrompt reads the owner rules synchronously
     let messages = [
       { role: "system", content: this.generateSystemPrompt(session) }
     ];
@@ -3057,6 +3132,8 @@ ${sessionContext}`;
               const searchQuery = this._mergeSearchContext(session, args.query || "");
               const found = woocommerceService.searchProductsDetailed(searchQuery);
               searchRanThisTurn = true;
+              // Captured before this search overwrites it — see the 'broad' follow-up below.
+              const previouslyShown = Array.isArray(session.lastShownProducts) ? session.lastShownProducts : [];
               // `shown` is what the customer will actually see. On a miss that is a list of
               // generic suggestions, and every message built from it says so.
               const shown = found.products.length > 0 ? found.products : found.suggestions;
@@ -3106,6 +3183,28 @@ ${sessionContext}`;
                   keepLooping = false;
                   break;
                 }
+                // A follow-up about products that are ALREADY on screen ("price konjam kammi
+                // pannunga", "discount iruka?", "quality eppadi?") names no team, so the model's
+                // search comes back 'broad'. Answering that with the team list threw the customer
+                // back to square one mid-conversation (seen live 2026-09-28). Keep the list they
+                // were looking at and let the model answer the actual question about it.
+                if (found.matchQuality === 'broad' && previouslyShown.length > 0) {
+                  session.lastShownProducts = previouslyShown;
+                  session.productListPending = true;
+                  lastSearchResults = [];
+                  matchedProductIds = [];
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: fnName,
+                    content: JSON.stringify({
+                      products: previouslyShown.slice(0, 3).map(p => ({ name: p.name, price: p.price, sizes: p.sizes })),
+                      matchQuality: 'already_shown',
+                      message: 'No new team or product was named — the customer is asking about the products already shown. Answer their question about these directly and briefly. Prices are fixed: no discounts or offers. Do not search again and do not list teams.'
+                    })
+                  });
+                  continue;
+                }
                 if (found.matchQuality === 'broad' && this.teamListReply(session.language, session)) {
                   // Nothing was shown, so a later "1st one" must not resolve against the
                   // suggestions list the customer never saw.
@@ -3131,7 +3230,7 @@ ${sessionContext}`;
                 let opener;
                 if (found.matchQuality === 'none') {
                   opener = isTanglish
-                    ? `Sorry bro, "${searchQuery}" ku exact ah kidaikala 😕 Idhu namma popular collection \u2014 paarunga:`
+                    ? `Sorry, "${searchQuery}" ku exact ah kidaikala 😕 Idhu namma popular collection \u2014 paarunga:`
                     : `Sorry, I couldn't find an exact match for "${searchQuery}" 😕 Here are some popular ones instead:`;
                 } else if (found.matchQuality === 'partial') {
                   const miss = found.unmatched.join(' / ');
@@ -3140,7 +3239,7 @@ ${sessionContext}`;
                     : `We don't have ${miss} in stock right now 😕 Here's what we do have:`;
                 } else {
                   const hypeOpeners = isTanglish
-                    ? ['Bro kandippa iruku! 🔥', 'Semma choice bro! 😍', 'Idhu vera level bro! 🏆']
+                    ? ['Iruku! Idho options 👇', 'Kandippa iruku 👇', 'Idho ippo available ah irukkuradhu 👇']
                     : ['Yes, we have it! 🔥', 'Great pick! 😍', 'This one\'s a favorite! 🏆'];
                   opener = hypeOpeners[Math.floor(Math.random() * hypeOpeners.length)];
                 }
@@ -3157,7 +3256,7 @@ ${sessionContext}`;
                     return `${i + 1}. *${p.name}* — ₹${p.price}${sizeText}${p.permalink ? `\n${p.permalink}` : ''}`;
                   }).join('\n');
                   resultText = isTanglish
-                    ? `${opener}\n${lines}\n\nEthu venum bro — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
+                    ? `${opener}\n${lines}\n\nEdhu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
                     : `${opener}\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
                 }
 
@@ -3552,14 +3651,14 @@ ${sessionContext}`;
                 resultText = teamsReply;
               } else if (lastSearchResults && lastSearchResults.length > 0) {
                 const top = lastSearchResults.slice(0, 3);
-                const intro = isTanglish ? "Idhu iruku bro! 🔥" : "Here's what we have for you! 🔥";
+                const intro = isTanglish ? "Idho iruku 👇" : "Here's what we have for you! 🔥";
                 const outro = isTanglish ? "Enna size venum, sollunga!" : "Which one would you like, and what size?";
                 resultText = intro + "\n\n" + top.map(p =>
                   `• *${p.name}* — ₹${p.price}${p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
                 ).join('\n') + "\n\n" + outro;
               } else {
                 resultText = isTanglish
-                  ? "Andha exact jersey kidaikala bro — team illa player peru innoru vaati sollunga? Illa website la paarunga: https://theaurax.in"
+                  ? "Andha exact jersey kidaikala — team illa player peru innoru vaati sollunga? Illa website la paarunga: https://theaurax.in"
                   : "Hmm, I couldn't find that exact jersey — could you tell me the team or player name again? Or browse the full range here: https://theaurax.in";
               }
             }

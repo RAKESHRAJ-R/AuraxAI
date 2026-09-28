@@ -150,7 +150,7 @@ const config = {
   // works out of the box without extra config.
   support: {
     email: (process.env.SUPPORT_EMAIL || 'support@theaurax.in').trim(),
-    wholesaleNumber: (process.env.WHOLESALE_NUMBER || '9884442049').replace(/[^0-9]/g, ''),
+    wholesaleNumber: (process.env.WHOLESALE_NUMBER || '9360715443').replace(/[^0-9]/g, ''),
   },
   // What the store actually accepts. The bot's payment answers are built from THIS, never
   // from the model's imagination — so a method only reaches a customer if it is listed here.

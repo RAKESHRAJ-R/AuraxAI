@@ -256,6 +256,17 @@ class WooCommerceService {
       // Ronaldo jerseys instead of falling back to random cheap items.
       '\\bcr7\\b': 'ronaldo',
       '\\bcristiano\\b': 'ronaldo',
+      // Club nicknames and the typos the owner's guide lists as must-understand
+      // ("barca jersy iruka" = Barcelona jersey). Without these, "barca" matched nothing and
+      // the customer was told we don't have Barcelona, then shown IPL shirts (2026-09-28).
+      '\\bbarca\\b': 'barcelona',
+      '\\bbarsa\\b': 'barcelona',
+      '\\bjuve\\b': 'juventus',
+      '\\bman\\s*utd\\b': 'manchester united',
+      '\\bman\\s*united\\b': 'manchester united',
+      '\\bman\\s*city\\b': 'manchester city',
+      '\\bjers[iy]\\b': 'jersey',
+      '\\bjerseyy\\b': 'jersey',
     };
     let normalized = name.toLowerCase().trim();
     for (const [pattern, replacement] of Object.entries(aliasMap)) {
@@ -958,7 +969,9 @@ class WooCommerceService {
       stopWords.add('fv');
     }
     const queryTokens = cleanQuery.split(/[\s/,\-_?!.]+/)
-      .filter(t => t.length > 2 && !stopWords.has(t) && isNaN(t));
+      // A typo of a stop word is still a stop word: "jersy" normalises to "jersey", and if
+      // it survives this filter it matches every product with JERSEY in its name.
+      .filter(t => t.length > 2 && !stopWords.has(t) && !stopWords.has(this.normalizeName(t)) && isNaN(t));
 
     // Generate normalized + singular variants of each token for fuzzy matching
     const normalizedTokens = queryTokens.map(t => this.normalizeName(t));

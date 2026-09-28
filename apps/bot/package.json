@@ -13,6 +13,8 @@
     "test-catchup": "node src/test_catchup.js",
     "test-followup": "node src/test_followup.js",
     "test-watchdog": "node src/test_whatsapp_watchdog.js",
+    "test-store-facts": "node src/test_store_facts.js",
+    "test-owner-rules": "node src/test_owner_rules.js",
     "test-admin-auth": "node src/test_admin_auth.js",
     "test-ai-e2e": "node test_ai_e2e.js",
     "review": "node src/review_conversations.js",

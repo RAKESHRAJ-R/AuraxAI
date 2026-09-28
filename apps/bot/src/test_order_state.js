@@ -258,7 +258,7 @@ console.log('\n8. In CART_REVIEW / payment → "how pay?"');
   check('only configured methods are named', !/gpay|phonepe|paytm|wallet/i.test(r.replyText), r.replyText);
   check('does NOT return to team selection', !TEAM_LIST.test(r.replyText), r.replyText);
   const r2 = await ask(id, 'COD iruka?');
-  check('"COD iruka?" → honest no', /COD kidaiyaathu|not available/i.test(r2.replyText), r2.replyText);
+  check('"COD iruka?" → honest no', /COD kidaiyaathu|COD illa|not available/i.test(r2.replyText), r2.replyText);
   const s = await state(id);
   check('cart and step are unchanged', s.state === 'CONFIRMING_ORDER' && s.cart[0]?.productId === MESSI.id, `${s.state} ${JSON.stringify(s.cart)}`);
 }

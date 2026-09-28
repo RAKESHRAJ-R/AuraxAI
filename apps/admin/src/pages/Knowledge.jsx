@@ -168,7 +168,73 @@ function fmtBytes(n) {
   return (n / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
-function SourceCard({ s, onToggle, onDelete, canManage }) {
+/**
+ * What the bot took from a document as owner RULES (apps/bot/src/services/rules.js). Shown so
+ * staff can check the summary is right — it goes into every reply — and fix it by hand if not.
+ */
+function RulesPanel({ s, canManage, onChanged }) {
+  const { api } = useAuth();
+  const toast = useToast();
+  const r = s.rules;
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(r?.text || '');
+  const [busy, setBusy] = useState('');
+  useEffect(() => { setText(r?.text || ''); }, [r?.text]);
+
+  const regenerate = async () => {
+    if (r?.edited && !confirm('Re-reading the document replaces your hand edits. Continue?')) return;
+    setBusy('regen');
+    try {
+      const saved = await api(`/api/knowledge/sources/${s.id}/rules/regenerate`, { method: 'POST', body: '{}' });
+      toast(saved.rules?.status === 'error' ? `Could not read the rules: ${saved.rules.error}` : 'Rules re-read from the document.', saved.rules?.status === 'error');
+      onChanged();
+    } catch (e) { toast(e.message, true); }
+    finally { setBusy(''); }
+  };
+  const save = async () => {
+    setBusy('save');
+    try {
+      await api(`/api/knowledge/sources/${s.id}/rules`, { method: 'PUT', body: JSON.stringify({ text }) });
+      toast('Rules saved — the bot uses them from the next message.');
+      onChanged();
+    } catch (e) { toast(e.message, true); }
+    finally { setBusy(''); }
+  };
+
+  if (!r) return <div className="hint" style={{ margin: '8px 0' }}>📋 Rules: not read yet{canManage && <> — <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy ? 'Reading…' : 'Read rules now'}</button></>}</div>;
+  if (r.status === 'error') return (
+    <div className="hint" style={{ margin: '8px 0' }}>⚠️ Could not read rules from this document: {r.error}
+      {canManage && <> <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy ? 'Reading…' : 'Try again'}</button></>}
+    </div>
+  );
+  const none = (r.text || '').trim() === 'NONE';
+  return (
+    <div style={{ margin: '8px 0' }}>
+      <div className="chips">
+        <span className={'chip' + (none ? '' : ' lang')}>{none ? 'no rules found — used as reference only' : `📋 bot rules · ${r.text.length} chars${r.edited ? ' · edited' : ''}`}</span>
+        {r.truncated && <span className="chip off">long file — only the first part was read</span>}
+        {(r.faqConflicts || []).map((c) => <span key={c} className="chip off" title="The built-in answer contradicted this document, so the bot no longer uses it">FAQ replaced: {c}</span>)}
+      </div>
+      <button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? 'Hide rules' : 'View rules'}</button>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          <p className="hint" style={{ margin: '0 0 6px' }}>
+            The bot follows these in every reply{s.active === false ? ' (not now — this document is turned off)' : ''}. If a newer document says something different, the newer one wins.
+          </p>
+          <textarea value={text} readOnly={!canManage} rows={14} style={{ width: '100%', fontFamily: 'inherit' }} onChange={(e) => setText(e.target.value)} />
+          {canManage && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button className="btn gold sm" disabled={!!busy || text === r.text} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
+              <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy === 'regen' ? 'Reading…' : 'Re-read document'}</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceCard({ s, onToggle, onDelete, canManage, onChanged }) {
   const off = s.active === false;
   return (
     <div className={'entry fade' + (s.status === 'error' ? ' flag' : '')}>
@@ -184,6 +250,7 @@ function SourceCard({ s, onToggle, onDelete, canManage }) {
         <span className={'chip' + (s.embedded ? ' lang' : '')}>{s.embedded ? 'semantic search' : 'keyword only'}</span>
         {off && <span className="chip off">inactive</span>}
       </div>
+      {s.type === 'document' && <RulesPanel s={s} canManage={canManage} onChanged={onChanged} />}
       {canManage && (
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn ghost sm" onClick={() => onToggle(s)}>{off ? 'Turn on' : 'Turn off'}</button>
@@ -243,7 +310,12 @@ function SourcesTab() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'Upload failed');
-      toast(`Indexed "${body.source.title}" — ${body.chunks} chunks.`);
+      const rules = body.source?.rules;
+      toast(rules?.status === 'error'
+        ? `Uploaded "${body.source.title}", but its rules could not be read: ${rules.error}`
+        : rules && rules.text?.trim() !== 'NONE'
+          ? `"${body.source.title}" uploaded — the bot now follows its rules. Check them under "View rules".`
+          : `Uploaded "${body.source.title}" as reference material (no rules found in it).`, rules?.status === 'error');
       if (body.embeddingNote) toast(body.embeddingNote, true);
       setFile(null);
       document.getElementById('kb-file').value = '';
@@ -319,12 +391,14 @@ function SourcesTab() {
       <div className="card pad fade" style={{ marginBottom: 20 }}>
         <strong style={{ fontSize: 15 }}>📄 Document</strong>
         <p className="hint" style={{ margin: '4px 0 12px' }}>
-          Upload a size chart, price list, or policy document. PDF, DOCX, TXT, MD or HTML — max 20 MB.
-          Scanned/photo PDFs won't work; the file needs real selectable text.
+          Upload your rules or policy document — prices, delivery, what the bot must and must never say.
+          The bot reads it and follows it in every reply; upload a newer version any time and the newer
+          one wins. PDF, DOCX, TXT, MD or HTML — max 20 MB. Scanned/photo PDFs won't work; the file needs
+          real selectable text.
         </p>
         <input id="kb-file" type="file" accept=".pdf,.docx,.txt,.md,.html,.htm" onChange={(e) => setFile(e.target.files[0] || null)} />
         <button className="btn gold" style={{ marginTop: 14 }} disabled={busy === 'document'} onClick={addDocument}>
-          {busy === 'document' ? 'Indexing…' : '📄 Upload & index'}
+          {busy === 'document' ? 'Reading the document… (up to a minute)' : '📄 Upload & index'}
         </button>
       </div>
       </>}
@@ -347,7 +421,7 @@ function SourcesTab() {
       </div>
       {data === null ? <div className="empty">Loading…</div>
         : data.sources.length === 0 ? <div className="empty">No sources yet. Add a website or upload a document above ☝️</div>
-        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} canManage={canManage} />)}
+        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} canManage={canManage} onChanged={load} />)}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import aiService from './services/ai.js';
 import dbService from './services/db.js';
 import knowledgeService from './services/knowledge.js';
 import retrievalService from './services/retrieval.js';
+import rulesService from './services/rules.js';
 import textExtractService from './services/textextract.js';
 import embeddingService from './services/embeddings.js';
 import { diagnoseUnanswered } from './services/diagnose.js';
@@ -462,6 +463,10 @@ app.post('/api/knowledge/sources/document', requirePermission('knowledge.sources
         title: req.body?.title,
       });
       console.log(`[Server] Indexed document "${result.source.title}" — ${result.chunks} chunks, embedded=${result.embedded}`);
+      // Read the owner's rules out of it now, so they are live on the very next message.
+      // One LLM call per upload; a failure is recorded on the source, never fails the upload.
+      const withRules = await rulesService.digest(result.source.id);
+      if (withRules) result.source = withRules;
       await adminAuth.record(req, 'sources.document', `Uploaded the document "${result.source.title}" (${result.chunks} chunks)`);
       res.json(result);
     } catch (err) {
@@ -500,6 +505,7 @@ app.post('/api/knowledge/sources/:id/toggle', requirePermission('knowledge.sourc
     if (!existing) return res.status(404).json({ error: 'Source not found' });
     const saved = await dbService.saveKnowledgeSource({ ...existing, active: !existing.active });
     retrievalService.invalidate();
+    rulesService.invalidate();
     await adminAuth.record(req, 'sources.toggle', `Turned ${saved.active ? 'on' : 'off'} the source "${saved.title}"`);
     res.json(saved);
   } catch (err) {
@@ -508,11 +514,40 @@ app.post('/api/knowledge/sources/:id/toggle', requirePermission('knowledge.sourc
   }
 });
 
+// Read the rules out of a document again — after a failure, or to undo a hand edit.
+app.post('/api/knowledge/sources/:id/rules/regenerate', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const saved = await rulesService.digest(req.params.id);
+    if (!saved) return res.status(404).json({ error: 'Document not found' });
+    retrievalService.invalidate();
+    await adminAuth.record(req, 'sources.rules', `Re-read the rules from "${saved.title}"${saved.rules?.status === 'error' ? ' (failed)' : ''}`);
+    res.json(saved);
+  } catch (err) {
+    console.error('[Server] POST rules/regenerate error:', err.message);
+    res.status(500).json({ error: 'Failed to read the rules' });
+  }
+});
+
+// Correct the rule sheet by hand. Used word-for-word from the next message on.
+app.put('/api/knowledge/sources/:id/rules', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const saved = await rulesService.setText(req.params.id, req.body?.text);
+    if (!saved) return res.status(404).json({ error: 'Document not found' });
+    retrievalService.invalidate();
+    await adminAuth.record(req, 'sources.rules', `Edited the rules from "${saved.title}"`);
+    res.json(saved);
+  } catch (err) {
+    console.error('[Server] PUT rules error:', err.message);
+    res.status(500).json({ error: 'Failed to save the rules' });
+  }
+});
+
 app.delete('/api/knowledge/sources/:id', requirePermission('knowledge.sources'), async (req, res) => {
   try {
     const source = (await dbService.getAllKnowledgeSources()).find(s => s.id === req.params.id);
     await dbService.deleteKnowledgeSource(req.params.id);
     retrievalService.invalidate();
+    rulesService.invalidate();
     await adminAuth.record(req, 'sources.delete', `Deleted the source "${source?.title || req.params.id}"`);
     res.json({ status: 'ok' });
   } catch (err) {
@@ -618,6 +653,12 @@ app.listen(PORT, () => {
   // instead of six weeks later, after every order in between had silently failed.
   const ORDERING_HEALTH_INTERVAL_MS = 15 * 60 * 1000;
   setTimeout(() => { woocommerceService.checkOrderingHealth(); }, 6000);
+
+  // Documents uploaded before owner rules existed get their rules read once, here. Failures
+  // are not retried on later boots (see rulesService.backfill), so this can't loop on cost.
+  setTimeout(() => {
+    rulesService.backfill().catch(err => console.error('[Rules] Backfill failed:', err.message));
+  }, 12000);
   setInterval(() => { woocommerceService.checkOrderingHealth({ quiet: true }); }, ORDERING_HEALTH_INTERVAL_MS);
 
   // Preload the local embedding model so the first customer question after a restart

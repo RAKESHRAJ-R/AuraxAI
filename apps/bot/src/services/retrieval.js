@@ -82,7 +82,11 @@ class RetrievalService {
       ]);
       // A source the owner switched off must stop being retrievable immediately,
       // without having to re-index or delete it.
-      const inactive = new Set(sources.filter((s) => s.active === false).map((s) => s.id));
+      // A document that became owner RULES (services/rules.js) is in every prompt already;
+      // retrieving its chunks as well would only duplicate it — and a rules document is full
+      // of "WRONG: …" example sentences that read as fact when pulled in out of context.
+      const inactive = new Set(sources.filter((s) => s.active === false
+        || (s.rules?.status === 'ready' && s.rules.text && s.rules.text.trim() !== 'NONE')).map((s) => s.id));
       this.cache = chunks.filter((c) => !inactive.has(c.sourceId));
     } catch (err) {
       console.warn('[Retrieval Service] Failed to load chunks:', err.message);

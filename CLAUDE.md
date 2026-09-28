@@ -57,6 +57,8 @@ npm run check-woo      # WooCommerce REST connectivity — tests BOTH credential
                        # a deploy. Exit code 1 when nothing can both read and order.
 npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
 npm run test-followup  # Cold-lead follow-up guards (no-loop, age, per-run caps) — stubbed, sends nothing
+npm run test-owner-rules # Uploaded rule documents → prompt, FAQ override, newer-wins (stubbed LLM, free)
+npm run test-store-facts # Owner's guide facts (versions, ₹300 name, delivery, wholesale, giveaway), FAQ-hijack + alias checks — free
 npm run test-watchdog  # WhatsApp self-healing (hung/crashed/runaway Chrome, leaked session lock) — stubbed, no browser
 npm run test-search    # Product-search regression from the 2026-09-20 tester reviews (60 checks):
                        # season/version constraints, honest partial + no-match replies,
@@ -1045,6 +1047,69 @@ Both are from the same chat, and both were being answered by a model with nothin
 
 `asksWhichTeams()` deliberately returns false when `extractSubject()` finds a real team in the
 message — *"Barcelona team jersey iruka?"* is a search, not a range question.
+
+### Owner's training guide built in — not via the Knowledge Hub (2026-09-28)
+
+The owner uploaded *AURA EXCHANGE WhatsApp Chatbot Master Training Guide* (13-page PDF) to the
+Knowledge Hub and saw no change. Three reasons, all measured:
+
+1. **The static FAQ answered first and contradicted it** — ₹100 customisation (guide: ₹300),
+   3–5 day delivery (5–7; customised 8–10), wholesale 9884442049 "20+ pieces special price"
+   (9360715443, never quote prices), "1:1 master quality" (4 distinct versions), an invented
+   7-day exchange policy (guide: never state a return policy — the team decides).
+2. **Document search can't find it for Tanglish questions.** MiniLM is English-only: *"player
+   name podalama"* retrieved the clarification-rule chunk, *"FC set la shorts varuma"* the
+   Barcelona test case, *"delivery ethana naal aagum"* scored 0.299 (< 0.33, nothing injected).
+3. **Behaviour rules can't be RAG'd.** Tone and Tanglish style must be in every prompt, not
+   retrieved when a query happens to resemble them.
+
+**The fix is a mechanism, not a copy of the PDF — the client will keep sending new versions.**
+Every uploaded DOCUMENT becomes owner rules (`src/services/rules.js`):
+
+| Step | Where | Rule |
+|---|---|---|
+| Upload → condensed ONCE into a ≤4000-char rule sheet | `rulesService.digest()`, called by the upload route | one LLM call per upload (Sarvam → Fireworks → Groq), never per message. Exact prices, numbers, phone numbers and approved wordings kept verbatim; examples/test cases dropped |
+| Same call names the built-in FAQ answers the document contradicts | `faqConflicts` on the source | the FAQ fast path skips those categories while the document is active, so the agent answers them from the rules |
+| Every active sheet goes in every system prompt | `storeFactsBlock()` in `ai.js` | **replaces** the built-in STORE FACTS entirely (two versions of one fact in one prompt is how the stale one gets quoted). Sits in the static prefix, so it is prompt-cached |
+| Newer upload wins | `promptBlock()` | sheets ordered oldest → newest, prompt says the later one wins |
+| Rule documents are not RAG-searched | `retrieval.getChunks()` | a rules doc is full of "WRONG: …" example lines that read as fact out of context |
+| A doc with no rules (`RULES: NONE`) | — | stays plain reference material, searched as before |
+| Staff can view / hand-edit / re-read the sheet | Knowledge Hub → sources → *View rules* | `PUT /api/knowledge/sources/:id/rules`, `POST …/rules/regenerate` (`knowledge.sources`) |
+| Docs uploaded before this existed | `rulesService.backfill()`, 12s after boot | one call each, once. A failed read is **not** retried on later boots — it waits for *Re-read* — so a bad file can't cost money on every restart |
+
+Turning a document off or deleting it brings the built-in facts and FAQ answers straight back.
+The built-in STORE FACTS + the faq.json corrections below are only the fallback for a store with
+no rule documents. **Keep the guide uploaded** — it IS the source now. Each active sheet costs
+~1000 input tokens per call (cached), so delete superseded versions rather than stacking them.
+
+⚠️ Not driven by documents: the Tanglish style rules (code), the payment gateway (Razorpay only —
+a document saying "COD available" is overridden by `_paymentReply`, which reads `config.payment`),
+and the bulk-order escalation number (`WHOLESALE_NUMBER` env). Change those in config.
+
+`npm run test-owner-rules` — 27 checks with a stubbed condenser: parsing, prompt placement,
+FAQ override, newer-wins, reference-only docs, hand edits, failure without retry-cost, and full
+restoration on delete. No paid call.
+
+Fallback content (used only with no rule documents): `faq.json` (both languages, plus new
+*Version Difference*, *FC Set Shorts* and *Giveaway* entries) and the built-in STORE FACTS.
+
+- **New FAQ keywords are question-shaped on purpose.** A bare `player version`, `fan`, `retro`
+  or `fc set` is a product search; matching them would hijack *"Real Madrid player version iruka"*.
+- The bot cannot add a custom name to a WooCommerce order, so the prompt has it collect the name
+  and raise a ticket for the team (₹300) instead of claiming a checkout text box.
+- Tanglish register: *neenga/unga* + `-unga` verbs, "bro" only when the customer uses it (max
+  once), never *machan/mame/da/dei*; ~30 canned Tanglish templates had "bro" trimmed.
+- `normalizeName()` aliases `barca/barsa`, `juve`, `man utd/united/city`, `jersy/jersi`; a typo
+  of a stop word is now filtered as a stop word (else "jersy" matched every JERSEY product).
+- A search that names nothing while products are on screen (*"price konjam kammi pannunga"*)
+  returns `matchQuality:'already_shown'` to the model instead of the team list. Sarvam often
+  writes an answer AND a search call in one turn; the text is discarded and the search runs,
+  which is how that price question used to produce the team list.
+- Picking from the list while asking something (*"first one ku name podalama?"*) now reaches
+  the agent with the product locked, instead of a canned "what size?".
+
+`npm run test-store-facts` — 30 checks: the guide's own test questions, no FAQ hijacking of
+product searches, alias/typo search, and that no retired fact survives in the FAQ or prompt.
 
 ### Cold-lead follow-ups now speak the customer's language (2026-09-22)
 

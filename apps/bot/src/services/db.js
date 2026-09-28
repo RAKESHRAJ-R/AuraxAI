@@ -600,6 +600,8 @@ class DatabaseService {
       embedded: source.embedded === true,
       language: ['both', 'english', 'tanglish'].includes(source.language) ? source.language : 'both',
       active: source.active !== false,
+      // Owner rule sheet condensed from a document — see services/rules.js.
+      rules: source.rules && typeof source.rules === 'object' ? source.rules : null,
       createdAt: source.createdAt || now,
       updatedAt: now,
     };
