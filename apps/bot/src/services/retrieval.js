@@ -82,11 +82,12 @@ class RetrievalService {
       ]);
       // A source the owner switched off must stop being retrievable immediately,
       // without having to re-index or delete it.
-      // A document that became owner RULES (services/rules.js) is in every prompt already;
-      // retrieving its chunks as well would only duplicate it — and a rules document is full
-      // of "WRONG: …" example sentences that read as fact when pulled in out of context.
+      // A document that is in the Rule Book (services/rules.js) reaches the prompt as its
+      // topic's rule cards; retrieving its chunks as well would only duplicate it — and a
+      // rules document is full of "WRONG: …" example sentences that read as fact when pulled
+      // in out of context. Only crawled websites (and not-yet-split documents) are searched.
       const inactive = new Set(sources.filter((s) => s.active === false
-        || (s.rules?.status === 'ready' && s.rules.text && s.rules.text.trim() !== 'NONE')).map((s) => s.id));
+        || (s.type === 'document' && s.ruleBook && s.ruleBook.cards > 0)).map((s) => s.id));
       this.cache = chunks.filter((c) => !inactive.has(c.sourceId));
     } catch (err) {
       console.warn('[Retrieval Service] Failed to load chunks:', err.message);
@@ -272,7 +273,7 @@ class RetrievalService {
     const chunks = textExtractService.chunk(extracted.text);
     if (!chunks.length) throw new Error('Could not split this file into any usable text.');
 
-    return this.persist(
+    const out = await this.persist(
       {
         type: 'document',
         title: (title || '').trim() || extracted.title || filename,
@@ -282,6 +283,10 @@ class RetrievalService {
       },
       chunks.map((text) => ({ text }))
     );
+    // The Rule Book splits the document along its own lines, which the overlapping chunks
+    // cannot reproduce exactly — hand the caller the text as extracted.
+    out.text = extracted.text;
+    return out;
   }
 
   /** Crawl and index a website. Throws with a human-readable message if the site blocks us. */

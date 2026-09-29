@@ -491,26 +491,40 @@ class AIService {
   }
 
   /**
-   * The business-facts block of the system prompt. When the owner has uploaded rule documents
-   * (services/rules.js) those ARE the facts and replace this block entirely, so the client can
-   * change a price, a phone number or a policy by uploading a new document — no deploy. The
-   * built-in list below (from the owner's first guide, 2026-09-28) is only the fallback for a
-   * store with no rule documents. Never put a fact in both places: two versions of one fact in
-   * the same prompt is how a model ends up quoting the stale one.
+   * The built-in business facts, each tagged with the Rule Book topic it answers. They are the
+   * whole STORE FACTS block for a store with no rule documents. Once the owner's documents
+   * cover a topic, that topic's built-in line is dropped — never put a fact in both places: two
+   * versions of one fact in the same prompt is how a model ends up quoting the stale one.
    */
-  storeFactsBlock() {
-    return rulesService.promptBlock() || `STORE FACTS — approved by the owner. These are the ONLY answers to these topics; never contradict or embellish them:
-- Imported jerseys come in 4 versions:
+  builtinFacts() {
+    return [
+      { topic: 'versions', text: `- Imported jerseys come in 4 versions:
   • FC Set — jersey + shorts, embroidered badges. ONLY the FC Set comes with shorts.
   • Master Version and Fan Version are the SAME version (two names for one product) — premium embroidery + premium fabric. Never describe a difference between them; "master version iruka?" and "fan version iruka?" are the same request.
   • Player Version — dry-fit fabric + heat-pressed logos and badges.
   • Retro Version — vintage-style jersey + premium embroidery + premium fabric.
-- "Which version is best?" → it depends on the customer's preference; if they ask for OUR recommendation, it is Player Version.
-- Player/own name on the back is NOT included by default. Name customisation costs ₹300 extra.
-- Delivery: standard 5–7 working days; customised jerseys 8–10 working days. Never promise an exact date. Shipping is free.
-- Cash on Delivery is NOT available (see PAYMENT below).
-- Wholesale / bulk / reseller enquiries → reply with exactly: "For Wholesale Prices, Collections & Enquiries Contact: ${config.support.wholesaleNumber}". Never quote wholesale prices.
-- Giveaway → it was cancelled for now due to some issues and will be announced soon. Never invent dates, prizes, winners or reasons.`;
+- "Which version is best?" → it depends on the customer's preference; if they ask for OUR recommendation, it is Player Version.` },
+      { topic: 'customisation', text: '- Player/own name on the back is NOT included by default. Name customisation costs ₹300 extra.' },
+      { topic: 'delivery', text: '- Delivery: standard 5–7 working days; customised jerseys 8–10 working days. Never promise an exact date. Shipping is free.' },
+      { topic: 'payment', text: '- Cash on Delivery is NOT available (see PAYMENT below).' },
+      { topic: 'wholesale', text: `- Wholesale / bulk / reseller enquiries → reply with exactly: "For Wholesale Prices, Collections & Enquiries Contact: ${config.support.wholesaleNumber}". Never quote wholesale prices.` },
+      { topic: 'giveaway', text: '- Giveaway → it was cancelled for now due to some issues and will be announced soon. Never invent dates, prizes, winners or reasons.' },
+    ];
+  }
+
+  /**
+   * The business-facts block of the system prompt. With owner rule documents in the Rule Book
+   * (services/rules.js) the owner's "always" rules lead, the owner's topic rules arrive with
+   * each message, and only the built-in facts for topics the documents do not cover remain.
+   * Payment stays enforced by config regardless (see _paymentReply).
+   */
+  storeFactsBlock() {
+    const header = 'STORE FACTS — approved by the owner. These are the ONLY answers to these topics; never contradict or embellish them:';
+    const facts = (list) => list.map(f => f.text).join('\n');
+    if (!rulesService.hasRules()) return `${header}\n${facts(this.builtinFacts())}`;
+    const covered = rulesService.coveredTopics();
+    const rest = this.builtinFacts().filter(f => !covered.has(f.topic));
+    return rulesService.promptBlock(rest.length ? `Built-in store facts (for topics the owner's documents do not cover):\n${facts(rest)}` : '');
   }
 
   generateSystemPrompt(session) {
@@ -2954,8 +2968,9 @@ ${sessionContext}`;
       // The owner's 2026-09-28 guide: no return/exchange policy is stated; the team decides.
       const looksLikeRefund = /\b(refund|money back|cashback|return my money|my money back)\b/i.test(userQuery);
 
-      // An FAQ answer that the owner's uploaded rules contradict is never served — that
-      // question goes to the agent, which has the rules in its prompt (services/rules.js).
+      // An FAQ answer whose numbers (price, days, phone) are not in the owner's rule cards on
+      // that topic is never served — the question goes to the agent, which gets those cards
+      // with the message (services/rules.js). An FAQ that agrees stays free.
       await rulesService.refresh();
       const overridden = rulesService.disabledFaqCategories();
       const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? []
@@ -3045,7 +3060,7 @@ ${sessionContext}`;
       }
     }
 
-    await rulesService.refresh(); // generateSystemPrompt reads the owner rules synchronously
+    await rulesService.refresh(); // generateSystemPrompt + contextFor read the Rule Book synchronously
     let messages = [
       { role: "system", content: this.generateSystemPrompt(session) }
     ];
@@ -3084,6 +3099,23 @@ ${sessionContext}`;
     // chunk set), and this runs only on the LLM path — the deterministic fast paths
     // (FAQ, confident Q&A match, size/qty parsing, order confirmation) return before
     // reaching here and stay zero-latency.
+    // --- Owner's Rule Book (services/rules.js) ---
+    // The rule cards from the owner's documents that are about THIS message's topic. Placed
+    // after the Q&A note and before any website excerpt: a hand-typed answer is the most
+    // specific, the owner's documents come next, crawled pages last. Chosen by the bilingual
+    // topic word list in code — no AI call, no embedding — and nothing when no topic matches.
+    try {
+      const prevUser = [...session.history].reverse().find(m => m.role === 'user')?.content || '';
+      const ruleContext = rulesService.contextFor(userQuery, prevUser);
+      if (ruleContext) {
+        const { _count, ...message } = ruleContext;
+        messages.push(message);
+        console.log(`[Rules] Injected ${_count} owner rule card(s) into context`);
+      }
+    } catch (err) {
+      console.warn('[AI Service] Rule Book injection skipped:', err.message);
+    }
+
     try {
       const contextMessage = await retrievalService.buildContextMessage(userQuery);
       if (contextMessage) {

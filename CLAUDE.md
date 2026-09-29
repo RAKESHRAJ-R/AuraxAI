@@ -57,7 +57,7 @@ npm run check-woo      # WooCommerce REST connectivity — tests BOTH credential
                        # a deploy. Exit code 1 when nothing can both read and order.
 npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
 npm run test-followup  # Cold-lead follow-up guards (no-loop, age, per-run caps) — stubbed, sends nothing
-npm run test-owner-rules # Uploaded rule documents → prompt, FAQ override, newer-wins (stubbed LLM, free)
+npm run test-owner-rules # Rule Book: documents → rule cards, per-topic selection, FAQ number guard, version merge (no AI, free)
 npm run test-store-facts # Owner's guide facts (versions, ₹300 name, delivery, wholesale, giveaway), FAQ-hijack + alias checks — free
 npm run test-watchdog  # WhatsApp self-healing (hung/crashed/runaway Chrome, leaked session lock) — stubbed, no browser
 npm run test-search    # Product-search regression from the 2026-09-20 tester reviews (60 checks):
@@ -1058,7 +1058,7 @@ Both are from the same chat, and both were being answered by a model with nothin
 `asksWhichTeams()` deliberately returns false when `extractSubject()` finds a real team in the
 message — *"Barcelona team jersey iruka?"* is a search, not a range question.
 
-### Owner's training guide built in — not via the Knowledge Hub (2026-09-28)
+### Owner's rule documents — the Rule Book (2026-09-28, reworked 2026-09-29)
 
 The owner uploaded *AURA EXCHANGE WhatsApp Chatbot Master Training Guide* (13-page PDF) to the
 Knowledge Hub and saw no change. Three reasons, all measured:
@@ -1074,31 +1074,52 @@ Knowledge Hub and saw no change. Three reasons, all measured:
    retrieved when a query happens to resemble them.
 
 **The fix is a mechanism, not a copy of the PDF — the client will keep sending new versions.**
-Every uploaded DOCUMENT becomes owner rules (`src/services/rules.js`):
+Every uploaded DOCUMENT goes into the **Rule Book** (`src/services/rules.js`) — split by code,
+**no AI call anywhere**:
 
 | Step | Where | Rule |
 |---|---|---|
-| Upload → condensed ONCE into a ≤4000-char rule sheet | `rulesService.digest()`, called by the upload route | one LLM call per upload (Sarvam → Fireworks → Groq), never per message. Exact prices, numbers, phone numbers and approved wordings kept verbatim; examples/test cases dropped |
-| Same call names the built-in FAQ answers the document contradicts | `faqConflicts` on the source | the FAQ fast path skips those categories while the document is active, so the agent answers them from the rules |
-| Every active sheet goes in every system prompt | `storeFactsBlock()` in `ai.js` | **replaces** the built-in STORE FACTS entirely (two versions of one fact in one prompt is how the stale one gets quoted). Sits in the static prefix, so it is prompt-cached |
-| Newer upload wins | `promptBlock()` | sheets ordered oldest → newest, prompt says the later one wins |
-| Rule documents are not RAG-searched | `retrieval.getChunks()` | a rules doc is full of "WRONG: …" example lines that read as fact out of context |
-| A doc with no rules (`RULES: NONE`) | — | stays plain reference material, searched as before |
-| Staff can view / hand-edit / re-read the sheet | Knowledge Hub → sources → *View rules* | `PUT /api/knowledge/sources/:id/rules`, `POST …/rules/regenerate` (`knowledge.sources`) |
-| Docs uploaded before this existed | `rulesService.backfill()`, 12s after boot | one call each, once. A failed read is **not** retried on later boots — it waits for *Re-read* — so a bad file can't cost money on every restart |
+| Upload → split into rule cards along the document's own headings and bullets | `splitIntoCards()`, called by `rulesService.ingest()` from the upload route | nothing summarised, every line kept. Wrapped PDF lines are joined, `■300` → `₹300`, page markers and the contents page dropped. A section over 900 chars becomes several cards, never cut mid-line |
+| Each card is tagged with topics | `tagTopics()` + `BUILTIN_TOPICS` | bilingual English + Tanglish word list; heading words count triple. Staff add words / new topics on the Rule book tab (`meta` key `rulebook:topicWords`) |
+| Tone / language / never-do sections are "always" cards | `ALWAYS_HEADING_RE` | in the system prompt (cached prefix), capped at 3500 chars |
+| Topic cards arrive with the message they are about | `contextFor()`, injected in `answerQuery` before the website RAG | same word list on the customer's message (works for Tanglish, unlike MiniLM); falls back to shared distinctive words, then the previous message's topics. ≤2000 chars; none when no topic matches |
+| A new version MERGES | `ingest()` — same `docKey` (title minus `v2`/`final`/`(1)`/dates) or an explicit *"new version of"* pick | changed cards update (and beat an older hand edit), new ones are added, a card the new version lacks is marked **missing** and stays in use until staff press Keep or Remove. The older version's source record is deleted; its rules live on in the cards |
+| A different document ADDS | — | newest document's cards are listed first; the prompt says the newer one wins |
+| Stale built-in FAQ answers step aside | `faqConflicts()` | an FAQ is served for free only if every number in it (price, days, phone) also appears in the owner's cards on that topic — ₹100 vs ₹300, 3–5 vs 5–7, an old phone number all switch it off |
+| Built-in STORE FACTS | `builtinFacts()` / `storeFactsBlock()` in `ai.js` | each fact is topic-tagged; a topic the owner's cards cover drops its built-in line (never two versions of one fact in the prompt) |
+| Document chunks are not RAG-searched | `retrieval.getChunks()` | a rules doc is full of "WRONG: …" example lines that read as fact out of context. Websites still are |
+| Docs uploaded before the Rule Book | `rulesService.backfill()`, 12s after boot | rebuilt from `fullText`, or from the overlapping chunks via `joinChunks()`. Free, so it runs every boot (no-op once done) |
 
-Turning a document off or deleting it brings the built-in facts and FAQ answers straight back.
-The built-in STORE FACTS + the faq.json corrections below are only the fallback for a store with
-no rule documents. **Keep the guide uploaded** — it IS the source now. Each active sheet costs
-~1000 input tokens per call (cached), so delete superseded versions rather than stacking them.
+Staff manage it at Knowledge Hub → **📋 Rule book**: edit a card, change its topics or "every
+reply", turn it off, Keep/Remove missing cards, add a rule by hand, and **⚡ Make a quick
+answer** (pre-fills a Q&A entry, which replies with no AI call). API: `GET /api/rulebook`,
+`POST /api/rulebook/cards`, `PUT/DELETE /api/rulebook/cards/:id`,
+`POST /api/rulebook/cards/:id/resolve {action}`, `PUT /api/rulebook/topics/:key`, and
+`POST /api/knowledge/sources/:id/rules/regenerate` (= re-split, free). Storage: `rule_cards`
+(Mongo) / `src/data/rule_cards.json`; the source keeps `fullText`, `docKey`, `ruleBook` summary.
+
+**History:** the first version (2026-09-28) had an LLM condense each document into a 4000-char
+sheet in every prompt. Replaced 2026-09-29 at the owner's request — condensing lost detail, a
+new version could silently drop rules, it cost money per upload and per message, and on the live
+server the condenser call failed outright so the documents did nothing.
+
+⚠️ **Splitting is only as good as the document's layout.** Headings (numbered, ALL CAPS, Title
+Case lines, markdown `#`) and bullets split cleanly; a wall of unstructured prose becomes one or
+a few big cards. ⚠️ **The FAQ check compares numbers only** — a built-in FAQ that disagrees in
+words but not numbers still answers. Keep `faq.json` aligned with the guide. ⚠️ **A topic the word
+list does not recognise gets no card** — add the customer's words on the Rule book tab.
+
+Turning a document off or deleting it brings the built-in facts and FAQ answers straight back
+(cards staff chose to Keep survive a delete).
 
 ⚠️ Not driven by documents: the Tanglish style rules (code), the payment gateway (Razorpay only —
 a document saying "COD available" is overridden by `_paymentReply`, which reads `config.payment`),
 and the bulk-order escalation number (`WHOLESALE_NUMBER` env). Change those in config.
 
-`npm run test-owner-rules` — 27 checks with a stubbed condenser: parsing, prompt placement,
-FAQ override, newer-wins, reference-only docs, hand edits, failure without retry-cost, and full
-restoration on delete. No paid call.
+`npm run test-owner-rules` — 70 checks, no AI at all: splitting, bilingual topics, number
+normalisation, prompt placement, per-message selection, the FAQ number guard (and an agreeing FAQ
+staying free), version merge (changed / new / missing, hand edits), keep/remove, explicit "new
+version of", staff topic words, backfill from old chunks, and full restoration on delete.
 
 Fallback content (used only with no rule documents): `faq.json` (both languages, plus new
 *Version Difference*, *FC Set Shorts* and *Giveaway* entries) and the built-in STORE FACTS.

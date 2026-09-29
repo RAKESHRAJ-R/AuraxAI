@@ -169,72 +169,301 @@ function fmtBytes(n) {
 }
 
 /**
- * What the bot took from a document as owner RULES (apps/bot/src/services/rules.js). Shown so
- * staff can check the summary is right — it goes into every reply — and fix it by hand if not.
+ * How a document sits in the Rule Book (apps/bot/src/services/rules.js). The document is split
+ * into rule cards by code — no AI, nothing summarised — and the cards are managed on the
+ * Rule book tab.
  */
-function RulesPanel({ s, canManage, onChanged }) {
+function DocRulesPanel({ s, canManage, onChanged, onOpenBook }) {
   const { api } = useAuth();
   const toast = useToast();
-  const r = s.rules;
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState(r?.text || '');
-  const [busy, setBusy] = useState('');
-  useEffect(() => { setText(r?.text || ''); }, [r?.text]);
+  const [busy, setBusy] = useState(false);
+  const rb = s.ruleBook;
 
-  const regenerate = async () => {
-    if (r?.edited && !confirm('Re-reading the document replaces your hand edits. Continue?')) return;
-    setBusy('regen');
+  const reread = async () => {
+    setBusy(true);
     try {
-      const saved = await api(`/api/knowledge/sources/${s.id}/rules/regenerate`, { method: 'POST', body: '{}' });
-      toast(saved.rules?.status === 'error' ? `Could not read the rules: ${saved.rules.error}` : 'Rules re-read from the document.', saved.rules?.status === 'error');
+      const r = await api(`/api/knowledge/sources/${s.id}/rules/regenerate`, { method: 'POST', body: '{}' });
+      toast(ruleSummaryText(r.ruleBook));
       onChanged();
     } catch (e) { toast(e.message, true); }
-    finally { setBusy(''); }
-  };
-  const save = async () => {
-    setBusy('save');
-    try {
-      await api(`/api/knowledge/sources/${s.id}/rules`, { method: 'PUT', body: JSON.stringify({ text }) });
-      toast('Rules saved — the bot uses them from the next message.');
-      onChanged();
-    } catch (e) { toast(e.message, true); }
-    finally { setBusy(''); }
+    finally { setBusy(false); }
   };
 
-  if (!r) return <div className="hint" style={{ margin: '8px 0' }}>📋 Rules: not read yet{canManage && <> — <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy ? 'Reading…' : 'Read rules now'}</button></>}</div>;
-  if (r.status === 'error') return (
-    <div className="hint" style={{ margin: '8px 0' }}>⚠️ Could not read rules from this document: {r.error}
-      {canManage && <> <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy ? 'Reading…' : 'Try again'}</button></>}
-    </div>
-  );
-  const none = (r.text || '').trim() === 'NONE';
   return (
     <div style={{ margin: '8px 0' }}>
       <div className="chips">
-        <span className={'chip' + (none ? '' : ' lang')}>{none ? 'no rules found — used as reference only' : `📋 bot rules · ${r.text.length} chars${r.edited ? ' · edited' : ''}`}</span>
-        {r.truncated && <span className="chip off">long file — only the first part was read</span>}
-        {(r.faqConflicts || []).map((c) => <span key={c} className="chip off" title="The built-in answer contradicted this document, so the bot no longer uses it">FAQ replaced: {c}</span>)}
+        {rb
+          ? <span className="chip lang">📋 {rb.cards} rule{rb.cards === 1 ? '' : 's'} in the Rule book{s.active === false ? ' (turned off)' : ''}</span>
+          : <span className="chip">📋 not in the Rule book yet</span>}
+        {rb?.missing > 0 && <span className="chip need" title="Rules the previous version had and this one does not — still used until you decide">{rb.missing} to review</span>}
       </div>
-      <button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? 'Hide rules' : 'View rules'}</button>
-      {open && (
-        <div style={{ marginTop: 8 }}>
-          <p className="hint" style={{ margin: '0 0 6px' }}>
-            The bot follows these in every reply{s.active === false ? ' (not now — this document is turned off)' : ''}. If a newer document says something different, the newer one wins.
-          </p>
-          <textarea value={text} readOnly={!canManage} rows={14} style={{ width: '100%', fontFamily: 'inherit' }} onChange={(e) => setText(e.target.value)} />
-          {canManage && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button className="btn gold sm" disabled={!!busy || text === r.text} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
-              <button className="btn ghost sm" disabled={!!busy} onClick={regenerate}>{busy === 'regen' ? 'Reading…' : 'Re-read document'}</button>
-            </div>
-          )}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ghost sm" onClick={onOpenBook}>Open Rule book</button>
+        {canManage && <button className="btn ghost sm" disabled={busy} onClick={reread}>{busy ? 'Reading…' : rb ? 'Re-read document' : 'Add to Rule book'}</button>}
+      </div>
     </div>
   );
 }
 
-function SourceCard({ s, onToggle, onDelete, canManage, onChanged }) {
+function ruleSummaryText(sum) {
+  if (!sum) return 'Done.';
+  const parts = [`${sum.cards} rules`];
+  if (sum.added) parts.push(`${sum.added} new`);
+  if (sum.changed) parts.push(`${sum.changed} changed`);
+  if (sum.unchanged) parts.push(`${sum.unchanged} unchanged`);
+  if (sum.missing) parts.push(`${sum.missing} missing from this version — check them on the Rule book tab`);
+  return `Rule book updated: ${parts.join(', ')}.`;
+}
+
+const splitWords = (v) => String(v || '').split(',').map((w) => w.trim()).filter(Boolean);
+
+function RuleCard({ c, topics, canManage, onChanged, onTeach }) {
+  const { api } = useAuth();
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(c.text);
+  const [tags, setTags] = useState((c.topics || []).join(', '));
+  const [always, setAlways] = useState(!!c.always);
+  const [showOld, setShowOld] = useState(false);
+  const label = (k) => topics.find((t) => t.key === k)?.label || k;
+  const missing = c.status === 'missing';
+
+  const call = async (fn, msg) => {
+    try { await fn(); if (msg) toast(msg); onChanged(); return true; }
+    catch (e) { toast(e.message, true); return false; }
+  };
+  const put = (body, msg) => call(() => api(`/api/rulebook/cards/${c.id}`, { method: 'PUT', body: JSON.stringify(body) }), msg);
+  const save = async () => {
+    if (await put({ text, topics: splitWords(tags), always }, 'Rule saved — the bot uses it from the next message.')) setEditing(false);
+  };
+  const resolve = (action) => {
+    if (action === 'remove' && !confirm('Remove this rule? The bot will stop following it.')) return;
+    call(() => api(`/api/rulebook/cards/${c.id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) }),
+      action === 'remove' ? 'Rule removed.' : 'Kept — later versions of the document will not touch it.');
+  };
+  const del = () => {
+    if (!confirm('Delete this rule?')) return;
+    call(() => api(`/api/rulebook/cards/${c.id}`, { method: 'DELETE' }), 'Deleted.');
+  };
+  const cancel = () => { setEditing(false); setText(c.text); setTags((c.topics || []).join(', ')); setAlways(!!c.always); };
+
+  return (
+    <div className={'entry fade' + (missing ? ' need' : '')}>
+      <h4>{c.heading}</h4>
+      {missing && <div className="noanswer">⚠️ The newest version of <strong>{c.docTitle}</strong> no longer has this rule. The bot still follows it until you choose Keep or Remove.</div>}
+      {editing ? (
+        <div>
+          <textarea value={text} rows={Math.min(14, Math.max(4, text.split('\n').length + 1))} style={{ width: '100%', fontFamily: 'inherit' }} onChange={(e) => setText(e.target.value)} />
+          <label>Topics <span className="hint">— comma separated: {topics.map((t) => t.key).join(', ')}</span></label>
+          <input value={tags} onChange={(e) => setTags(e.target.value)} />
+          <label className="check-lbl">
+            <input type="checkbox" checked={always} onChange={(e) => setAlways(e.target.checked)} />
+            Use in every reply (tone, language, never-do rules) — costs a little on every message
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="btn gold sm" onClick={save}>Save</button>
+            <button className="btn ghost sm" onClick={cancel}>Cancel</button>
+          </div>
+        </div>
+      ) : <div className="ans" style={{ whiteSpace: 'pre-wrap' }}>{c.text}</div>}
+      {showOld && c.previousText && <div className="ans" style={{ whiteSpace: 'pre-wrap', opacity: 0.7 }}><strong>Before:</strong>{'\n'}{c.previousText}</div>}
+      <div className="chips">
+        <span className="chip src">{c.manual && !c.docKey ? 'added by hand' : c.docTitle}</span>
+        {c.always
+          ? <span className="chip lang" title="Sent with every reply">every reply</span>
+          : (c.topics || []).map((t) => <span className="chip" key={t}>{label(t)}</span>)}
+        {c.fresh && !missing && <span className="chip need" title="New or changed by the latest upload">{c.previousText ? 'changed' : 'new'}</span>}
+        {c.manual && c.docKey && <span className="chip">kept by hand</span>}
+        {c.edited && <span className="chip">edited</span>}
+        {c.active === false && <span className="chip off">off</span>}
+        {c.active !== false && !c.inForce && <span className="chip off">document turned off</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {c.previousText && <button className="btn ghost sm" onClick={() => setShowOld(!showOld)}>{showOld ? 'Hide old text' : 'What changed?'}</button>}
+        {canManage && missing && <>
+          <button className="btn gold sm" onClick={() => resolve('keep')}>Keep</button>
+          <button className="btn danger sm" onClick={() => resolve('remove')}>Remove</button>
+        </>}
+        {canManage && !editing && <button className="btn ghost sm" onClick={() => setEditing(true)}>Edit</button>}
+        {canManage && c.fresh && !missing && <button className="btn ghost sm" onClick={() => put({ reviewed: true })}>Looks right</button>}
+        {canManage && <button className="btn ghost sm" onClick={() => put({ active: c.active === false }, c.active === false ? 'Rule turned on.' : 'Rule turned off.')}>{c.active === false ? 'Turn on' : 'Turn off'}</button>}
+        {onTeach && <button className="btn ghost sm" title="A quick answer is sent as written, with no AI call" onClick={() => onTeach(c)}>⚡ Make a quick answer</button>}
+        {canManage && c.manual && !missing && <button className="btn danger sm" onClick={del}>Delete</button>}
+      </div>
+    </div>
+  );
+}
+
+function TopicWords({ topics, canManage, onChanged }) {
+  const { api } = useAuth();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [drafts, setDrafts] = useState({});
+  const [newKey, setNewKey] = useState('');
+  const [newWords, setNewWords] = useState('');
+
+  const save = async (key, words, label) => {
+    try {
+      await api(`/api/rulebook/topics/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ words: splitWords(words), label }) });
+      toast('Saved — messages match the new words straight away.');
+      onChanged();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  return (
+    <div className="card pad fade" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <strong style={{ fontSize: 15 }}>🔤 Topic words</strong>
+        <button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      <p className="hint" style={{ margin: '4px 0 0' }}>
+        How the bot knows which rules a message is about. If customers ask in their own words and the bot misses the rule, add those words here.
+      </p>
+      {open && <div style={{ marginTop: 12 }}>
+        {topics.map((t) => (
+          <div key={t.key} style={{ marginBottom: 12 }}>
+            <strong>{t.label}</strong> <span className="hint">({t.key})</span>
+            <div className="hint" style={{ margin: '2px 0 6px' }}>{t.words.filter((w) => !(t.extra || []).includes(w)).join(', ')}</div>
+            {canManage && <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={drafts[t.key] ?? (t.extra || []).join(', ')}
+                placeholder="your extra words, comma separated"
+                onChange={(e) => setDrafts({ ...drafts, [t.key]: e.target.value })}
+              />
+              <button className="btn ghost sm" onClick={() => save(t.key, drafts[t.key] ?? (t.extra || []).join(', '), t.label)}>Save</button>
+            </div>}
+          </div>
+        ))}
+        {canManage && <div className="row2" style={{ marginTop: 8 }}>
+          <div><label>New topic</label><input value={newKey} placeholder="e.g. Offers" onChange={(e) => setNewKey(e.target.value)} /></div>
+          <div><label>Its words</label><input value={newWords} placeholder="offer, sale, diwali" onChange={(e) => setNewWords(e.target.value)} /></div>
+        </div>}
+        {canManage && <button className="btn ghost sm" style={{ marginTop: 8 }} disabled={!newKey.trim()} onClick={() => { save(newKey.trim(), newWords, newKey.trim()); setNewKey(''); setNewWords(''); }}>Add topic</button>}
+      </div>}
+    </div>
+  );
+}
+
+function RuleBookTab({ onTeach }) {
+  const { api, can } = useAuth();
+  const canManage = can('knowledge.sources');
+  const canTeach = can('knowledge.edit');
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [topic, setTopic] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [q, setQ] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ heading: '', text: '', topics: '', always: false });
+
+  const load = useCallback(async () => {
+    try { setData(await api('/api/rulebook')); }
+    catch (e) { toast(e.message, true); setData({ cards: [], topics: [], faqOff: [], stats: {} }); }
+  }, [api, toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const add = async () => {
+    try {
+      await api('/api/rulebook/cards', { method: 'POST', body: JSON.stringify({ ...draft, topics: splitWords(draft.topics) }) });
+      toast('Rule added — the bot uses it from the next message.');
+      setDraft({ heading: '', text: '', topics: '', always: false });
+      setAdding(false);
+      load();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  if (!data) return <div className="empty">Loading…</div>;
+  const st = data.stats || {};
+  const needle = q.trim().toLowerCase();
+  const shown = data.cards.filter((c) =>
+    (filter === 'all' || (filter === 'review' ? (c.status === 'missing' || c.fresh) : filter === 'always' ? c.always : c.active === false))
+    && (!topic || (c.topics || []).includes(topic))
+    && (!needle || `${c.heading}\n${c.text}`.toLowerCase().includes(needle)));
+
+  return (
+    <div className="fade">
+      <div className="card pad" style={{ marginBottom: 16 }}>
+        <strong style={{ fontSize: 15 }}>📋 The Rule book</strong>
+        <p className="hint" style={{ margin: '6px 0 0' }}>
+          Every document you upload is split into small rules — no AI, nothing shortened, nothing lost. For each customer
+          message the bot is given only the rules on that topic. Upload a new version any time: changed rules update,
+          new ones are added, and a rule the new version leaves out stays in use until you choose to keep or remove it.
+        </p>
+        <div className="chips" style={{ marginTop: 10 }}>
+          <span className="chip lang">{st.inForce || 0} rules in use</span>
+          <span className="chip">{st.always || 0} used in every reply</span>
+          {st.missing > 0 && <span className="chip need">{st.missing} to review</span>}
+        </div>
+        {st.alwaysChars > st.alwaysLimit && (
+          <div className="noanswer" style={{ marginTop: 8 }}>
+            ⚠️ The "every reply" rules are {st.alwaysChars} characters, over the {st.alwaysLimit} limit — the last ones are left out.
+            Edit some and untick "Use in every reply" so they are used only for their topic.
+          </div>
+        )}
+        {data.faqOff.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <div className="hint">Built-in quick answers switched off because your rules say different numbers:</div>
+            <div className="chips">{data.faqOff.map((f) => <span key={f.category} className="chip off" title={f.reason}>{f.category} — {f.reason}</span>)}</div>
+          </div>
+        )}
+      </div>
+
+      <TopicWords topics={data.topics} canManage={canManage} onChanged={load} />
+
+      {canManage && (adding ? (
+        <div className="card pad fade" style={{ marginBottom: 20 }}>
+          <strong style={{ fontSize: 15 }}>Add a rule</strong>
+          <label>Title</label>
+          <input value={draft.heading} placeholder="e.g. Diwali offer" onChange={(e) => setDraft({ ...draft, heading: e.target.value })} />
+          <label>Rule</label>
+          <textarea value={draft.text} placeholder="e.g. 10% off every jersey until 5 November." onChange={(e) => setDraft({ ...draft, text: e.target.value })} />
+          <label>Topics <span className="hint">— leave empty to detect automatically</span></label>
+          <input value={draft.topics} placeholder={data.topics.slice(0, 5).map((t) => t.key).join(', ')} onChange={(e) => setDraft({ ...draft, topics: e.target.value })} />
+          <label className="check-lbl">
+            <input type="checkbox" checked={draft.always} onChange={(e) => setDraft({ ...draft, always: e.target.checked })} />
+            Use in every reply
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn gold sm" onClick={add}>💾 Add rule</button>
+            <button className="btn ghost sm" onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : <button className="btn gold" style={{ marginBottom: 16 }} onClick={() => setAdding(true)}>➕ Add a rule by hand</button>)}
+
+      <div className="row2" style={{ marginBottom: 12 }}>
+        <div>
+          <label>Show</label>
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="all">All rules</option>
+            <option value="review">To review (new, changed, missing)</option>
+            <option value="always">Used in every reply</option>
+            <option value="off">Turned off</option>
+          </select>
+        </div>
+        <div>
+          <label>Topic</label>
+          <select value={topic} onChange={(e) => setTopic(e.target.value)}>
+            <option value="">All topics</option>
+            {data.topics.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            <option value="general">General (no topic found)</option>
+          </select>
+        </div>
+      </div>
+      <input value={q} placeholder="Search the rules…" onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 12 }} />
+
+      <div className="section-head">
+        <strong style={{ fontSize: 15 }}>Rules</strong>
+        <span className="count">{shown.length}</span>
+      </div>
+      {data.cards.length === 0
+        ? <div className="empty">No rules yet. Upload your rules document on the Knowledge sources tab.</div>
+        : shown.length === 0 ? <div className="empty">Nothing matches.</div>
+        : shown.map((c) => <RuleCard key={c.id} c={c} topics={data.topics} canManage={canManage} onChanged={load} onTeach={canTeach ? onTeach : null} />)}
+    </div>
+  );
+}
+
+function SourceCard({ s, onToggle, onDelete, canManage, onChanged, onOpenBook }) {
   const off = s.active === false;
   return (
     <div className={'entry fade' + (s.status === 'error' ? ' flag' : '')}>
@@ -250,7 +479,7 @@ function SourceCard({ s, onToggle, onDelete, canManage, onChanged }) {
         <span className={'chip' + (s.embedded ? ' lang' : '')}>{s.embedded ? 'semantic search' : 'keyword only'}</span>
         {off && <span className="chip off">inactive</span>}
       </div>
-      {s.type === 'document' && <RulesPanel s={s} canManage={canManage} onChanged={onChanged} />}
+      {s.type === 'document' && <DocRulesPanel s={s} canManage={canManage} onChanged={onChanged} onOpenBook={onOpenBook} />}
       {canManage && (
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn ghost sm" onClick={() => onToggle(s)}>{off ? 'Turn on' : 'Turn off'}</button>
@@ -261,7 +490,7 @@ function SourceCard({ s, onToggle, onDelete, canManage, onChanged }) {
   );
 }
 
-function SourcesTab() {
+function SourcesTab({ onOpenBook }) {
   const { api, token, can } = useAuth();
   const canManage = can('knowledge.sources');
   const toast = useToast();
@@ -271,6 +500,7 @@ function SourcesTab() {
   const [maxPages, setMaxPages] = useState(15);
   const [maxDepth, setMaxDepth] = useState(2);
   const [file, setFile] = useState(null);
+  const [replaces, setReplaces] = useState('');
 
   const load = useCallback(async () => {
     try { setData(await api('/api/knowledge/sources')); }
@@ -303,6 +533,7 @@ function SourcesTab() {
       // Content-Type: application/json, which would corrupt a multipart upload.
       const form = new FormData();
       form.append('file', file);
+      if (replaces) form.append('replaces', replaces);
       const res = await fetch(apiUrl('/api/knowledge/sources/document'), {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + token },
@@ -310,14 +541,10 @@ function SourcesTab() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'Upload failed');
-      const rules = body.source?.rules;
-      toast(rules?.status === 'error'
-        ? `Uploaded "${body.source.title}", but its rules could not be read: ${rules.error}`
-        : rules && rules.text?.trim() !== 'NONE'
-          ? `"${body.source.title}" uploaded — the bot now follows its rules. Check them under "View rules".`
-          : `Uploaded "${body.source.title}" as reference material (no rules found in it).`, rules?.status === 'error');
+      toast(`"${body.source.title}" uploaded. ${ruleSummaryText(body.ruleBook)}`);
       if (body.embeddingNote) toast(body.embeddingNote, true);
       setFile(null);
+      setReplaces('');
       document.getElementById('kb-file').value = '';
       load();
     } catch (e) { toast(e.message, true); }
@@ -330,7 +557,7 @@ function SourcesTab() {
   };
 
   const del = async (id) => {
-    if (!confirm('Delete this source? The bot will stop using its content.')) return;
+    if (!confirm('Delete this source? The bot will stop using its content — for a document, its rules leave the Rule book too (except ones you chose to keep).')) return;
     try { await api('/api/knowledge/sources/' + id, { method: 'DELETE' }); toast('Deleted.'); load(); }
     catch (e) { toast(e.message, true); }
   };
@@ -392,11 +619,20 @@ function SourcesTab() {
         <strong style={{ fontSize: 15 }}>📄 Document</strong>
         <p className="hint" style={{ margin: '4px 0 12px' }}>
           Upload your rules or policy document — prices, delivery, what the bot must and must never say.
-          The bot reads it and follows it in every reply; upload a newer version any time and the newer
-          one wins. PDF, DOCX, TXT, MD or HTML — max 20 MB. Scanned/photo PDFs won't work; the file needs
-          real selectable text.
+          It is split into small rules on the Rule book tab (free — no AI). Headings and bullet points help it
+          split cleanly. Upload a newer version any time: changes update, nothing is dropped without asking you.
+          PDF, DOCX, TXT, MD or HTML — max 20 MB. Scanned/photo PDFs won't work; the file needs real selectable text.
         </p>
         <input id="kb-file" type="file" accept=".pdf,.docx,.txt,.md,.html,.htm" onChange={(e) => setFile(e.target.files[0] || null)} />
+        {data && data.sources.some((x) => x.type === 'document') && (
+          <>
+            <label>This is a new version of <span className="hint">— optional; a file with the same name is recognised anyway</span></label>
+            <select value={replaces} onChange={(e) => setReplaces(e.target.value)}>
+              <option value="">A new document (or recognise it by name)</option>
+              {data.sources.filter((x) => x.type === 'document').map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}
+            </select>
+          </>
+        )}
         <button className="btn gold" style={{ marginTop: 14 }} disabled={busy === 'document'} onClick={addDocument}>
           {busy === 'document' ? 'Reading the document… (up to a minute)' : '📄 Upload & index'}
         </button>
@@ -421,7 +657,7 @@ function SourcesTab() {
       </div>
       {data === null ? <div className="empty">Loading…</div>
         : data.sources.length === 0 ? <div className="empty">No sources yet. Add a website or upload a document above ☝️</div>
-        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} canManage={canManage} onChanged={load} />)}
+        : data.sources.map((s) => <SourceCard key={s.id} s={s} onToggle={toggle} onDelete={del} canManage={canManage} onChanged={load} onOpenBook={onOpenBook} />)}
     </div>
   );
 }
@@ -486,6 +722,14 @@ export default function Knowledge() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // A rule card → a Q&A draft. A Q&A answer is sent exactly as written with no AI call, so
+  // the owner can turn a rule into a free, instant reply (rewriting it for the customer first).
+  const teachFromRule = (c) => {
+    setDraft({ ...BLANK, question: c.heading.replace(/^\d+(\.\d+)*[.)]?\s*/, ''), answer: c.text, keywords: '', _seeded: true });
+    setSub('teach');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div className="fade">
       <div className="section-head">
@@ -494,10 +738,12 @@ export default function Knowledge() {
       <div className="subtabs">
         <button className={'subtab' + (sub === 'teach' ? ' active' : '')} onClick={() => setSub('teach')}>📚 Teach the bot</button>
         <button className={'subtab' + (sub === 'sources' ? ' active' : '')} onClick={() => setSub('sources')}>🗂 Knowledge sources</button>
+        <button className={'subtab' + (sub === 'rulebook' ? ' active' : '')} onClick={() => setSub('rulebook')}>📋 Rule book</button>
         <button className={'subtab' + (sub === 'review' ? ' active' : '')} onClick={() => setSub('review')}>🔎 Review mistakes</button>
       </div>
       {sub === 'teach' ? <TeachTab draft={draft} setDraft={setDraft} />
-        : sub === 'sources' ? <SourcesTab />
+        : sub === 'sources' ? <SourcesTab onOpenBook={() => setSub('rulebook')} />
+        : sub === 'rulebook' ? <RuleBookTab onTeach={teachFromRule} />
         : <ReviewTab onTeach={teachFrom} />}
     </div>
   );

@@ -433,7 +433,8 @@ app.get('/api/knowledge/sources', requirePermission('knowledge.view'), async (re
       dbService.getKnowledgeStorageUsage(),
     ]);
     res.json({
-      sources,
+      // fullText is the whole document — the list does not need it.
+      sources: sources.map(({ fullText, ...rest }) => rest),
       usage,
       // Surfaced in the UI so the owner knows whether they're getting semantic search
       // or the keyword-only fallback — otherwise a silent downgrade looks like a bug.
@@ -463,11 +464,13 @@ app.post('/api/knowledge/sources/document', requirePermission('knowledge.sources
         title: req.body?.title,
       });
       console.log(`[Server] Indexed document "${result.source.title}" — ${result.chunks} chunks, embedded=${result.embedded}`);
-      // Read the owner's rules out of it now, so they are live on the very next message.
-      // One LLM call per upload; a failure is recorded on the source, never fails the upload.
-      const withRules = await rulesService.digest(result.source.id);
-      if (withRules) result.source = withRules;
-      await adminAuth.record(req, 'sources.document', `Uploaded the document "${result.source.title}" (${result.chunks} chunks)`);
+      // Split it into the Rule Book now, so its rules are live on the very next message.
+      // Free — no AI call. `replaces` = "this is a new version of that document".
+      const ruled = await rulesService.ingest(result.source.id, { text: result.text, replaces: req.body?.replaces || null });
+      if (ruled) { result.source = ruled.source; result.ruleBook = ruled.summary; }
+      delete result.text;
+      if (result.source) delete result.source.fullText;
+      await adminAuth.record(req, 'sources.document', `Uploaded the document "${result.source.title}"${result.ruleBook ? ` (${result.ruleBook.cards} rules: ${result.ruleBook.added} new, ${result.ruleBook.changed} changed, ${result.ruleBook.missing} missing)` : ''}`);
       res.json(result);
     } catch (err) {
       // Extraction failures are almost always the owner's file being unreadable
@@ -514,37 +517,93 @@ app.post('/api/knowledge/sources/:id/toggle', requirePermission('knowledge.sourc
   }
 });
 
-// Read the rules out of a document again — after a failure, or to undo a hand edit.
+// Split a document into the Rule Book again (free). Unchanged rules and hand edits stay as they are.
 app.post('/api/knowledge/sources/:id/rules/regenerate', requirePermission('knowledge.sources'), async (req, res) => {
   try {
-    const saved = await rulesService.digest(req.params.id);
-    if (!saved) return res.status(404).json({ error: 'Document not found' });
+    const out = await rulesService.ingest(req.params.id);
+    if (!out) return res.status(404).json({ error: 'Document not found' });
     retrievalService.invalidate();
-    await adminAuth.record(req, 'sources.rules', `Re-read the rules from "${saved.title}"${saved.rules?.status === 'error' ? ' (failed)' : ''}`);
-    res.json(saved);
+    await adminAuth.record(req, 'sources.rules', `Re-read "${out.source.title}" into the Rule Book (${out.summary.cards} rules)`);
+    const { fullText, ...source } = out.source;
+    res.json({ source, ruleBook: out.summary });
   } catch (err) {
     console.error('[Server] POST rules/regenerate error:', err.message);
-    res.status(500).json({ error: 'Failed to read the rules' });
+    res.status(500).json({ error: 'Failed to read the document' });
   }
 });
 
-// Correct the rule sheet by hand. Used word-for-word from the next message on.
-app.put('/api/knowledge/sources/:id/rules', requirePermission('knowledge.sources'), async (req, res) => {
+// --- Rule Book (owner documents as rule cards — services/rules.js) ---
+app.get('/api/rulebook', requirePermission('knowledge.view'), async (req, res) => {
   try {
-    const saved = await rulesService.setText(req.params.id, req.body?.text);
-    if (!saved) return res.status(404).json({ error: 'Document not found' });
-    retrievalService.invalidate();
-    await adminAuth.record(req, 'sources.rules', `Edited the rules from "${saved.title}"`);
-    res.json(saved);
+    res.json(await rulesService.overview());
   } catch (err) {
-    console.error('[Server] PUT rules error:', err.message);
-    res.status(500).json({ error: 'Failed to save the rules' });
+    console.error('[Server] GET /api/rulebook error:', err.message);
+    res.status(500).json({ error: 'Failed to load the Rule Book' });
+  }
+});
+
+app.post('/api/rulebook/cards', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const card = await rulesService.addCard(req.body || {});
+    await adminAuth.record(req, 'rulebook.add', `Added the rule "${card.heading}"`);
+    res.json(card);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/rulebook/cards/:id', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const card = await rulesService.updateCard(req.params.id, req.body || {});
+    if (!card) return res.status(404).json({ error: 'Rule not found' });
+    await adminAuth.record(req, 'rulebook.edit', `Edited the rule "${card.heading}"`);
+    res.json(card);
+  } catch (err) {
+    console.error('[Server] PUT /api/rulebook/cards error:', err.message);
+    res.status(500).json({ error: 'Failed to save the rule' });
+  }
+});
+
+// A rule the newest version of its document no longer has: keep it, or remove it.
+app.post('/api/rulebook/cards/:id/resolve', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const action = req.body?.action === 'remove' ? 'remove' : 'keep';
+    const out = await rulesService.resolveMissing(req.params.id, action);
+    if (!out) return res.status(404).json({ error: 'Rule not found' });
+    await adminAuth.record(req, 'rulebook.resolve', `${action === 'remove' ? 'Removed' : 'Kept'} a rule missing from the new document version`);
+    res.json(out);
+  } catch (err) {
+    console.error('[Server] POST /api/rulebook/cards/resolve error:', err.message);
+    res.status(500).json({ error: 'Failed to update the rule' });
+  }
+});
+
+app.delete('/api/rulebook/cards/:id', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const ok = await rulesService.deleteCard(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Rule not found' });
+    await adminAuth.record(req, 'rulebook.delete', 'Deleted a rule from the Rule Book');
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('[Server] DELETE /api/rulebook/cards error:', err.message);
+    res.status(500).json({ error: 'Failed to delete the rule' });
+  }
+});
+
+app.put('/api/rulebook/topics/:key', requirePermission('knowledge.sources'), async (req, res) => {
+  try {
+    const topic = await rulesService.setTopicWords(req.params.key, req.body || {});
+    await adminAuth.record(req, 'rulebook.topic', `Updated the words for the topic "${topic.label}"`);
+    res.json(topic);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
 app.delete('/api/knowledge/sources/:id', requirePermission('knowledge.sources'), async (req, res) => {
   try {
     const source = (await dbService.getAllKnowledgeSources()).find(s => s.id === req.params.id);
+    await rulesService.removeDocument(source);
     await dbService.deleteKnowledgeSource(req.params.id);
     retrievalService.invalidate();
     rulesService.invalidate();
@@ -654,8 +713,8 @@ app.listen(PORT, () => {
   const ORDERING_HEALTH_INTERVAL_MS = 15 * 60 * 1000;
   setTimeout(() => { woocommerceService.checkOrderingHealth(); }, 6000);
 
-  // Documents uploaded before owner rules existed get their rules read once, here. Failures
-  // are not retried on later boots (see rulesService.backfill), so this can't loop on cost.
+  // Documents not yet in the Rule Book (uploaded before it existed) are split into rule cards
+  // here. Free — no AI call — so it is safe on every boot.
   setTimeout(() => {
     rulesService.backfill().catch(err => console.error('[Rules] Backfill failed:', err.message));
   }, 12000);

@@ -20,6 +20,8 @@ const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
 // (each carries an embedding vector).
 const KNOWLEDGE_SOURCES_FILE = path.join(DATA_DIR, 'knowledge_sources.json');
 const KNOWLEDGE_CHUNKS_FILE = path.join(DATA_DIR, 'knowledge_chunks.json');
+// The Rule Book: owner documents split into small rule cards (services/rules.js).
+const RULE_CARDS_FILE = path.join(DATA_DIR, 'rule_cards.json');
 // Missed-message catch-up: `meta` holds the watermark (the newest message timestamp we
 // have definitely handled), `catchup_queue` holds chats that were missed and are waiting
 // to be answered at a safe drip rate. Both MUST be persistent — the whole point is that a
@@ -82,6 +84,9 @@ class DatabaseService {
     }
     if (!fs.existsSync(KNOWLEDGE_CHUNKS_FILE)) {
       fs.writeFileSync(KNOWLEDGE_CHUNKS_FILE, JSON.stringify([]), 'utf-8');
+    }
+    if (!fs.existsSync(RULE_CARDS_FILE)) {
+      fs.writeFileSync(RULE_CARDS_FILE, JSON.stringify([]), 'utf-8');
     }
     if (!fs.existsSync(META_FILE)) {
       fs.writeFileSync(META_FILE, JSON.stringify({}), 'utf-8');
@@ -600,8 +605,13 @@ class DatabaseService {
       embedded: source.embedded === true,
       language: ['both', 'english', 'tanglish'].includes(source.language) ? source.language : 'both',
       active: source.active !== false,
-      // Owner rule sheet condensed from a document — see services/rules.js.
-      rules: source.rules && typeof source.rules === 'object' ? source.rules : null,
+      // Rule Book bookkeeping for a document — see services/rules.js. `fullText` is the
+      // extracted text as uploaded (chunks overlap, so they cannot rebuild it exactly),
+      // `docKey` groups versions of the same document, `ruleBook` is the last split summary.
+      fullText: typeof source.fullText === 'string' ? source.fullText : null,
+      docKey: source.docKey || null,
+      supersededBy: source.supersededBy || null,
+      ruleBook: source.ruleBook && typeof source.ruleBook === 'object' ? source.ruleBook : null,
       createdAt: source.createdAt || now,
       updatedAt: now,
     };
@@ -731,6 +741,79 @@ class DatabaseService {
       return records.length;
     } catch (err) {
       console.error('[Database Service] Local JSON replaceKnowledgeChunks error:', err.message);
+      return 0;
+    }
+  }
+
+  // --- Rule Book cards (owner documents split into rules — see services/rules.js) ---
+  // Shape: { id, docKey, docTitle, sourceId, key, heading, text, docText, topics[], always,
+  //          active, status:'ok'|'missing', manual, edited, topicsEdited, order, createdAt,
+  //          updatedAt, changedAt, previousText }
+
+  async getAllRuleCards() {
+    if (this.useMongo) {
+      try {
+        return await this.db.collection('rule_cards').find({}, { projection: { _id: 0 } }).toArray();
+      } catch (err) {
+        console.error('[Database Service] MongoDB getAllRuleCards error:', err.message);
+        return [];
+      }
+    }
+    try {
+      return JSON.parse(fs.readFileSync(RULE_CARDS_FILE, 'utf-8'));
+    } catch (err) {
+      console.error('[Database Service] Local JSON getAllRuleCards error:', err.message);
+      return [];
+    }
+  }
+
+  /** Upsert many cards by id in one write. */
+  async saveRuleCards(cards) {
+    const records = (cards || []).filter(c => c && c.id);
+    if (!records.length) return 0;
+    if (this.useMongo) {
+      try {
+        await this.db.collection('rule_cards').bulkWrite(records.map(({ _id, ...c }) => ({
+          replaceOne: { filter: { id: c.id }, replacement: c, upsert: true },
+        })));
+        return records.length;
+      } catch (err) {
+        console.error('[Database Service] MongoDB saveRuleCards error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(RULE_CARDS_FILE, 'utf-8'));
+      const byId = new Map(all.map((c, i) => [c.id, i]));
+      for (const c of records) {
+        if (byId.has(c.id)) all[byId.get(c.id)] = c;
+        else { byId.set(c.id, all.length); all.push(c); }
+      }
+      fs.writeFileSync(RULE_CARDS_FILE, JSON.stringify(all, null, 2), 'utf-8');
+      return records.length;
+    } catch (err) {
+      console.error('[Database Service] Local JSON saveRuleCards error:', err.message);
+      return 0;
+    }
+  }
+
+  async deleteRuleCards(ids) {
+    const drop = new Set(ids || []);
+    if (!drop.size) return 0;
+    if (this.useMongo) {
+      try {
+        const r = await this.db.collection('rule_cards').deleteMany({ id: { $in: [...drop] } });
+        return r.deletedCount || 0;
+      } catch (err) {
+        console.error('[Database Service] MongoDB deleteRuleCards error:', err.message);
+      }
+    }
+    try {
+      const all = JSON.parse(fs.readFileSync(RULE_CARDS_FILE, 'utf-8'));
+      const next = all.filter(c => !drop.has(c.id));
+      fs.writeFileSync(RULE_CARDS_FILE, JSON.stringify(next, null, 2), 'utf-8');
+      return all.length - next.length;
+    } catch (err) {
+      console.error('[Database Service] Local JSON deleteRuleCards error:', err.message);
       return 0;
     }
   }
