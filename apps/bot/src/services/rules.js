@@ -229,22 +229,34 @@ async function defaultLLM(messages) {
     ...ai.groqClients.map(c => ({ c, provider: 'groq', model: config.groq.model, extra: {} })),
   ];
   if (!candidates.length) throw new Error('No AI provider is configured to read the document.');
-  let lastErr;
+  // Every provider's failure is logged AND kept: an empty reply used to be recorded silently,
+  // so when Sarvam (a reasoning model) spent its whole budget thinking, only the later
+  // providers' errors appeared and it looked as if Sarvam had never been tried.
+  const failures = [];
   for (const { c, provider, model } of candidates) {
     try {
       const msgs = provider === 'sarvam'
         ? messages.map((m, i) => (i === 0 ? { ...m, content: `${m.content} /no_think` } : m))
         : messages;
-      const r = await c.chat.completions.create({ model, messages: msgs, max_tokens: 3000, temperature: 0.1 });
-      const content = r.choices?.[0]?.message?.content;
+      // Reasoning models (Sarvam, DeepSeek) count their thinking against max_tokens, and a
+      // ~4000-char rule sheet is ~1200 tokens on its own — 3000 left too little headroom.
+      const r = await c.chat.completions.create({ model, messages: msgs, max_tokens: 8000, temperature: 0.1 });
+      const choice = r.choices?.[0];
+      const content = choice?.message?.content;
       if (content && content.trim()) return { content, provider };
-      lastErr = new Error(`${provider} returned an empty reply`);
+      const reasoning = choice?.message?.reasoning_content || choice?.message?.reasoning || '';
+      const why = `${provider} (${model}) returned an empty reply ` +
+        `(finish_reason=${choice?.finish_reason || 'unknown'}, reasoning ${reasoning.length} chars)`;
+      console.warn(`[Rules] ${why}`);
+      failures.push(why);
     } catch (err) {
-      lastErr = err;
-      console.warn(`[Rules] ${provider} failed while reading a document:`, err.message);
+      console.warn(`[Rules] ${provider} (${model}) failed while reading a document:`, err.message);
+      failures.push(`${provider} (${model}): ${err.message}`);
     }
   }
-  throw lastErr || new Error('Every AI provider failed while reading the document.');
+  throw new Error(failures.length
+    ? `Every AI provider failed while reading the document — ${failures.join(' | ')}`
+    : 'Every AI provider failed while reading the document.');
 }
 
 const rulesService = new RulesService();
