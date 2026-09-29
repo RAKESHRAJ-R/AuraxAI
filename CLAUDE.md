@@ -57,6 +57,7 @@ npm run check-woo      # WooCommerce REST connectivity — tests BOTH credential
                        # a deploy. Exit code 1 when nothing can both read and order.
 npm run test-admin-auth # Admin accounts/roles/permissions suite (temp dir, never live data)
 npm run test-followup  # Cold-lead follow-up guards (no-loop, age, per-run caps) — stubbed, sends nothing
+npm run test-tanglish-logic # Tanglish read in code, thinking on hard turns, complaint template, figures check (42, stubbed)
 npm run test-owner-rules # Rule Book: documents → rule cards, per-topic selection, FAQ number guard, version merge (no AI, free)
 npm run test-store-facts # Owner's guide facts (versions, ₹300 name, delivery, wholesale, giveaway), FAQ-hijack + alias checks — free
 npm run test-watchdog  # WhatsApp self-healing (hung/crashed/runaway Chrome, leaked session lock) — stubbed, no browser
@@ -1036,6 +1037,36 @@ It returns `[]` for English sessions, so it costs those nothing.
 deliberate and measured — see the comment above `generateSystemPrompt`, where spelling out the
 forbidden tool-call format raised `tool_use_failed` from 30% to 95%. Vocabulary is not a token
 sequence the constrained decoder can be primed into emitting; a wire format is.
+
+### Tanglish logic — read in code, think when hard (2026-09-29)
+
+Client: *"our bot is working fine in English, the main problem is in Tanglish"*, with a
+complaint reply that was meaningless in places — *"Service miss pannite ah **naurom** nu
+ninaikirenga nu puriyuthu … appo **pathi** naan immediate ah look **panniten**"*: an invented
+word, chained clauses, and a false claim to have ALREADY looked.
+
+**Why English was logical and Tanglish was not:** different models. English goes to a
+reasoning model first; Tanglish goes to Sarvam **with thinking switched off** (`/no_think`), and
+that one call had to understand unspelled romanised Tamil, decide, and write Tanglish at once.
+
+| Fix | Where | Rule |
+|---|---|---|
+| Read the message in code | `services/tanglish.js` `readingNote()`, injected right before the user message | every known Tamil word glossed with its English meaning (`varuma(=will it come / is it included?)`), questions counted and listed "answer EVERY one, in order". Tanglish only; nothing when no known word and ≤1 question |
+| Think only on hard turns | `isHard()` → `callLLMWithFallback(…, { think })` → Sarvam call omits `/no_think`, max_tokens 1500 | several questions, a comparison, a complaint/upset, or a change mid-order. ~₹0.003 and ~2.5s extra, only on those turns |
+| Complaint first reply is fixed text | `_answerQueryImpl`, after the order-state turn, intent `deterministic_complaint` | Tanglish complaint/upset, no order number in the message, no active order, not asked in the last 30 min. Human-written Tanglish: sorry, send order ID + problem + photo, team will check. The next message goes to the agent (ticket) |
+| Multi-question messages skip the FAQ | `asksSeveral` in the FAQ block | an FAQ answers one thing — *"FC set la shorts varuma? size M irukka"* used to get the FC Set answer and silently drop the size question |
+| Simpler Tanglish in the prompt | TANGLISH STYLE block | sentences under ~10 words, one Tamil verb each, no "nu … nu", promise in future tense (`check panren`), never "panniten" unless a tool did it |
+| Screenshot forms trigger a rewrite | `tanglishBadForms()` | `naurom`, `appo pathi`, `look/check/fix panniten`, `nu … ninaikirenga`, chained `nu X nu Y` |
+| Invented figures trigger a rewrite | `unsupportedFigures()` in the reply guard | a ₹ amount or N days that appears nowhere in the prompt, rules, tool results or conversation (price × qty ≤ 20 and sums of two amounts allowed). Both languages |
+
+⚠️ **The lexicon avoids ambiguous words on purpose**: `naalu` is "four" not "days", `enga` is as
+often "our" as "where". A wrong gloss is worse than none — it steers the model confidently wrong.
+⚠️ **Every new bad-form regex must pass the approved-Tanglish check** in the suite (every FAQ
+`answerTanglish` + the templates): a false positive costs a paid regeneration on good replies.
+
+`npm run test-tanglish-logic` — 42 checks, stubbed model: the screenshot reply is caught, 23
+approved texts are not, glossing/question-splitting/hard detection, `/no_think` on easy turns only,
+the complaint template and its 30-min guard, the reading note's placement, and the figures check.
 
 ### Two questions the agent had no answer for (2026-09-22)
 

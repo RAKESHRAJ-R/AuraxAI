@@ -12,7 +12,8 @@ import dbService from './db.js';
 import whatsappWebBot from './whatsapp-web-bot.js';
 import sheetsService from './sheets.js';
 import orderState from './orderState.js';
-import rulesService from './rules.js';
+import rulesService, { numbersIn } from './rules.js';
+import * as tanglishReader from './tanglish.js';
 
 class AIService {
   // --- Per-(provider, key) rate-limit throttling ---
@@ -469,6 +470,12 @@ class AIService {
       { bad: /\bungalukku\s+naan\b/i,    note: 'Google-Translate Tamil, not spoken' },
       { bad: /\bthangaludaya\b/i,        note: 'formal written Tamil, never used in chat' },
       { bad: /\bnandri\b/i,              note: 'written Tamil; a seller types "thanks bro"' },
+      // From a 2026-09-29 complaint reply the client flagged as meaningless.
+      { bad: /\bnaurom\b/i,              note: 'not a word' },
+      { bad: /\bappo\s+pathi\b/i,        note: 'wrong word ("pathi" = about/half); just "check panren"' },
+      { bad: /\b(?:look|check|fix|sort)\s+panni?tt?en\b/i, note: 'claims it is ALREADY done — promise instead: "check panren"' },
+      { bad: /\bnu\s+(?:dhaan\s+)?n[ie]n[ae]i?kk?ire?nga\b/i, note: 'guesses what the customer thinks — say it plainly' },
+      { bad: /\bnu\s+\w+\s+nu\s+\w+/i,   note: 'two "nu" clauses chained — too complicated to read; use two short sentences' },
     ];
   }
 
@@ -488,6 +495,38 @@ class AIService {
       if (hit) problems.push(`"${hit[0]}" is not real Tamil (${note})`);
     }
     return problems;
+  }
+
+  /**
+   * Prices (₹…) and delivery days in a reply that appear nowhere the model could have read
+   * them — not in the prompt, the owner's rules, a tool result or the conversation. Those are
+   * invented, and a customer holds the shop to a quoted price. Totals are allowed: a known
+   * price times a quantity up to 20, or two known amounts added together.
+   */
+  unsupportedFigures(reply, contextMessages = []) {
+    const text = String(reply || '');
+    const claimed = new Set();
+    for (const m of text.matchAll(/(?:₹|\brs\.?|\binr)\s?(\d[\d,]*)/gi)) claimed.add(m[1].replace(/,/g, ''));
+    for (const m of text.matchAll(/\b(\d{1,2})(?:\s*(?:-|–|to)\s*(\d{1,2}))?\s*(?:working\s+)?(?:days?|naal|naatkal)\b/gi)) {
+      claimed.add(m[1]);
+      if (m[2]) claimed.add(m[2]);
+    }
+    if (!claimed.size) return [];
+    const known = new Set();
+    for (const m of contextMessages) {
+      const body = typeof m?.content === 'string' ? m.content : JSON.stringify(m?.content ?? '');
+      for (const n of numbersIn(body)) known.add(n);
+      if (m?.tool_calls) for (const n of numbersIn(JSON.stringify(m.tool_calls))) known.add(n);
+    }
+    const amounts = [...known].map(Number).filter(n => n >= 100 && n < 100000);
+    const supported = (s) => {
+      if (known.has(s)) return true;
+      const n = Number(s);
+      if (amounts.some(a => n % a === 0 && n / a <= 20)) return true;
+      for (let i = 0; i < amounts.length; i++) for (let j = i; j < amounts.length; j++) if (amounts[i] + amounts[j] === n) return true;
+      return false;
+    };
+    return [...claimed].filter(s => !supported(s));
   }
 
   /**
@@ -807,6 +846,8 @@ TANGLISH STYLE (text like a smart, polite young shop executive in Tamil Nadu cha
 - Respect without sounding old: address the customer as "neenga / unga / ungaluku" and use polite "-unga" verbs (sollunga, paarunga, pannunga). Refer to the shop as "naanga / namma". Never use "nee / un", and never textbook Tamil.
 - "bro": only if the customer uses it first, and at most once in a reply. Never "machan", "mame", "da", "dei".
 - Crisp: 1–3 short sentences, straight to the answer, then ONE question that moves the order forward.
+- SIMPLE: every sentence under about 10 words, with at most ONE Tamil verb in it. Never join clauses with "nu … nu". Never describe what the customer thinks or feels — one short "sorry" is enough.
+- TENSE: promise what you WILL do — "check panren", "anuppuren", "team paapaanga". Never say you already did something ("panniten", "paathen", "anuppiten") unless a tool did it in this turn.
 
 TANGLISH — THE ONE RULE THAT MATTERS MOST:
 - If you are not 100% certain a Tamil word is REAL and SPELLED THE WAY TAMIL PEOPLE TYPE IT, use the plain English word instead. A Tamil speaker reading "Enna size venum?" thinks nothing of it. A Tamil speaker reading an invented word like "theekana" or "kaanpidaven" immediately knows they are talking to a machine.
@@ -820,6 +861,7 @@ TANGLISH WORDS YOU MAY USE (this is the safe list — prefer these, and use Engl
 - Doing: pannunga ("please do"), sollunga ("please tell"), paarunga ("please look"), anuppunga ("please send"), kaatturen ("I'll show"), anuppuren ("I'll send"), check panren ("I'll check"), add panren ("I'll add"), potten ("I've added"), aayiduchu ("it's done"), aagum ("it will take / it becomes")
 - Agreeing: seri ("ok"), kandippa ("definitely"), aamaa ("yes"), okay
 - Reacting: super, semma ("great"), nalla iruku ("it's good"), sorry
+- Problems: romba sorry ("very sorry"), order ID anuppunga ("please send the order ID"), photo anuppunga, team check pannuvaanga ("the team will check"), sort out panrom ("we will sort it out")
 - Joiners: aana ("but"), appuram ("then"), ippo ("now"), konjam ("a little"), romba ("very"), kooda ("also"), dhaan ("only / just"), mattum ("only"), -na ("if": "venumna")
 
 TANGLISH — STRICTLY NEVER DO THIS (these make you sound like a robot, not a human seller):
@@ -1100,7 +1142,7 @@ ${sessionContext}`;
     return [systemMsg, ...kept];
   }
 
-  async callLLMWithRetry(messages, client, provider = 'groq', keyIndex = 0, language = 'english') {
+  async callLLMWithRetry(messages, client, provider = 'groq', keyIndex = 0, language = 'english', opts = {}) {
     const MAX_ATTEMPTS = 4;
 
     const model = provider === 'openai'
@@ -1152,7 +1194,12 @@ ${sessionContext}`;
     // returns its answer directly instead of exhausting max_tokens on reasoning (see note
     // above). Other providers' messages are left byte-identical so their cacheable prefix
     // is unaffected.
-    if (isSarvam) {
+    // ...except on a HARD Tanglish turn (opts.think — several questions, a comparison, a
+    // complaint, a mid-order change; see services/tanglish.js). English goes to a reasoning
+    // model and is logical; Tanglish went to Sarvam with thinking off and was not. Thinking
+    // on costs ~200 more output tokens (~₹0.003) and ~2.5s, so it is spent only where it counts.
+    const sarvamThinks = isSarvam && opts.think === true;
+    if (isSarvam && !sarvamThinks) {
       const sysIdx = trimmed.findIndex(m => m.role === 'system');
       if (sysIdx !== -1) {
         trimmed = trimmed.map((m, i) =>
@@ -1188,7 +1235,7 @@ ${sessionContext}`;
           // an actual reply once reasoning ran long, silently truncating to empty content.
           // qwenMaxTokens is sized dynamically against the actual prompt for this call
           // (see above) so it can't itself tip the request over the 8000 TPM ceiling.
-          max_tokens: isQwenReasoning ? qwenMaxTokens : isFireworks ? 1500 : 800,
+          max_tokens: isQwenReasoning ? qwenMaxTokens : (isFireworks || sarvamThinks) ? 1500 : 800,
           // Tanglish samples COLDER than English, and that is the single cheapest fix for
           // the 2026-09-21 language complaint. Romanised Tamil has no orthographic standard
           // for a model to anchor on, so at 0.7 it happily samples a plausible-looking
@@ -1477,7 +1524,7 @@ ${sessionContext}`;
     return [...entries.slice(cursor), ...entries.slice(0, cursor)];
   }
 
-  async callLLMWithFallback(messages, language = 'english', affinityKey = null) {
+  async callLLMWithFallback(messages, language = 'english', affinityKey = null, opts = {}) {
     // Build a flat list of all API clients across all providers for key rotation.
     // affinityKey (the senderId) pins one conversation to one key so the cached
     // prompt prefix actually gets reused — see rotateEntries.
@@ -1555,7 +1602,7 @@ ${sessionContext}`;
         if (entry.type === 'gemini') {
           result = await this.callWithThrottle(() => this.callGemini(messages, entry.client), entry.name, entry.keyIndex);
         } else {
-          result = await this.callLLMWithRetry(messages, entry.client, entry.name, entry.keyIndex, language);
+          result = await this.callLLMWithRetry(messages, entry.client, entry.name, entry.keyIndex, language, opts);
         }
 
         // Update active provider tracking
@@ -2857,6 +2904,29 @@ ${sessionContext}`;
       return stateTurn;
     }
 
+    // --- Tanglish complaint: a fixed first reply (added 2026-09-29) ---
+    // The client's example of a "meaningless" reply was a complaint answered in free-written
+    // Tamil: "Service miss pannite ah naurom nu ninaikirenga nu puriyuthu … appo pathi naan
+    // immediate ah look panniten" — an invented word, chained clauses, and a claim to have
+    // ALREADY looked. A complaint's first reply always has the same job (sorry, send the order
+    // ID and the problem, the team will check), so it is written once, by a person, in plain
+    // Tanglish. Once they send the order ID the agent takes over and raises the ticket.
+    // Skipped when the message already carries an order number, mid-order (a "wrong size"
+    // there is a correction, not a complaint), and if we asked in the last 30 minutes.
+    if (session.language === 'tanglish' && userQuery && !orderState.hasActiveOrder(session)
+        && (tanglishReader.isComplaint(userQuery) || tanglishReader.isUpset(userQuery))
+        && !/\d{4,}/.test(userQuery)
+        && !(session.complaintAskedAt && Date.now() - session.complaintAskedAt < 30 * 60 * 1000)) {
+      const reply = 'Romba sorry 🙏 Idha naanga kandippa sort out panrom.\n'
+        + 'Unga order ID um, enna problem nu oru line la anuppunga. Photo irundha adhuvum anuppunga.\n'
+        + 'Team udane check pannuvaanga.';
+      session.complaintAskedAt = Date.now();
+      session.history.push({ role: 'user', content: userQuery });
+      session.history.push({ role: 'assistant', content: reply });
+      await this._saveSession(senderId, session);
+      return { replyText: reply, intent: 'deterministic_complaint', requiresEscalation: false, suggestedProductIds: [] };
+    }
+
     // --- Pre-AI FAQ Matcher ---
     // Answer common FAQ queries directly WITHOUT using any LLM tokens (faster, zero leak risk).
     // CRITICAL: Only run when session is IDLE — NOT during an active order flow where
@@ -2973,7 +3043,11 @@ ${sessionContext}`;
       // with the message (services/rules.js). An FAQ that agrees stays free.
       await rulesService.refresh();
       const overridden = rulesService.disabledFaqCategories();
-      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund) ? []
+      // An FAQ answers ONE thing. "FC set la shorts varuma? size M irukka" used to get the
+      // FC Set answer and the size question was silently dropped — so a Tanglish message
+      // with two or more questions goes to the agent, which is told to answer each in turn.
+      const asksSeveral = session.language === 'tanglish' && tanglishReader.questionsIn(userQuery).length >= 2;
+      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund || asksSeveral) ? []
         : faqService.searchFAQs(userQuery).filter(f => !overridden.has(f.category));
       if (faqMatches.length > 0) {
         // Language-matched reply — session.language is already locked, and answering a
@@ -3127,6 +3201,20 @@ ${sessionContext}`;
       console.warn('[AI Service] Knowledge source retrieval skipped:', err.message);
     }
 
+    // --- Tanglish, read in code (services/tanglish.js) ---
+    // The customer's words with each Tamil word's English meaning attached, and their
+    // questions counted, so the model decides from the meaning instead of guessing at the
+    // spelling. Right before the message, like the notes above. Tanglish only: English
+    // replies are already logical, and the note would only cost tokens there.
+    const orderActiveNow = orderState.hasActiveOrder(session);
+    let thinkThisTurn = false;
+    if (session.language === 'tanglish') {
+      const note = tanglishReader.readingNote(userQuery);
+      if (note) messages.push({ role: 'system', content: note });
+      thinkThisTurn = tanglishReader.isHard(userQuery, { orderActive: orderActiveNow });
+      if (thinkThisTurn) console.log('[AI Service] Hard Tanglish message — letting the model think this turn');
+    }
+
     messages.push({ role: "user", content: userQuery });
 
     let keepLooping = true;
@@ -3138,7 +3226,7 @@ ${sessionContext}`;
     while (keepLooping && loops < 5) {
       loops++;
       try {
-        const completion = await this.callLLMWithFallback(messages, session.language, senderId);
+        const completion = await this.callLLMWithFallback(messages, session.language, senderId, { think: thinkThisTurn });
 
         const responseMessage = completion.choices[0].message;
         
@@ -3644,13 +3732,18 @@ ${sessionContext}`;
           // first round of fixes. NEVER INVENT PRODUCTS stops it naming a product it has
           // not searched; this stops it naming a whole team that will never arrive.
           const unstockedTeams = woocommerceService.unstockedTeamsMentioned(resultText);
+          // (g) it quotes a price or a number of days it never read anywhere (2026-09-29).
+          const badFigures = this.unsupportedFigures(resultText, [...messages, { content: userQuery }]);
+          if (badFigures.length > 0) {
+            console.warn(`[AI Service] Reply quotes figures found nowhere in its context: ${badFigures.join(', ')} | ${resultText.slice(0, 140)}`);
+          }
 
           // A structural failure means the reply cannot be trusted at all. A language problem
           // means the reply is probably fine but reads badly — deliberately kept apart,
           // because the recovery for each is different (see below).
           const structuralFailure = looksLikeGreetingLeak || looksLikeRawJsonLeak
             || rawWasEmpty || askedToClarifyWithoutSearching || unstockedTeams.length > 0;
-          if (structuralFailure || languageProblems.length > 0) {
+          if (structuralFailure || languageProblems.length > 0 || badFigures.length > 0) {
             if (!forcedSearchRetryDone && loops < 5) {
               forcedSearchRetryDone = true;
               messages.push({
@@ -3665,7 +3758,9 @@ ${sessionContext}`;
                         ? `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
                         : unstockedTeams.length > 0
                           ? `Your last reply offered the customer teams we do NOT stock: ${unstockedTeams.join(', ')}. We stock only these: ${woocommerceService.listTeams().join(', ')}. Send the answer again naming ONLY teams from that list, and never suggest a team we do not carry.`
-                          : `Your last reply used words that are not real Tamil: ${languageProblems.join('; ')}. Send the SAME answer again in natural Tanglish that a Chennai shop owner would actually type, keeping it to two short sentences. Where you are not certain a Tamil word is real, use the plain English word instead.`
+                          : badFigures.length > 0
+                            ? `Your last reply quoted ${badFigures.join(', ')} — that price or number of days is not in the product results, the store rules or this conversation. Send the answer again quoting ONLY figures that appear there. If you do not know one, say the team will confirm it.`
+                            : `Your last reply used words that are not real Tamil: ${languageProblems.join('; ')}. Send the SAME answer again in natural Tanglish that a Chennai shop owner would actually type, keeping it to two short sentences. Where you are not certain a Tamil word is real, use the plain English word instead.`
               });
               continue;
             }

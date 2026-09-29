@@ -25,7 +25,8 @@
     "test-search": "node src/test_search.js",
     "test-order-flow": "node src/test_order_flow.js",
     "test-tanglish": "node src/test_tanglish.js",
-    "test-order-state": "node src/test_order_state.js"
+    "test-order-state": "node src/test_order_state.js",
+    "test-tanglish-logic": "node src/test_tanglish_logic.js"
   },
   "overrides": {
     "sharp": "^0.35.3"
