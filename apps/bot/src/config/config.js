@@ -160,6 +160,12 @@ const config = {
     email: (process.env.SUPPORT_EMAIL || 'support@theaurax.in').trim(),
     wholesaleNumber: (process.env.WHOLESALE_NUMBER || '9360715443').replace(/[^0-9]/g, ''),
   },
+  // Read every message for its MEANING before anything answers it (services/understand.js).
+  // Off = the old keyword chain decides, which is also what runs whenever the model is down.
+  understand: {
+    enabled: String(process.env.UNDERSTAND_ENABLED || 'true').toLowerCase() !== 'false',
+    maxTokens: parseInt(process.env.UNDERSTAND_MAX_TOKENS || '700', 10),
+  },
   // What the store actually accepts. The bot's payment answers are built from THIS, never
   // from the model's imagination — so a method only reaches a customer if it is listed here.
   // Defaults mirror the live store: Razorpay is the only gateway, COD is disabled.

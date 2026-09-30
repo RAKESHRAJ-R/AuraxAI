@@ -73,6 +73,11 @@ npm run test-tanglish  # Tanglish quality, machine-output leakage and guided bro
                        # FAQ pass through untouched, that the invented Tamil seen in
                        # production is detected, and that "I don't know what to buy" reaches
                        # a cart in three turns. Stubbed LLM — no spend, nothing sent.
+npm run test-understanding # Understand-first routing (58, stubbed): the 2026-09-29 chat + 4 screenshots —
+                       # delivery after an order, "okay"/"no need" closing, cancel/start over in code,
+                       # "I want Man City jersey" never an address, country lists, list-all, fallback
+npm run replay-understanding -- --yes  # ⚠️ PAID (~₹1): the REAL model reads ~34 real messages;
+                       # prints each verdict vs the intended meaning. Refuses without --yes
 npm run admin-user -- --email x@y.z --password "..."   # Create/recover an Owner login
 
 node src/test_agent.js "Do you have Barcelona jerseys?"   # single ad-hoc query
@@ -1067,6 +1072,56 @@ often "our" as "where". A wrong gloss is worse than none — it steers the model
 `npm run test-tanglish-logic` — 42 checks, stubbed model: the screenshot reply is caught, 23
 approved texts are not, glossing/question-splitting/hard detection, `/no_think` on easy turns only,
 the complaint template and its 30-min guard, the reading note's placement, and the figures check.
+
+### Understand first, then act (2026-09-30) — READ BEFORE ADDING ANY KEYWORD PATH
+
+Client test chat 2026-09-29 + 4 screenshots: *"Evolo naal agum"* → team list; *"Delivery?"* right
+after order #77997 → "will you place the order?"; *"Okay"* / *"No need"* (customer fed up) → the
+12-line team list four times; *"I want Man City jersey"* → saved as the shipping ADDRESS;
+*"Already order place panniten"* → "you already sent your address"; *"cancel it from my cart"* →
+a support ticket. One cause: **every message ran down a chain of keyword checks and the first
+match answered.** The AI saw only leftovers, and even then a 'broad' search replaced its answer.
+
+**The order now (`_answerQueryImpl`):**
+```
+message → understandMessage()  (services/understand.js: one no-tools call → JSON verdict:
+                                intent, topic, mood, questions, search, category, pick/size/qty)
+        → _routeByUnderstanding()  code ACTS: cart, cancel, start over, delivery/policy answers
+                                   (FAQ picked by TOPIC, not spelling), payment link, order status,
+                                   closing, lists, order-state turn (gated by intent)
+        → agent (with _understandingNote before the message) for everything else
+        → egress checks as before
+keyword chain (reset / order-state / complaint / FAQ / teams / browse) runs ONLY if verdict is null
+```
+
+- ⚠️ **Do not add a keyword path in front of understanding.** A new case is a new intent/topic in
+  `understand.js` + a branch in `_routeByUnderstanding`. Keywords remain for the fallback and for
+  OUTPUT checks only.
+- The verdict never writes customer text, so it cannot invent a price or a Tamil word. Prices,
+  links, order numbers, delivery days come from code / FAQ / the owner's rules.
+- `_handleOrderStateTurn(…, verdict)`: extracted address counts only for `give_address`, size/qty
+  only for `pick_product`/`size_qty`; payment/"change product" are the router's. Confirm = the
+  `confirm_order` intent (so "ok go ahead" confirms, and a fed-up "okay" read as `closing` does not).
+- Broad search + a non-product intent → tool result `not_a_product_request`, never the team list.
+- Order confirm keeps the last 2 history messages (was `[]`), and `lastOrder` is in the prompt and
+  the verdict context, so post-order questions are about that order.
+- `_closingReply`: sorry-and-close when frustrated; second close within 30 min is "Seri 👍" (not a
+  bare emoji — the sanitiser treats emoji-only as broken output and swaps in an apology).
+- `teamsInGroup()` answers "which countries?"; `list_more` shows up to 10 from the last shelf/search
+  (`session.lastListContext`); "IPL"/"World Cup" are no longer listed as teams.
+- Fallback address reader: a request ("want/venum/jersey/size…") without a pincode/phone is never an
+  address ("Man **City**" matched ADDRESS_WORDS).
+- ⚠️ **The understanding call always uses the ENGLISH provider order (Fireworks first), even for
+  Tanglish.** Measured 2026-09-30: sarvam-105b spent the full 700-token budget on hidden reasoning
+  for this JSON task (`/no_think` or not) and returned empty content on every Tanglish message —
+  all fell back to keywords (7/34). Fireworks: **34/34 read as intended** on the real replay
+  (after adding `not_understood`: "purila" was being read as a complaint). Customer-facing
+  Tanglish replies still go to Sarvam first.
+- **Cost:** +1 small call per message (Fireworks, ~1–2s). `UNDERSTAND_ENABLED=false` turns it
+  off (= old behaviour); `UNDERSTAND_MAX_TOKENS` (700).
+- Existing suites stub `aiService.understandMessage = async () => null` — they test the action layer
+  and the keyword fallback. `test_understanding.js` tests routing with scripted verdicts;
+  `replay_understanding.js` is the only thing that tests the real model's reading (paid).
 
 ### Two questions the agent had no answer for (2026-09-22)
 

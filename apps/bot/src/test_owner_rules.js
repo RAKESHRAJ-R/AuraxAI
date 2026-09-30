@@ -21,6 +21,9 @@ const rules = await import('./services/rules.js');
 const rulesService = rules.default;
 const { splitIntoCards, tagTopics, messageTopics, numbersIn, docKeyFor, joinChunks } = rules;
 const aiService = (await import('./services/ai.js')).default;
+// These suites cover the action layer and the keyword fallback: the understanding step
+// (services/understand.js) is tested on its own in test_understanding.js.
+aiService.understandMessage = async () => null;
 const retrievalService = (await import('./services/retrieval.js')).default;
 const textExtractService = (await import('./services/textextract.js')).default;
 await dbService.ready;

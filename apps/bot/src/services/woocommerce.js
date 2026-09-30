@@ -535,7 +535,9 @@ class WooCommerceService {
    * DROP, Signature Embroidery) -- none of which is an answer to "which teams do you have".
    */
   listTeams(limit = 12) {
-    const NON_TEAM = /^(signature embroidery|limited time drop|player version|fan version|pv|fv|pv hf|pv fs|kids|tees|ball|football|new arrivals|uncategori[sz]ed|sale|offers?|combo|accessories|tracksuit|shorts|socks)$/i;
+    // "IPL" and "World Cup" are ranges, not teams — listing them beside Chelsea read as a team
+    // called "World Cup" (2026-09-29 chat).
+    const NON_TEAM = /^(signature embroidery|limited time drop|player version|fan version|pv|fv|pv hf|pv fs|kids|tees|ball|football|new arrivals|uncategori[sz]ed|sale|offers?|combo|accessories|tracksuit|shorts|socks|ipl|world ?cup|wc|retro|special edition)$/i;
     const NON_TEAM_PATTERN = /^(rn|clr|pv|fv)\s*[:\-]|^\d+\s*-?\s*slv$|sleeve/i;
     const counts = new Map();
     for (const p of this.getLocalProducts()) {
@@ -792,6 +794,16 @@ class WooCommerceService {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, limit)
       .map(([label]) => label);
+  }
+
+  /**
+   * The teams in ONE kind of product, most-stocked first — "which countries do you have?"
+   * must answer with Portugal, Germany, Argentina…, not the club list (2026-09-29 chat).
+   */
+  teamsInGroup(groupKey, limit = 15) {
+    const items = this.getLocalProducts().filter(p => (!p.stock_status || p.stock_status === 'instock')
+      && this.hasValidPrice(p) && this.productGroup(p) === groupKey);
+    return this.teamsWithin(items, limit);
   }
 
   /**

@@ -29,6 +29,9 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'aurax-tanglish-'));
 process.env.AURAX_DATA_DIR = TMP_DIR;
 
 const aiService = (await import('./services/ai.js')).default;
+// These suites cover the action layer and the keyword fallback: the understanding step
+// (services/understand.js) is tested on its own in test_understanding.js.
+aiService.understandMessage = async () => null;
 const woocommerceService = (await import('./services/woocommerce.js')).default;
 const dbService = (await import('./services/db.js')).default;
 

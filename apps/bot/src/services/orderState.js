@@ -174,7 +174,11 @@ export function parseAddressParts(rawText) {
       .join(', ')
       .trim();
     // Only accept it as an address when it genuinely reads like one.
-    if (addrText && addrText.length >= 12 && (ADDRESS_WORDS.test(addrText) || out.pincode)) {
+    // "I want Man City jersey" matched on "city" and became a shipping address (2026-09-29);
+    // a message asking for something is a request, not an address, unless it carries a
+    // pincode or phone number.
+    const isRequest = /\b(want|need|venum|vendum|iruka|irukka|jersey|jersy|jersi|kit|shirt|size|price|cancel|delivery|order)\b/i.test(addrText);
+    if (addrText && addrText.length >= 12 && (out.pincode || pm || ADDRESS_WORDS.test(addrText)) && !(isRequest && !out.pincode && !pm)) {
       out.address = addrText;
     }
   }

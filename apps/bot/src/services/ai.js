@@ -14,6 +14,7 @@ import sheetsService from './sheets.js';
 import orderState from './orderState.js';
 import rulesService, { numbersIn } from './rules.js';
 import * as tanglishReader from './tanglish.js';
+import understandService from './understand.js';
 
 class AIService {
   // --- Per-(provider, key) rate-limit throttling ---
@@ -403,10 +404,12 @@ class AIService {
    * deterministic paths: "2" is parseProductSelection, "2 M 3" is parseSizeQtyReply. That is
    * the "then proceed" half — no new ordering code, and no LLM call anywhere in the journey.
    */
-  bestSellersReply(groupKey, session) {
+  bestSellersReply(groupKey, session, limit = 3) {
     const group = woocommerceService.listCatalogueGroups().find(g => g.key === groupKey);
-    const top = woocommerceService.bestSellersInGroup(groupKey, 3);
+    const top = woocommerceService.bestSellersInGroup(groupKey, limit);
     if (!group || top.length === 0) return null;
+    // So "show me all of them" next turn knows which shelf "them" is.
+    session.lastListContext = { type: 'group', key: groupKey };
 
     session.lastShownProducts = top.map(p => ({
       productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '',
@@ -421,6 +424,12 @@ class AIService {
       return `${i + 1}. *${p.name}* — ₹${p.price}${sizeText}${p.permalink ? `\n${p.permalink}` : ''}`;
     }).join('\n');
 
+    if (limit > 3) {
+      const range = top.length > 1 ? `1–${top.length}` : '1';
+      return isTanglish
+        ? `${group.emoji} *${group.label}* — stock la irukura ellaam 👇\n${lines}\n\nEdhu venum (${range})? Size, quantity-um sollunga 🛍️`
+        : `${group.emoji} *${group.label}* — everything we have in stock 👇\n${lines}\n\nWhich one would you like (${range})? Tell me the size and quantity too 🛍️`;
+    }
     return isTanglish
       ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
       : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
@@ -476,6 +485,9 @@ class AIService {
       { bad: /\b(?:look|check|fix|sort)\s+panni?tt?en\b/i, note: 'claims it is ALREADY done — promise instead: "check panren"' },
       { bad: /\bnu\s+(?:dhaan\s+)?n[ie]n[ae]i?kk?ire?nga\b/i, note: 'guesses what the customer thinks — say it plainly' },
       { bad: /\bnu\s+\w+\s+nu\s+\w+/i,   note: 'two "nu" clauses chained — too complicated to read; use two short sentences' },
+      // 2026-09-29: "Unaku etha team jersey venumnaalum sollunga" — "unaku" is the informal
+      // "you", rude to a customer; the prompt already says "neenga / unga / ungaluku".
+      { bad: /\bunaku\b|\bunakku\b/i,    note: 'informal "you" — use "ungaluku"' },
     ];
   }
 
@@ -715,7 +727,8 @@ ORDER STATE (authoritative — code-maintained, do not contradict):
 - Cart: ${JSON.stringify(session.cart || [])}
 - Customer name: ${known.name || 'missing'} | Mobile: ${known.phone || 'missing'} | Pincode: ${known.pincode || 'missing'}
 - Address: ${known.address || 'missing'}
-- Shipping details still needed: ${missingAddr.length ? missingAddr.join(', ') : 'NONE — all on file, never ask again'}`;
+- Shipping details still needed: ${missingAddr.length ? missingAddr.join(', ') : 'NONE — all on file, never ask again'}${session.lastOrder?.orderId && !locked ? `
+- Order ALREADY PLACED in this chat: #${session.lastOrder.orderId}${session.lastOrder.checkoutUrl ? ` (payment link: ${session.lastOrder.checkoutUrl})` : ''} — never ask them to place it again` : ''}`;
 
     return `You are "Aura", the friendly AI assistant for "Theaurax.in" (a premium football jerseys retailer in India). You handle BOTH sales and after-sales customer support. If a customer asks your name or who they're talking to, tell them you're Aura from Theaurax.
 Your goal is to be the smart, friendly shop person a customer trusts: understand what they actually want, answer it directly, and help them to a successful checkout — and to resolve support issues with genuine care.
@@ -1228,14 +1241,15 @@ ${sessionContext}`;
         return await this.callWithThrottle(() => client.chat.completions.create({
           model,
           messages: trimmed,
-          tools: this.getTools(),
-          tool_choice: 'auto',
+          // opts.noTools: the understanding step (services/understand.js) wants a small JSON
+          // verdict, not an action — sending the tool schema would only invite a tool call.
+          ...(opts.noTools ? {} : { tools: this.getTools(), tool_choice: 'auto' }),
           // Qwen's hidden <think> reasoning draws from the same max_tokens budget as the
           // visible answer — 800 was tuned for non-reasoning Llama and left zero room for
           // an actual reply once reasoning ran long, silently truncating to empty content.
           // qwenMaxTokens is sized dynamically against the actual prompt for this call
           // (see above) so it can't itself tip the request over the 8000 TPM ceiling.
-          max_tokens: isQwenReasoning ? qwenMaxTokens : (isFireworks || sarvamThinks) ? 1500 : 800,
+          max_tokens: opts.maxTokens || (isQwenReasoning ? qwenMaxTokens : (isFireworks || sarvamThinks) ? 1500 : 800),
           // Tanglish samples COLDER than English, and that is the single cheapest fix for
           // the 2026-09-21 language complaint. Romanised Tamil has no orthographic standard
           // for a model to anchor on, so at 0.7 it happily samples a plausible-looking
@@ -1245,7 +1259,8 @@ ${sessionContext}`;
           // Nothing is lost by cooling it: the hype and the product formatting are produced
           // by deterministic templates (see "Deterministic Fast Paths"), so the LLM's free
           // text only needs to be correct, not inventive.
-          temperature: language === 'tanglish' ? (attempt <= 2 ? 0.3 : 0.15) : (attempt <= 2 ? 0.7 : 0.2),
+          temperature: typeof opts.temperature === 'number' ? opts.temperature
+            : language === 'tanglish' ? (attempt <= 2 ? 0.3 : 0.15) : (attempt <= 2 ? 0.7 : 0.2),
           ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {})
         }), provider, keyIndex);
       } catch (err) {
@@ -2118,9 +2133,11 @@ ${sessionContext}`;
     }
     const lo = session.lastOrder;
     if (!session.cart?.length && !session.selectedProduct && lo?.orderId && lo.checkoutUrl) {
+      // The order already exists, so "once you confirm the order I'll send a link" (the
+      // pre-order wording above) is wrong here — 2026-09-29 chat. Just give them the link.
       return isT
-        ? `${text}\n\nUnga order #${lo.orderId} ku payment link:\n${lo.checkoutUrl}`
-        : `${text}\n\nHere's the payment link for your order #${lo.orderId}:\n${lo.checkoutUrl}`;
+        ? `Unga order #${lo.orderId} place aayiduchu ✅ Payment mattum pending.\nIdhu payment link:\n${lo.checkoutUrl}${methods ? `\n${methods} la pay pannalaam.` : ''}`
+        : `Your order #${lo.orderId} is placed ✅ Only the payment is pending.\nHere's your payment link:\n${lo.checkoutUrl}${methods ? `\nYou can pay by ${methods}.` : ''}`;
     }
     const next = this._nextStepPrompt(session);
     return next ? `${text}\n\n${next}` : text;
@@ -2214,7 +2231,7 @@ ${sessionContext}`;
    *   { rewriteQuery }    → state was changed; continue the normal pipeline with this text
    *   null                → nothing order-shaped here; the normal pipeline handles it
    */
-  async _handleOrderStateTurn(senderId, session, userQuery) {
+  async _handleOrderStateTurn(senderId, session, userQuery, verdict = null) {
     if (!userQuery || !userQuery.trim()) return null;
     // Catch-up / retry preambles ("[This message has been waiting…]") are for the model.
     if (/^\s*\[/.test(userQuery)) return null;
@@ -2226,6 +2243,30 @@ ${sessionContext}`;
     const ents = orderState.extractEntities(userQuery, {
       shownCount: shown.length, awaiting, hasSelection: Boolean(locked),
     });
+
+    // With a verdict from the understanding step, the MEANING decides which of the extracted
+    // details count; the extractor only supplies the values. Without this, any free text in
+    // the address step was an address ("I want Man City jersey" became the shipping address)
+    // and "order place panniten" was "I already sent my address" (2026-09-29).
+    if (verdict) {
+      const it = verdict.intent;
+      if (it !== 'give_address') {
+        ents.looksLikeAddress = false;
+        ents.addressAlreadyGiven = false;
+      }
+      ents.paymentQuery = false;       // answered by the router, from config
+      ents.changeProduct = false;      // product_search is handled by the router
+      ents.confirm = it === 'confirm_order';
+      ents.deny = ['pause_order', 'cancel_cart', 'closing'].includes(it);
+      if (it === 'pick_product' && ents.productIndex === null && verdict.pick) ents.productIndex = verdict.pick - 1;
+      if (['pick_product', 'size_qty'].includes(it)) {
+        if (!ents.size && verdict.size) { ents.size = verdict.size; ents.sizeConfident = true; }
+        if (!ents.qty && verdict.qty) ents.qty = verdict.qty;
+      } else {
+        // A size- or number-looking token in a question or an address is not an order change.
+        ents.size = null; ents.qty = null; ents.productIndex = null;
+      }
+    }
 
     const respond = async (text, intent, productIds = []) => {
       session.history.push({ role: 'user', content: userQuery });
@@ -2682,6 +2723,389 @@ ${sessionContext}`;
    * Making this a wrapper rather than a line at each `return` is deliberate: _answerQueryImpl
    * has eleven of them, and the twelfth someone adds next month is covered for free.
    */
+  /* ────────────────────────────────────────────────────────────────────────────
+   * UNDERSTAND FIRST, THEN ACT (added 2026-09-30)
+   *
+   * Every message is read for its meaning (services/understand.js) before anything answers
+   * it, and the router below ACTS on that meaning in code: cart changes, prices, payment
+   * links, delivery days and product lists never come from the model. The keyword chain in
+   * _answerQueryImpl runs only when understanding returns null (model down, bad answer,
+   * UNDERSTAND_ENABLED=false). See the 2026-09-29 chat in understand.js for why.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  /** One small no-tools call. Tests stub this method; null = use the keyword chain. */
+  async understandMessage(senderId, session, userQuery) {
+    if (config.understand?.enabled === false) return null;
+    const verdict = await understandService.understand({
+      session, message: userQuery, orderState,
+      // Always the English provider order (Fireworks first), even for Tanglish. Measured
+      // 2026-09-30: sarvam-105b spent the whole 700-token budget on hidden reasoning for this
+      // JSON task — /no_think or not — and returned empty content on every Tanglish message,
+      // so all of them fell back to keywords. Fireworks returned clean verdicts. The customer-
+      // facing Tanglish reply still goes to Sarvam first; this call only reads the message.
+      callModel: (messages) => this.callLLMWithFallback(messages, 'english', senderId, {
+        noTools: true, maxTokens: config.understand?.maxTokens || 700, temperature: 0,
+      }),
+    });
+    if (verdict) {
+      console.log(`[Understand] ${verdict.intent}${verdict.topic !== 'none' ? `/${verdict.topic}` : ''} mood=${verdict.mood} conf=${verdict.confidence} — ${verdict.meaning}`);
+    }
+    return verdict;
+  }
+
+  /** Send a code-built reply: record it, save, and keep the lead current mid-order. */
+  async _replyAndSave(senderId, session, userQuery, text, intent, productIds = []) {
+    session.history.push({ role: 'user', content: userQuery });
+    session.history.push({ role: 'assistant', content: text });
+    session.orderStep = orderState.computeStep(session);
+    await this._saveSession(senderId, session);
+    if (orderState.hasActiveOrder(session)) {
+      await dbService.saveLead({
+        userId: senderId,
+        name: session.customerName || 'Customer',
+        phone: senderId.replace(/[^0-9]/g, ''),
+        channel: 'whatsapp',
+        cart: session.cart || [],
+        address: session.address || null,
+        requiresEscalation: session.requiresEscalation || false,
+        status: 'active',
+        conversation: session.history || [],
+      });
+    }
+    return { replyText: text, intent, requiresEscalation: false, suggestedProductIds: productIds };
+  }
+
+  /** An order placed recently enough that "delivery?" / "payment?" is about it. */
+  _recentOrder(session) {
+    const lo = session.lastOrder;
+    if (!lo?.orderId) return null;
+    return Date.now() - (lo.at || 0) < 7 * 24 * 60 * 60 * 1000 ? lo : null;
+  }
+
+  /**
+   * One short line that brings a customer mid-order back to where they were, WITHOUT
+   * repeating the whole summary or re-asking for details as if nothing was said. Used after
+   * answering a side question (delivery, sizing…) during an order.
+   */
+  _resumeLine(session) {
+    const isT = session.language === 'tanglish';
+    if (session.cart?.length > 0) {
+      if (session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)) {
+        return isT ? 'Order confirm panna "YES" nu reply pannunga 👍' : 'Reply "YES" whenever you\'re ready to confirm the order 👍';
+      }
+      const missing = orderState.missingAddressFields(this._knownAddress(session));
+      if (missing.length > 0) {
+        const need = missing.map(f => this._fieldLabel(f, isT).split(' (')[0]).join(', ');
+        return isT ? `Order continue panna ${need} anuppunga 👍` : `To continue your order, just send your ${need} 👍`;
+      }
+      return null;
+    }
+    if (orderState.lockedProduct(session)) return this._nextStepPrompt(session);
+    return null;
+  }
+
+  /** Drop a trailing sales question ("Which jersey are you looking at?") from a canned answer. */
+  _withoutClosingQuestion(text) {
+    const parts = String(text).trim().split(/(?<=[.!?])\s+/);
+    if (parts.length > 1 && /\?\s*$/.test(parts[parts.length - 1])) parts.pop();
+    return parts.join(' ');
+  }
+
+  /**
+   * A policy/delivery answer from the store's own FAQ, picked by MEANING (the verdict's
+   * topic), not by whether the customer happened to spell a keyword the way faq.json does.
+   * Null when there is no entry, or the owner's Rule Book disagrees with its numbers — then
+   * the agent answers with the owner's rule cards.
+   */
+  async _topicAnswer(topic, session) {
+    const CATEGORY = {
+      delivery: 'Shipping & Delivery', shipping_charge: 'Shipping & Delivery', sizing: 'Sizing & Fit',
+      customisation: 'Customization', returns: 'Return & Exchange', quality: 'Jersey Quality',
+      versions: 'Version Difference', international: 'Shipping Coverage', care: 'Jersey Care',
+      bulk: 'Wholesale / Bulk Orders', tracking: 'Order Tracking', kids: 'Kids Jerseys',
+      fc_set: 'FC Set Shorts', giveaway: 'Giveaway', contact: 'Contact & Support',
+    };
+    const cat = CATEGORY[topic];
+    if (!cat) return null;
+    await rulesService.refresh();
+    if (rulesService.disabledFaqCategories().has(cat)) return null;
+    const faq = faqService.getFAQs().find(f => f.category === cat);
+    return faq ? faqService.answerFor(faq, session.language) : null;
+  }
+
+  /** "Okay" / "no need" / "thanks" — end warmly, and stop selling. */
+  _closingReply(session, verdict) {
+    const isT = session.language === 'tanglish';
+    // Said goodbye in the last 30 minutes already: a thumbs-up is what a person would send.
+    // (Not a bare emoji: the egress sanitiser reads an emoji-only reply as broken output.)
+    if (session.closedAt && Date.now() - session.closedAt < 30 * 60 * 1000) return isT ? 'Seri 👍' : 'Sure 👍';
+    const upset = verdict.mood === 'frustrated' || verdict.mood === 'angry';
+    const item = session.cart?.[0];
+    const lo = this._recentOrder(session);
+    let text;
+    if (upset) {
+      text = isT
+        ? 'Sorry 🙏 naan sariya help pannala. Edhavadhu venumna eppo venumnaalum inga message pannunga.'
+        : "Sorry I didn't get that right 🙏 If you need anything, just message here anytime.";
+    } else if (item) {
+      text = isT
+        ? `Seri 👍 *${item.name}* unga cart la save aagi iruku. Venumna eppo venumnaalum "YES" sollunga.`
+        : `No problem 👍 *${item.name}* stays in your cart. Just say "YES" whenever you want it.`;
+    } else if (lo) {
+      text = isT
+        ? 'Seri, thanks 🙏 Edhavadhu doubt irundha inga message pannunga.'
+        : "You're welcome 🙏 If you have any questions, just message here.";
+    } else {
+      text = isT
+        ? 'Seri 👍 Edhavadhu venumna eppo venumnaalum inga message pannunga.'
+        : 'Sure 👍 If you need anything, just message here anytime.';
+    }
+    session.closedAt = Date.now();
+    return text;
+  }
+
+  /**
+   * Act on an understood message. Returns a reply object (turn over), { agentNote } to go to
+   * the agent with the meaning attached, or { rewriteQuery } to continue with a new query.
+   */
+  async _routeByUnderstanding(senderId, session, userQuery, v) {
+    const isT = session.language === 'tanglish';
+    const reply = (text, intent, ids = []) => this._replyAndSave(senderId, session, userQuery, text, intent, ids);
+    const item = session.cart?.[0] || null;
+    const locked = orderState.lockedProduct(session);
+    const active = Boolean(locked);
+    const lo = this._recentOrder(session);
+    const several = v.questions.length >= 2;
+    if (v.intent !== 'closing') session.closedAt = null;
+
+    // Our own "change the product? YES/NO" question is answered by the order-state turn.
+    if (session.pendingClarify) {
+      const st = await this._handleOrderStateTurn(senderId, session, userQuery, v);
+      if (st) return st;
+    }
+
+    switch (v.intent) {
+      case 'closing':
+        return reply(this._closingReply(session, v), 'understood_closing');
+
+      case 'greeting': {
+        if (item) {
+          return reply(isT
+            ? `Hi! 👋 Unga cart la *${item.name}* (${item.size}, ${item.qty} qty) save aagi iruku. Adhe continue pannalama, illa vera jersey paakanuma?`
+            : `Hi! 👋 You still have *${item.name}* (Size ${item.size}, Qty ${item.qty}) in your cart. Would you like to continue with it, or look at something else?`,
+          'understood_greeting');
+        }
+        const g = faqService.getFAQs().find(f => f.category === 'Greetings');
+        const text = g ? faqService.answerFor(g, session.language) : null;
+        return text ? reply(text, 'understood_greeting') : { agentNote: true };
+      }
+
+      case 'pause_order':
+        if (!item && !locked) return reply(this._closingReply(session, v), 'understood_closing');
+        return reply(isT
+          ? `Seri, no problem 👍 *${(item || locked).name}* ah cart la vechirukken. Venumna "YES" sollunga, vendaamna "cancel" nu sollunga.`
+          : `No problem 👍 I'll keep *${(item || locked).name}* in your cart. Say "YES" when you want it, or "cancel" to remove it.`,
+        'understood_pause');
+
+      case 'cancel_cart': {
+        if (!active) {
+          if (lo && v.aboutPlacedOrder) return { agentNote: true };
+          return reply(isT ? 'Unga cart already empty dhaan 👍 Vera edhavadhu venumna sollunga.' : 'Your cart is already empty 👍 Let me know if you need anything else.', 'understood_cancel_cart');
+        }
+        const name = (item || locked).name;
+        this._clearOrderSelection(session);
+        session.lastShownProducts = [];
+        if (v.search) return { rewriteQuery: v.search, notePrefix: isT ? `*${name}* ah cart la irundhu remove panniten 👍` : `I've removed *${name}* from your cart 👍` };
+        return reply(isT
+          ? `Done 👍 *${name}* ah cart la irundhu remove panniten. Vera jersey venumna sollunga.`
+          : `Done 👍 I've removed *${name}* from your cart. Let me know if you'd like anything else.`,
+        'understood_cancel_cart');
+      }
+
+      case 'start_over': {
+        const had = active ? (item || locked).name : null;
+        this._clearOrderSelection(session);
+        session.lastShownProducts = [];
+        session.pendingBrowse = false;
+        session.lastListContext = null;
+        // "Forget me and my data": clear the details this conversation holds, and be honest
+        // that stored order records are the team's to delete.
+        const forget = /\b(data|details|forget|delete|erase|remove my)\b/i.test(v.meaning);
+        if (forget) {
+          session.addressDetails = null; session.addressDraft = null; session.customerProfile = null; session.address = null;
+        }
+        const lead = isT
+          ? `Seri 👍${had ? ` *${had}* cart la irundhu remove panniten.` : ''}${forget ? ' Unga saved address, phone details clear panniten. Order records full ah delete pannanumna team kitta solren — sollunga.' : ''}`
+          : `Done 👍${had ? ` I've removed *${had}* from your cart.` : ''}${forget ? " I've cleared the address and phone details saved in this chat. If you also want your past order records deleted, tell me and I'll ask the team." : ''}`;
+        return reply(`${lead}\n${isT ? 'Fresh ah start pannalaam — enna jersey venum?' : "Let's start fresh — which jersey are you looking for?"}`, 'understood_start_over');
+      }
+
+      case 'payment_question': {
+        let text = this._paymentReply(session);
+        if (v.topic === 'cod' && lo && !active && !config.payment?.codEnabled) {
+          text = `${isT ? 'Sorry, COD illa — prepaid mattum dhaan 🙏' : 'Sorry, COD is not available — prepaid only 🙏'}\n${text}`;
+        }
+        return reply(text, 'understood_payment');
+      }
+
+      case 'order_status': {
+        // "Already ordered, payment pending" about the order this chat just placed — say what
+        // we know. Anything needing a lookup (an order number, tracking) goes to the agent.
+        if (lo && !/\d{4,}/.test(userQuery.replace(String(lo.orderId), '')) && !several) {
+          const pay = lo.checkoutUrl
+            ? (isT ? `Payment mattum pending — idhu link:\n${lo.checkoutUrl}` : `Only the payment is pending — here's the link:\n${lo.checkoutUrl}`)
+            : (isT ? 'Payment link team seekiram anuppuvaanga.' : 'The team will send your payment link shortly.');
+          return reply(isT ? `Aamaa, unga order #${lo.orderId} place aayiduchu ✅\n${pay}` : `Yes, your order #${lo.orderId} is placed ✅\n${pay}`, 'understood_order_status');
+        }
+        return { agentNote: true };
+      }
+
+      case 'delivery_question':
+      case 'policy_question': {
+        if (several) return { agentNote: true };
+        const topic = v.intent === 'delivery_question' && (v.topic === 'none' || !v.topic) ? 'delivery' : v.topic;
+        // A hand-taught answer from the owner wins, as it always has — now also mid-order.
+        const kh = await knowledgeService.match(userQuery, session.language).catch(() => null);
+        let answer = kh && kh.tier === 'confident' ? kh.entry.answer : await this._topicAnswer(topic, session);
+        if (!answer) return { agentNote: true };
+        const resume = this._resumeLine(session);
+        if (resume || lo) answer = this._withoutClosingQuestion(answer);
+        if (lo && !active && ['delivery', 'tracking', 'shipping_charge'].includes(topic)) {
+          answer = `${isT ? `Unga order #${lo.orderId} ku:` : `About your order #${lo.orderId}:`} ${answer}`;
+          if (lo.checkoutUrl && lo.at && Date.now() - lo.at < 24 * 60 * 60 * 1000) {
+            answer += isT ? `\nPayment innum pending na, idhu link:\n${lo.checkoutUrl}` : `\nIf the payment is still pending, here's the link:\n${lo.checkoutUrl}`;
+          }
+        }
+        return reply(resume ? `${answer}\n\n${resume}` : answer, 'understood_policy', locked ? [locked.productId] : []);
+      }
+
+      case 'browse_catalogue': {
+        const text = this.browseMenuReply(session.language, session);
+        return text ? reply(text, 'understood_browse') : { agentNote: true };
+      }
+
+      case 'list_teams': {
+        if (v.category !== 'none') {
+          const teams = woocommerceService.teamsInGroup(v.category, 15);
+          const group = woocommerceService.listCatalogueGroups().find(g => g.key === v.category);
+          if (teams.length > 0 && group) {
+            const list = teams.map(t => `• ${t}`).join('\n');
+            session.lastListContext = { type: 'group', key: v.category };
+            return reply(isT
+              ? `${group.emoji} *${group.label}* la idhellaam iruku 👇\n\n${list}\n\nEdhu venum? Peru sollunga, naan jerseys kaatturen ⚽`
+              : `${group.emoji} In *${group.label}* we have 👇\n\n${list}\n\nWhich one would you like? Tell me the name and I'll show you the jerseys ⚽`,
+            'understood_teams');
+          }
+        }
+        const text = this.teamListReply(session.language, session);
+        return text ? reply(text, 'understood_teams') : { agentNote: true };
+      }
+
+      case 'list_more': {
+        const ctx = session.lastListContext;
+        if (ctx?.type === 'group' || (!ctx && v.category !== 'none')) {
+          const text = this.bestSellersReply(ctx?.key || v.category, session, 10);
+          if (text) return reply(text, 'understood_list_more', (session.lastShownProducts || []).map(p => p.productId));
+        }
+        if (ctx?.type === 'search' && ctx.query) {
+          const found = woocommerceService.searchProductsDetailed(ctx.query);
+          const all = found.products.slice(0, 10);
+          if (all.length > 0) {
+            session.lastShownProducts = all.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+            session.productListPending = true;
+            session.pendingProductIndex = null;
+            const lines = all.map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price}${p.sizes?.length ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n${p.permalink}` : ''}`).join('\n');
+            const range = all.length > 1 ? `1–${all.length}` : '1';
+            return reply(isT
+              ? `Stock la irukura ellaam 👇\n${lines}\n\nEdhu venum (${range})? Size, quantity-um sollunga 🛍️`
+              : `Here's everything we have 👇\n${lines}\n\nWhich one would you like (${range})? Tell me the size and quantity too 🛍️`,
+            'understood_list_more', all.map(p => p.id));
+          }
+        }
+        if (v.search) return { rewriteQuery: v.search };
+        return { agentNote: true };
+      }
+
+      case 'product_search': {
+        // They asked for something else while a product is in the cart. The cart holds one
+        // product, so the new request replaces it — and we say so, instead of reading their
+        // words as an address or pushing the old order (2026-09-29: "I want Man City jersey").
+        let notePrefix = null;
+        if (active && v.search) {
+          const norm = s => String(s || '').toLowerCase();
+          // Same product named again ("the Barcelona one in L") keeps it.
+          const sameProduct = norm(locked.name).includes(norm(v.search));
+          if (!sameProduct) {
+            notePrefix = isT ? `*${locked.name}* ah cart la irundhu remove panniten.` : `I've taken *${locked.name}* out of your cart.`;
+            this._clearOrderSelection(session);
+          }
+        }
+        if (!v.search && v.category !== 'none') {
+          const text = this.bestSellersReply(v.category, session, 3);
+          if (text) return reply(notePrefix ? `${notePrefix}\n${text}` : text, 'understood_browse_pick', (session.lastShownProducts || []).map(p => p.productId));
+        }
+        return { agentNote: true, notePrefix };
+      }
+
+      case 'pick_product':
+      case 'size_qty':
+      case 'give_address':
+      case 'confirm_order': {
+        if (v.intent === 'confirm_order' && session.state === 'CONFIRMING_ORDER') return { confirm: true };
+        // A menu pick ("2" after the category menu).
+        if (v.intent === 'pick_product' && session.pendingBrowse && Array.isArray(session.browseGroups)) {
+          session.pendingBrowse = false;
+          const key = (v.pick && session.browseGroups[v.pick - 1]?.key) || woocommerceService.matchGroupChoice(userQuery, session.browseGroups);
+          const text = key ? this.bestSellersReply(key, session) : null;
+          if (text) return reply(text, 'deterministic_browse_pick', (session.lastShownProducts || []).map(p => p.productId));
+        }
+        const st = await this._handleOrderStateTurn(senderId, session, userQuery, v);
+        if (st && st.rewriteQuery) return { rewriteQuery: st.rewriteQuery };
+        if (st) return st;
+        return { agentNote: true };
+      }
+
+      case 'complaint':
+        if (isT && !active && !/\d{4,}/.test(userQuery)
+            && !(session.complaintAskedAt && Date.now() - session.complaintAskedAt < 30 * 60 * 1000)) {
+          session.complaintAskedAt = Date.now();
+          return reply('Romba sorry 🙏 Idha naanga kandippa sort out panrom.\n'
+            + 'Unga order ID um, enna problem nu oru line la anuppunga. Photo irundha adhuvum anuppunga.\n'
+            + 'Team udane check pannuvaanga.', 'deterministic_complaint');
+        }
+        return { agentNote: true };
+
+      default:
+        // "Enna bro pesuradhe purila" — they could not understand US. The recovery must not be
+        // written by the model whose language just failed (see the 2026-09-22 note), so it is
+        // fixed text: sorry once, then plain English with the real team list.
+        if ((v.intent === 'not_understood' || (v.intent === 'other' && v.mood === 'confused')) && !active) {
+          const teams = woocommerceService.listTeams(8);
+          const list = teams.length > 0 ? `\n\n${teams.map(t => `• ${t}`).join('\n')}\n` : ' ';
+          return reply(isT
+            ? `Sorry 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
+            : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`,
+          'deterministic_clarify');
+        }
+        // product_question, cancel_placed_order, human_request, other — the agent answers,
+        // with the meaning attached.
+        return { agentNote: true };
+    }
+  }
+
+  /** The meaning, handed to the agent as a note right before the customer's message. */
+  _understandingNote(v, session) {
+    const lines = [`WHAT THE CUSTOMER MEANS (read from the whole chat — trust this over the literal words): ${v.meaning || v.intent}`];
+    if (v.questions.length > 0) lines.push(`Their question(s), answer EVERY one, in order: ${v.questions.map((q, i) => `${i + 1}) ${q}`).join(' ')}`);
+    if (v.mood === 'frustrated' || v.mood === 'angry') lines.push('They are frustrated with the previous replies: start with one short, sincere sorry, then answer exactly what they asked. Do not repeat a list you already sent.');
+    const lo = this._recentOrder(session);
+    if (lo && !orderState.hasActiveOrder(session)) lines.push(`This customer ALREADY PLACED order #${lo.orderId}${lo.checkoutUrl ? ` (payment link: ${lo.checkoutUrl})` : ''}. Questions about delivery/payment are about that order. Never ask them to place an order again.`);
+    if (!['product_search', 'list_more', 'list_teams', 'browse_catalogue'].includes(v.intent)) {
+      lines.push('They did NOT ask to see products. Do not call search_products and do not list teams unless their question needs it.');
+    }
+    return lines.join('\n');
+  }
+
   async answerQuery(senderId, userQuery, customerName = null, customerPhone = null, options = {}) {
     // ONE turn per customer at a time, for EVERY caller. The WhatsApp handler already chains
     // messages per sender, but three other paths call in here outside that chain — the
@@ -2855,208 +3279,230 @@ ${sessionContext}`;
       return { replyText: resultText, intent: 'error', requiresEscalation: false, suggestedProductIds: [] };
     }
 
-    // --- Deterministic "start a new order" reset ---
-    // MUST run before the isIdle gate below, because its whole purpose is to rescue a
-    // session that is NOT idle.
-    //
-    // Every fast path (FAQ, knowledge, size/qty, product selection) is gated on
-    // `cart.length === 0`. Nothing used to clear the cart except completing or abandoning
-    // an order, so a customer who finished one purchase and typed "hi new order" stayed
-    // in COLLECTING_ADDRESS with a stale cart FOREVER. From that point every message went
-    // to the LLM, which — seeing a filled cart and an address-collection state — answered
-    // "1"/"M 5"/"s 3" by re-running search_products and re-printing the same list. That is
-    // the infinite product-list loop reported from production 2026-08-05, reproduced
-    // exactly: turn 2 deterministic_cart, then every later turn agent_handled with
-    // cart=1 / state=COLLECTING_ADDRESS.
-    //
-    // Deliberately narrow: an explicit restart phrase in a SHORT message, and never when
-    // the message looks like a question about an EXISTING order ("where is my new order",
-    // "cancel my order") — those are tracking/cancellation intents, not a restart.
-    if (userQuery && userQuery.trim().length <= 40) {
-      const q = userQuery.trim();
-      const wantsRestart = /\b(?:(?:new|another|fresh|next|one more|1 more)\s+(?:order|jersey|item|purchase)|start\s+(?:over|again|fresh)|restart|reset|clear\s+(?:my\s+)?cart|vera\s+(?:order|jersey)|innoru\s+(?:order|jersey))\b/i.test(q);
-      const isAboutExistingOrder = /\b(where|track|tracking|status|cancel|delivered|arrived|received|refund|return)\b/i.test(q);
-      if (wantsRestart && !isAboutExistingOrder) {
-        const hadCart = session.cart.length > 0 || Boolean(session.selectedProduct);
-        this._clearOrderSelection(session);
-        // Cleared too, so a later bare "1" can't select from the PREVIOUS order's list.
-        session.lastShownProducts = [];
-        const reply = session.language === 'tanglish'
-          ? `Sure! ${hadCart ? 'Pazhaya cart clear pannaachu. ' : ''}Fresh ah start pannalam — enna team illa player jersey venum? Real Madrid, Barcelona, Ronaldo, Messi… sollunga! ⚽`
-          : `Sure thing! 🔥 ${hadCart ? "Cleared your previous cart. " : ''}Let's start fresh — which team or player are you looking for? Real Madrid, Barcelona, Ronaldo, Messi… just tell me! ⚽`;
+    // --- Understand first (added 2026-09-30) ---
+    // The message is read for its MEANING, with the chat and the order state, and code acts
+    // on that. The keyword chain below runs only when this returns null. See understand.js.
+    let verdict = null;
+    let agentNote = null;
+    let notePrefix = null;
+    let forceConfirm = false;
+    if (userQuery && userQuery.trim()) {
+      verdict = await this.understandMessage(senderId, session, userQuery);
+    }
+    if (verdict) {
+      const routed = await this._routeByUnderstanding(senderId, session, userQuery, verdict);
+      if (routed && typeof routed.replyText === 'string') return routed;
+      if (routed?.rewriteQuery) userQuery = routed.rewriteQuery;
+      if (routed?.notePrefix) notePrefix = routed.notePrefix;
+      if (routed?.confirm) forceConfirm = true;
+      if (!routed?.confirm) agentNote = this._understandingNote(verdict, session);
+    }
+
+    // ── Keyword chain: ONLY when the message could not be understood (model down). ──
+    if (!verdict) {
+      // --- Deterministic "start a new order" reset ---
+      // MUST run before the isIdle gate below, because its whole purpose is to rescue a
+      // session that is NOT idle.
+      //
+      // Every fast path (FAQ, knowledge, size/qty, product selection) is gated on
+      // `cart.length === 0`. Nothing used to clear the cart except completing or abandoning
+      // an order, so a customer who finished one purchase and typed "hi new order" stayed
+      // in COLLECTING_ADDRESS with a stale cart FOREVER. From that point every message went
+      // to the LLM, which — seeing a filled cart and an address-collection state — answered
+      // "1"/"M 5"/"s 3" by re-running search_products and re-printing the same list. That is
+      // the infinite product-list loop reported from production 2026-08-05, reproduced
+      // exactly: turn 2 deterministic_cart, then every later turn agent_handled with
+      // cart=1 / state=COLLECTING_ADDRESS.
+      //
+      // Deliberately narrow: an explicit restart phrase in a SHORT message, and never when
+      // the message looks like a question about an EXISTING order ("where is my new order",
+      // "cancel my order") — those are tracking/cancellation intents, not a restart.
+      if (userQuery && userQuery.trim().length <= 40) {
+        const q = userQuery.trim();
+        const wantsRestart = /\b(?:(?:new|another|fresh|next|one more|1 more)\s+(?:order|jersey|item|purchase)|start\s+(?:over|again|fresh)|restart|reset|clear\s+(?:my\s+)?cart|vera\s+(?:order|jersey)|innoru\s+(?:order|jersey))\b/i.test(q);
+        const isAboutExistingOrder = /\b(where|track|tracking|status|cancel|delivered|arrived|received|refund|return)\b/i.test(q);
+        if (wantsRestart && !isAboutExistingOrder) {
+          const hadCart = session.cart.length > 0 || Boolean(session.selectedProduct);
+          this._clearOrderSelection(session);
+          // Cleared too, so a later bare "1" can't select from the PREVIOUS order's list.
+          session.lastShownProducts = [];
+          const reply = session.language === 'tanglish'
+            ? `Sure! ${hadCart ? 'Pazhaya cart clear pannaachu. ' : ''}Fresh ah start pannalam — enna team illa player jersey venum? Real Madrid, Barcelona, Ronaldo, Messi… sollunga! ⚽`
+            : `Sure thing! 🔥 ${hadCart ? "Cleared your previous cart. " : ''}Let's start fresh — which team or player are you looking for? Real Madrid, Barcelona, Ronaldo, Messi… just tell me! ⚽`;
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: reply });
+          await this._saveSession(senderId, session);
+          return { replyText: reply, intent: 'deterministic_reset', requiresEscalation: false, suggestedProductIds: [] };
+        }
+      }
+
+      // --- Deterministic order-state turn (added 2026-09-22) ---
+      // Everything that is really a state change — picking from the list, size, quantity,
+      // shipping details, "already sent", a payment question mid-order, "change product" — is
+      // read from the customer's words against the structured state and applied in code. See
+      // _handleOrderStateTurn. Runs before the FAQ/teams paths so a customer mid-order is
+      // never answered with a discovery reply.
+      const stateTurn = await this._handleOrderStateTurn(senderId, session, userQuery);
+      if (stateTurn && stateTurn.rewriteQuery) {
+        userQuery = stateTurn.rewriteQuery;
+      } else if (stateTurn) {
+        return stateTurn;
+      }
+
+      // --- Tanglish complaint: a fixed first reply (added 2026-09-29) ---
+      // The client's example of a "meaningless" reply was a complaint answered in free-written
+      // Tamil: "Service miss pannite ah naurom nu ninaikirenga nu puriyuthu … appo pathi naan
+      // immediate ah look panniten" — an invented word, chained clauses, and a claim to have
+      // ALREADY looked. A complaint's first reply always has the same job (sorry, send the order
+      // ID and the problem, the team will check), so it is written once, by a person, in plain
+      // Tanglish. Once they send the order ID the agent takes over and raises the ticket.
+      // Skipped when the message already carries an order number, mid-order (a "wrong size"
+      // there is a correction, not a complaint), and if we asked in the last 30 minutes.
+      if (session.language === 'tanglish' && userQuery && !orderState.hasActiveOrder(session)
+          && (tanglishReader.isComplaint(userQuery) || tanglishReader.isUpset(userQuery))
+          && !/\d{4,}/.test(userQuery)
+          && !(session.complaintAskedAt && Date.now() - session.complaintAskedAt < 30 * 60 * 1000)) {
+        const reply = 'Romba sorry 🙏 Idha naanga kandippa sort out panrom.\n'
+          + 'Unga order ID um, enna problem nu oru line la anuppunga. Photo irundha adhuvum anuppunga.\n'
+          + 'Team udane check pannuvaanga.';
+        session.complaintAskedAt = Date.now();
         session.history.push({ role: 'user', content: userQuery });
         session.history.push({ role: 'assistant', content: reply });
         await this._saveSession(senderId, session);
-        return { replyText: reply, intent: 'deterministic_reset', requiresEscalation: false, suggestedProductIds: [] };
-      }
-    }
-
-    // --- Deterministic order-state turn (added 2026-09-22) ---
-    // Everything that is really a state change — picking from the list, size, quantity,
-    // shipping details, "already sent", a payment question mid-order, "change product" — is
-    // read from the customer's words against the structured state and applied in code. See
-    // _handleOrderStateTurn. Runs before the FAQ/teams paths so a customer mid-order is
-    // never answered with a discovery reply.
-    const stateTurn = await this._handleOrderStateTurn(senderId, session, userQuery);
-    if (stateTurn && stateTurn.rewriteQuery) {
-      userQuery = stateTurn.rewriteQuery;
-    } else if (stateTurn) {
-      return stateTurn;
-    }
-
-    // --- Tanglish complaint: a fixed first reply (added 2026-09-29) ---
-    // The client's example of a "meaningless" reply was a complaint answered in free-written
-    // Tamil: "Service miss pannite ah naurom nu ninaikirenga nu puriyuthu … appo pathi naan
-    // immediate ah look panniten" — an invented word, chained clauses, and a claim to have
-    // ALREADY looked. A complaint's first reply always has the same job (sorry, send the order
-    // ID and the problem, the team will check), so it is written once, by a person, in plain
-    // Tanglish. Once they send the order ID the agent takes over and raises the ticket.
-    // Skipped when the message already carries an order number, mid-order (a "wrong size"
-    // there is a correction, not a complaint), and if we asked in the last 30 minutes.
-    if (session.language === 'tanglish' && userQuery && !orderState.hasActiveOrder(session)
-        && (tanglishReader.isComplaint(userQuery) || tanglishReader.isUpset(userQuery))
-        && !/\d{4,}/.test(userQuery)
-        && !(session.complaintAskedAt && Date.now() - session.complaintAskedAt < 30 * 60 * 1000)) {
-      const reply = 'Romba sorry 🙏 Idha naanga kandippa sort out panrom.\n'
-        + 'Unga order ID um, enna problem nu oru line la anuppunga. Photo irundha adhuvum anuppunga.\n'
-        + 'Team udane check pannuvaanga.';
-      session.complaintAskedAt = Date.now();
-      session.history.push({ role: 'user', content: userQuery });
-      session.history.push({ role: 'assistant', content: reply });
-      await this._saveSession(senderId, session);
-      return { replyText: reply, intent: 'deterministic_complaint', requiresEscalation: false, suggestedProductIds: [] };
-    }
-
-    // --- Pre-AI FAQ Matcher ---
-    // Answer common FAQ queries directly WITHOUT using any LLM tokens (faster, zero leak risk).
-    // CRITICAL: Only run when session is IDLE — NOT during an active order flow where
-    // the user might be specifying a size ("M"), address, or confirming an order.
-    const isIdle = !session.state || session.state === 'IDLE';
-    if (isIdle && session.cart.length === 0 && userQuery) {
-      // --- Knowledge Hub pre-check (client-taught corrections) ---
-      // Runs BEFORE the static FAQ matcher so a correction the client saved via the
-      // /knowledge-hub page always wins over the hard-coded default. A CONFIDENT match is
-      // answered directly with zero LLM (like FAQ); softer matches fall through and are
-      // injected into the LLM context below instead. Language-scoped in the matcher.
-      const knowledgeHit = await knowledgeService.match(userQuery, session.language);
-      if (knowledgeHit && knowledgeHit.tier === 'confident') {
-        const answer = knowledgeHit.entry.answer;
-        session.history.push({ role: 'user', content: userQuery });
-        session.history.push({ role: 'assistant', content: answer });
-        await this._saveSession(senderId, session);
-        return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
+        return { replyText: reply, intent: 'deterministic_complaint', requiresEscalation: false, suggestedProductIds: [] };
       }
 
+      // --- Pre-AI FAQ Matcher ---
+      // Answer common FAQ queries directly WITHOUT using any LLM tokens (faster, zero leak risk).
+      // CRITICAL: Only run when session is IDLE — NOT during an active order flow where
+      // the user might be specifying a size ("M"), address, or confirming an order.
+      const isIdle = !session.state || session.state === 'IDLE';
+      if (isIdle && session.cart.length === 0 && userQuery) {
+        // --- Knowledge Hub pre-check (client-taught corrections) ---
+        // Runs BEFORE the static FAQ matcher so a correction the client saved via the
+        // /knowledge-hub page always wins over the hard-coded default. A CONFIDENT match is
+        // answered directly with zero LLM (like FAQ); softer matches fall through and are
+        // injected into the LLM context below instead. Language-scoped in the matcher.
+        const knowledgeHit = await knowledgeService.match(userQuery, session.language);
+        if (knowledgeHit && knowledgeHit.tier === 'confident') {
+          const answer = knowledgeHit.entry.answer;
+          session.history.push({ role: 'user', content: userQuery });
+          session.history.push({ role: 'assistant', content: answer });
+          await this._saveSession(senderId, session);
+          return { replyText: answer, intent: 'knowledge', requiresEscalation: false, suggestedProductIds: [] };
+        }
 
 
-      // --- Guided browse, step 2: the customer picked a category off the menu ---
-      // Read and CLEAR the flag first, whether or not it resolves. A customer who ignores the
-      // menu and asks something else must not leave a live "pick a category" state behind for
-      // a later, unrelated "2" to be swallowed by.
-      const awaitingGroupPick = session.pendingBrowse === true;
-      const offeredGroups = Array.isArray(session.browseGroups) ? session.browseGroups : [];
-      if (awaitingGroupPick) {
-        session.pendingBrowse = false;
-        const picked = woocommerceService.matchGroupChoice(userQuery, offeredGroups);
-        // null falls through to the normal agent, which is always safe -- "Real Madrid" typed
-        // at the menu is a search, not a bad category guess.
-        const reply = picked ? this.bestSellersReply(picked, session) : null;
-        if (reply) {
+
+        // --- Guided browse, step 2: the customer picked a category off the menu ---
+        // Read and CLEAR the flag first, whether or not it resolves. A customer who ignores the
+        // menu and asks something else must not leave a live "pick a category" state behind for
+        // a later, unrelated "2" to be swallowed by.
+        const awaitingGroupPick = session.pendingBrowse === true;
+        const offeredGroups = Array.isArray(session.browseGroups) ? session.browseGroups : [];
+        if (awaitingGroupPick) {
+          session.pendingBrowse = false;
+          const picked = woocommerceService.matchGroupChoice(userQuery, offeredGroups);
+          // null falls through to the normal agent, which is always safe -- "Real Madrid" typed
+          // at the menu is a search, not a bad category guess.
+          const reply = picked ? this.bestSellersReply(picked, session) : null;
+          if (reply) {
+            session.history.push({ role: 'user', content: userQuery });
+            session.history.push({ role: 'assistant', content: reply });
+            await this._saveSession(senderId, session);
+            return {
+              replyText: reply,
+              intent: 'deterministic_browse_pick',
+              requiresEscalation: false,
+              suggestedProductIds: (session.lastShownProducts || []).map(p => p.productId),
+            };
+          }
+        }
+        // --- Deterministic "which teams do you have?" answer (added 2026-09-22) ---
+        // "Enna enna team la iruke?" has no search term in it, so search_products returns
+        // nothing and there is no tool that answers it. Left to the LLM, the 2026-09-21 chat
+        // shows what happens: it answered the question with another question three times in a
+        // row, and padded it with a list off the top of its head — Mbappe, Haaland, CSK,
+        // Mumbai Indians, Rajasthan Royals — none of which is in the catalogue at all. That
+        // breaks the NEVER INVENT PRODUCTS rule and strands the customer.
+        //
+        // The catalogue knows the answer exactly, so nothing is gained by asking a model:
+        // listTeams() reads it straight from the in-stock products cache.
+        if (woocommerceService.asksWhichTeams(userQuery)) {
+          const reply = this.teamListReply(session.language, session);
+          if (reply) {
+            session.history.push({ role: 'user', content: userQuery });
+            session.history.push({ role: 'assistant', content: reply });
+            await this._saveSession(senderId, session);
+            return { replyText: reply, intent: 'deterministic_teams', requiresEscalation: false, suggestedProductIds: [] };
+          }
+        }
+
+        // --- Guided browse, step 1: "what do you actually sell?" ---
+        // Runs AFTER the teams check on purpose. "Enna enna team la iruke?" satisfies both, and
+        // a question about teams deserves the team list -- this is the broader case, where the
+        // customer has not seen the shop and cannot name anything to ask for.
+        if (woocommerceService.asksWhatWeSell(userQuery)) {
+          const reply = this.browseMenuReply(session.language, session);
+          if (reply) {
+            session.history.push({ role: 'user', content: userQuery });
+            session.history.push({ role: 'assistant', content: reply });
+            await this._saveSession(senderId, session);
+            return { replyText: reply, intent: 'deterministic_browse', requiresEscalation: false, suggestedProductIds: [] };
+          }
+        }
+
+        // --- Deterministic "I can't understand you" recovery (added 2026-09-22) ---
+        // "Enna bro pesuradhe purila" ("I don't get what you're saying") is the clearest
+        // possible signal that the previous reply's Tanglish did not land — and in the
+        // 2026-09-21 chat the model answered it with MORE of the same invented Tamil
+        // ("Oru team pechu sollu"), which is the worst available move.
+        //
+        // Handled in code because the recovery must not be generated by the thing that just
+        // failed: apologise once, then say it again in mostly plain English with the actual
+        // catalogue in front of them, so the next turn has something concrete to reply to.
+        if (/\b(purila|puriyala|puriyalai|puriyathu|puriyavillai|puriyala\s*bro|enna\s+sollur[ae]|enna\s+solringa|what\s+are\s+you\s+saying|makes?\s+no\s+sense|didn'?t\s+understand|don'?t\s+understand|not\s+clear)\b/i.test(userQuery)) {
+          const teams = woocommerceService.listTeams(8);
+          const list = teams.length > 0 ? `\n\n${teams.map(t => `• ${t}`).join('\n')}\n` : ' ';
+          const reply = session.language === 'tanglish'
+            ? `Sorry 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
+            : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`;
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
           await this._saveSession(senderId, session);
-          return {
-            replyText: reply,
-            intent: 'deterministic_browse_pick',
-            requiresEscalation: false,
-            suggestedProductIds: (session.lastShownProducts || []).map(p => p.productId),
-          };
+          return { replyText: reply, intent: 'deterministic_clarify', requiresEscalation: false, suggestedProductIds: [] };
         }
-      }
-      // --- Deterministic "which teams do you have?" answer (added 2026-09-22) ---
-      // "Enna enna team la iruke?" has no search term in it, so search_products returns
-      // nothing and there is no tool that answers it. Left to the LLM, the 2026-09-21 chat
-      // shows what happens: it answered the question with another question three times in a
-      // row, and padded it with a list off the top of its head — Mbappe, Haaland, CSK,
-      // Mumbai Indians, Rajasthan Royals — none of which is in the catalogue at all. That
-      // breaks the NEVER INVENT PRODUCTS rule and strands the customer.
-      //
-      // The catalogue knows the answer exactly, so nothing is gained by asking a model:
-      // listTeams() reads it straight from the in-stock products cache.
-      if (woocommerceService.asksWhichTeams(userQuery)) {
-        const reply = this.teamListReply(session.language, session);
-        if (reply) {
+        // Skip the canned FAQ fast-path for real order-tracking lookups and complaints so
+        // they reach the LLM support agent (which can call lookup_order / create_support_ticket)
+        // instead of being intercepted by a generic policy blurb. A bare "how do I track?"
+        // (no order number) still gets the cheap FAQ answer.
+        const looksLikeOrderLookup = /\b(order|parcel|package|shipment|tracking|track|delivered|delivery|status)\b/i.test(userQuery) && /\d{3,}/.test(userQuery);
+        const looksLikeComplaint = /\b(wrong (item|jersey|name|number|size|team|product)|damaged|broken|defective|torn|stained|misprint|missing|not received|didn'?t (get|receive)|never (got|arrived|received)|haven'?t received)\b/i.test(userQuery);
+        // Refund/money-back is a sensitive money topic — route it to the LLM so it collects the
+        // order details and raises a ticket (never a canned blurb, and never a refund promise).
+        // The owner's 2026-09-28 guide: no return/exchange policy is stated; the team decides.
+        const looksLikeRefund = /\b(refund|money back|cashback|return my money|my money back)\b/i.test(userQuery);
+
+        // An FAQ answer whose numbers (price, days, phone) are not in the owner's rule cards on
+        // that topic is never served — the question goes to the agent, which gets those cards
+        // with the message (services/rules.js). An FAQ that agrees stays free.
+        await rulesService.refresh();
+        const overridden = rulesService.disabledFaqCategories();
+        // An FAQ answers ONE thing. "FC set la shorts varuma? size M irukka" used to get the
+        // FC Set answer and the size question was silently dropped — so a Tanglish message
+        // with two or more questions goes to the agent, which is told to answer each in turn.
+        const asksSeveral = session.language === 'tanglish' && tanglishReader.questionsIn(userQuery).length >= 2;
+        const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund || asksSeveral) ? []
+          : faqService.searchFAQs(userQuery).filter(f => !overridden.has(f.category));
+        if (faqMatches.length > 0) {
+          // Language-matched reply — session.language is already locked, and answering a
+          // Tanglish customer in English here would contradict the whole conversation.
+          const answer = faqService.answerFor(faqMatches[0], session.language);
           session.history.push({ role: 'user', content: userQuery });
-          session.history.push({ role: 'assistant', content: reply });
+          session.history.push({ role: 'assistant', content: answer });
           await this._saveSession(senderId, session);
-          return { replyText: reply, intent: 'deterministic_teams', requiresEscalation: false, suggestedProductIds: [] };
+          return { replyText: answer, intent: 'faq', requiresEscalation: false, suggestedProductIds: [] };
         }
-      }
-
-      // --- Guided browse, step 1: "what do you actually sell?" ---
-      // Runs AFTER the teams check on purpose. "Enna enna team la iruke?" satisfies both, and
-      // a question about teams deserves the team list -- this is the broader case, where the
-      // customer has not seen the shop and cannot name anything to ask for.
-      if (woocommerceService.asksWhatWeSell(userQuery)) {
-        const reply = this.browseMenuReply(session.language, session);
-        if (reply) {
-          session.history.push({ role: 'user', content: userQuery });
-          session.history.push({ role: 'assistant', content: reply });
-          await this._saveSession(senderId, session);
-          return { replyText: reply, intent: 'deterministic_browse', requiresEscalation: false, suggestedProductIds: [] };
-        }
-      }
-
-      // --- Deterministic "I can't understand you" recovery (added 2026-09-22) ---
-      // "Enna bro pesuradhe purila" ("I don't get what you're saying") is the clearest
-      // possible signal that the previous reply's Tanglish did not land — and in the
-      // 2026-09-21 chat the model answered it with MORE of the same invented Tamil
-      // ("Oru team pechu sollu"), which is the worst available move.
-      //
-      // Handled in code because the recovery must not be generated by the thing that just
-      // failed: apologise once, then say it again in mostly plain English with the actual
-      // catalogue in front of them, so the next turn has something concrete to reply to.
-      if (/\b(purila|puriyala|puriyalai|puriyathu|puriyavillai|puriyala\s*bro|enna\s+sollur[ae]|enna\s+solringa|what\s+are\s+you\s+saying|makes?\s+no\s+sense|didn'?t\s+understand|don'?t\s+understand|not\s+clear)\b/i.test(userQuery)) {
-        const teams = woocommerceService.listTeams(8);
-        const list = teams.length > 0 ? `\n\n${teams.map(t => `• ${t}`).join('\n')}\n` : ' ';
-        const reply = session.language === 'tanglish'
-          ? `Sorry 🙏 simple ah solren. Namma stock la idhellaam iruku:${list}\nOru team name type pannunga (example: "Real Madrid") — naan price, size ellaam anuppuren.`
-          : `Sorry about that! 🙏 Let me keep it simple. Here's what we have in stock:${list}\nJust type one team name (for example "Real Madrid") and I'll send you the price and sizes.`;
-        session.history.push({ role: 'user', content: userQuery });
-        session.history.push({ role: 'assistant', content: reply });
-        await this._saveSession(senderId, session);
-        return { replyText: reply, intent: 'deterministic_clarify', requiresEscalation: false, suggestedProductIds: [] };
-      }
-      // Skip the canned FAQ fast-path for real order-tracking lookups and complaints so
-      // they reach the LLM support agent (which can call lookup_order / create_support_ticket)
-      // instead of being intercepted by a generic policy blurb. A bare "how do I track?"
-      // (no order number) still gets the cheap FAQ answer.
-      const looksLikeOrderLookup = /\b(order|parcel|package|shipment|tracking|track|delivered|delivery|status)\b/i.test(userQuery) && /\d{3,}/.test(userQuery);
-      const looksLikeComplaint = /\b(wrong (item|jersey|name|number|size|team|product)|damaged|broken|defective|torn|stained|misprint|missing|not received|didn'?t (get|receive)|never (got|arrived|received)|haven'?t received)\b/i.test(userQuery);
-      // Refund/money-back is a sensitive money topic — route it to the LLM so it collects the
-      // order details and raises a ticket (never a canned blurb, and never a refund promise).
-      // The owner's 2026-09-28 guide: no return/exchange policy is stated; the team decides.
-      const looksLikeRefund = /\b(refund|money back|cashback|return my money|my money back)\b/i.test(userQuery);
-
-      // An FAQ answer whose numbers (price, days, phone) are not in the owner's rule cards on
-      // that topic is never served — the question goes to the agent, which gets those cards
-      // with the message (services/rules.js). An FAQ that agrees stays free.
-      await rulesService.refresh();
-      const overridden = rulesService.disabledFaqCategories();
-      // An FAQ answers ONE thing. "FC set la shorts varuma? size M irukka" used to get the
-      // FC Set answer and the size question was silently dropped — so a Tanglish message
-      // with two or more questions goes to the agent, which is told to answer each in turn.
-      const asksSeveral = session.language === 'tanglish' && tanglishReader.questionsIn(userQuery).length >= 2;
-      const faqMatches = (looksLikeOrderLookup || looksLikeComplaint || looksLikeRefund || asksSeveral) ? []
-        : faqService.searchFAQs(userQuery).filter(f => !overridden.has(f.category));
-      if (faqMatches.length > 0) {
-        // Language-matched reply — session.language is already locked, and answering a
-        // Tanglish customer in English here would contradict the whole conversation.
-        const answer = faqService.answerFor(faqMatches[0], session.language);
-        session.history.push({ role: 'user', content: userQuery });
-        session.history.push({ role: 'assistant', content: answer });
-        await this._saveSession(senderId, session);
-        return { replyText: answer, intent: 'faq', requiresEscalation: false, suggestedProductIds: [] };
       }
     }
 
@@ -3069,7 +3515,8 @@ ${sessionContext}`;
     // anchored full-string match, not substring — so "yes but change the address"
     // still goes to the LLM instead of confirming blindly.
     if (session.state === 'CONFIRMING_ORDER' && userQuery) {
-      const isConfirmReply = /^\s*(yes+|yeah|yep|ye+p|confirm(ed)?|ok(ay)?|okey|sure|correct|right|seri|sari|proceed|go ahead|order pannunga|book pannunga|place (the )?order)\s*[!.]*\s*$/i.test(userQuery.trim());
+      // Understood: the verdict decides. Not understood: the old full-string word match.
+      const isConfirmReply = verdict ? forceConfirm : /^\s*(yes+|yeah|yep|ye+p|confirm(ed)?|ok(ay)?|okey|sure|correct|right|seri|sari|proceed|go ahead|order pannunga|book pannunga|place (the )?order)\s*[!.]*\s*$/i.test(userQuery.trim());
       if (isConfirmReply) {
         const result = await this._confirmOrderNow(session, senderId);
         // WooCommerce refused the order (or ordering is known to be down). Say so honestly,
@@ -3113,7 +3560,11 @@ ${sessionContext}`;
           session.address = null;
           session.addressDetails = null;
           session.addressDraft = null;
-          session.history = [];
+          // Keep ONLY the confirmation exchange. Wiping everything (as before 2026-09-30) made
+          // "Epo delivery aagum?" one minute later look like a stranger's first message, and it
+          // got the team list and "will you place the order?". The old product talk is still
+          // dropped, so a stale productId cannot leak into the next order.
+          session.history = session.history.slice(-2);
 
           await this._saveSession(senderId, session);
           await dbService.saveLead({
@@ -3215,6 +3666,9 @@ ${sessionContext}`;
       if (thinkThisTurn) console.log('[AI Service] Hard Tanglish message — letting the model think this turn');
     }
 
+    // The meaning from the understanding step, right before the message it explains.
+    if (agentNote) messages.push({ role: 'system', content: agentNote });
+
     messages.push({ role: "user", content: userQuery });
 
     let keepLooping = true;
@@ -3269,6 +3723,7 @@ ${sessionContext}`;
               // or the cart: showing options is not the customer choosing one.
               session.pendingProductIndex = null;
               session.productListPending = shown.length > 0;
+              if (found.products.length > 0) session.lastListContext = { type: 'search', query: searchQuery };
 
               // Skip the second "narration" LLM call entirely — template it directly.
               // Originally only did this for a single confident match; multi-match search
@@ -3288,6 +3743,27 @@ ${sessionContext}`;
                 // Mid-order, a vague search must NOT throw the customer back to team selection
                 // (the "Idhellaam ippo stock la iruku bro … Enna team venum?" regression):
                 // resume their order instead.
+                // The customer did not ask to see products (a delivery question, "okay", "no
+                // need"…) but the model searched anyway, found no team, and until 2026-09-30 the
+                // code below then REPLACED their question with the team list or the cart prompt.
+                // Hand the question back to the model instead.
+                if (found.matchQuality === 'broad' && verdict
+                    && !['product_search', 'list_teams', 'list_more', 'browse_catalogue'].includes(verdict.intent)) {
+                  session.lastShownProducts = previouslyShown;
+                  lastSearchResults = [];
+                  matchedProductIds = [];
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: fnName,
+                    content: JSON.stringify({
+                      products: null,
+                      matchQuality: 'not_a_product_request',
+                      message: `The customer did not ask for products. Their meaning: ${verdict.meaning || verdict.intent}. Answer that directly and briefly. Do not search again and do not list teams or products.`,
+                    }),
+                  });
+                  continue;
+                }
                 if (found.matchQuality === 'broad' && orderState.hasActiveOrder(session)) {
                   session.lastShownProducts = [];
                   session.productListPending = false;
@@ -3844,6 +4320,9 @@ ${sessionContext}`;
       return { replyText: resultText, intent: 'quota_exhausted', requiresEscalation: false, suggestedProductIds: [] };
     }
 
+    // Something code already did this turn (e.g. took the old product out of the cart).
+    if (notePrefix && resultText) resultText = `${notePrefix}\n${resultText}`;
+
     session.history.push({ role: 'user', content: userQuery });
     session.history.push({ role: 'assistant', content: resultText });
 
@@ -3865,7 +4344,7 @@ ${sessionContext}`;
       session.address = null;
       session.addressDetails = null;
       session.addressDraft = null;
-      session.history = [];
+      session.history = session.history.slice(-2);   // the confirmation exchange only — see above
     }
 
     if (requiresEscalation) {

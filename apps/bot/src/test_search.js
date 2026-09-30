@@ -26,6 +26,9 @@ process.env.AURAX_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'aurax-search
 
 const woo = (await import('./services/woocommerce.js')).default;
 const aiService = (await import('./services/ai.js')).default;
+// These suites cover the action layer and the keyword fallback: the understanding step
+// (services/understand.js) is tested on its own in test_understanding.js.
+aiService.understandMessage = async () => null;
 
 let passed = 0;
 let failed = 0;

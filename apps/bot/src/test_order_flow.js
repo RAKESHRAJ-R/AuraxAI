@@ -26,6 +26,9 @@ const dbService = (await import('./services/db.js')).default;
 const whatsappWebBot = (await import('./services/whatsapp-web-bot.js')).default;
 const faqService = (await import('./services/faq.js')).default;
 const aiService = (await import('./services/ai.js')).default;
+// These suites cover the action layer and the keyword fallback: the understanding step
+// (services/understand.js) is tested on its own in test_understanding.js.
+aiService.understandMessage = async () => null;
 
 let passed = 0;
 let failed = 0;

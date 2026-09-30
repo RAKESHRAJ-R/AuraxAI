@@ -25,6 +25,9 @@ const knowledgeService = (await import('./services/knowledge.js')).default;
 const retrievalService = (await import('./services/retrieval.js')).default;
 const sheetsService = (await import('./services/sheets.js')).default;
 const aiService = (await import('./services/ai.js')).default;
+// These suites cover the action layer and the keyword fallback: the understanding step
+// (services/understand.js) is tested on its own in test_understanding.js.
+aiService.understandMessage = async () => null;
 const orderState = (await import('./services/orderState.js')).default;
 
 let passed = 0;
