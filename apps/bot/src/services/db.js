@@ -969,12 +969,16 @@ class DatabaseService {
     }
   }
 
-  async updateLeadFollowUp(userId) {
+  // restart: the customer replied since our last nudge, so this one is #1 of a new silence.
+  async updateLeadFollowUp(userId, { restart = false } = {}) {
     if (this.useMongo) {
       try {
+        const at = new Date().toISOString();
         await this.db.collection('leads').updateOne(
           { userId },
-          { $inc: { followUpCount: 1 }, $set: { lastFollowUp: new Date().toISOString() } }
+          restart
+            ? { $set: { followUpCount: 1, lastFollowUp: at } }
+            : { $inc: { followUpCount: 1 }, $set: { lastFollowUp: at } }
         );
         return;
       } catch (err) {
@@ -985,7 +989,7 @@ class DatabaseService {
       const leads = JSON.parse(fs.readFileSync(LEADS_FILE, 'utf-8'));
       const idx = leads.findIndex(l => l.userId === userId);
       if (idx >= 0) {
-        leads[idx].followUpCount = (leads[idx].followUpCount || 0) + 1;
+        leads[idx].followUpCount = restart ? 1 : (leads[idx].followUpCount || 0) + 1;
         leads[idx].lastFollowUp = new Date().toISOString();
         fs.writeFileSync(LEADS_FILE, JSON.stringify(leads, null, 2), 'utf-8');
       }

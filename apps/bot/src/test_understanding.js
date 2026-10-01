@@ -287,6 +287,90 @@ console.log('\n8. When the model cannot be reached, the keyword chain still answ
   check('no verdict → the old browse menu still works', /Club football jerseys/.test(r.replyText), r.replyText.slice(0, 120));
 }
 
+// ---------------------------------------------------------------- 8b. change only the address
+console.log('\n8b. The 2026-10-01 chat — "keep the jersey, change only the address"');
+{
+  const OLD = { name: 'Sess', address: '90, Indian, salem-678678', pincode: '678678', phone: '7655788766' };
+  const base = () => ({ cart: [item(GUARDIOLA, 'M', 5)], selectedProduct: lockOf(GUARDIOLA), state: 'CONFIRMING_ORDER',
+    addressDetails: { ...OLD }, customerProfile: { ...OLD }, addressDraft: { ...OLD } });
+  const orderState = (await import('./services/orderState.js')).default;
+  check('"Address change panniten" is not read as an address', !orderState.parseAddressParts('Address change panniten').address, '');
+  check('"intha address venaam vera address kudukuren" is not an address', !orderState.parseAddressParts('I mean intha address venaam vera address kudukuren').address, '');
+  check('"Address: …" and "Address 12 Gandhi street" still are', /Gandhi/.test(orderState.parseAddressParts('Address 12 Gandhi street, Salem').address || '')
+    && /Lake/.test(orderState.parseAddressParts('Address: 4 Lake view road, Madurai').address || ''), '');
+
+  // The intended reading.
+  const id = await newCustomer(base());
+  const r1 = await ask(id, 'Address change panniten', V('change_address'));
+  let s = await state(id);
+  check('change_address keeps the jersey and drops the old address', s.cart.length === 1 && s.cart[0].qty === 5 && !s.addressDetails && !s.customerProfile && s.state === 'COLLECTING_ADDRESS', JSON.stringify({ cart: s.cart, a: s.addressDetails, st: s.state }));
+  check('…and asks in the usual format', /Name, Address, Pincode, Mobile number/.test(r1.replyText) && !TEAM_LIST.test(r1.replyText) && llmCalls === 0, r1.replyText);
+  const r2 = await ask(id, 'Ravi, No 5 Gandhi street, Salem 636001, 9876543210', V('give_address'));
+  s = await state(id);
+  check('the new address replaces the old one in the summary', s.addressDetails?.pincode === '636001' && /Gandhi/.test(r2.replyText) && !/678678/.test(r2.replyText) && s.cart[0]?.qty === 5, r2.replyText);
+
+  // The misread that happened live: "Ithu venaam" read as cancel_cart right after talking about the address.
+  const id2 = await newCustomer(base());
+  await ask(id2, 'Address change panniten', V('change_address'));
+  await dbService.saveSession(id2, Object.assign(await state(id2), base())); // as if the address step had not run
+  const r3 = await ask(id2, 'Ithu venaam', V('cancel_cart'));
+  s = await state(id2);
+  check('"Ithu venaam" after talking about the address asks jersey-or-address instead of deleting', s.cart.length === 1 && /address/i.test(r3.replyText) && /jersey/i.test(r3.replyText), r3.replyText);
+  const r4 = await ask(id2, 'jersey remove', V('cancel_cart'));
+  s = await state(id2);
+  check('…and a clear "jersey remove" then removes it, with an undo hint', s.cart.length === 0 && s.removedCart?.cart?.length === 1 && /undo/i.test(r4.replyText), r4.replyText);
+  const r5 = await ask(id2, 'Last aa select panniruntha jersey ennaku okay thaa address matum change pannanum', V('restore_cart'));
+  s = await state(id2);
+  check('restore_cart puts the jersey back (same size and qty) and asks for the new address', s.cart[0]?.productId === GUARDIOLA.id && s.cart[0]?.qty === 5
+    && /Name, Address, Pincode, Mobile number/.test(r5.replyText) && !TEAM_LIST.test(r5.replyText), r5.replyText);
+
+  // change_address straight after a removal also restores.
+  const id3 = await newCustomer({ ...base() });
+  await ask(id3, 'remove the jersey', V('cancel_cart'));
+  const r6 = await ask(id3, 'I mean intha address venaam vera address kudukuren', V('change_address', { mood: 'frustrated' }));
+  s = await state(id3);
+  check('change_address with an empty cart restores the removed jersey', s.cart.length === 1 && /thirumba cart la/.test(r6.replyText) && !TEAM_LIST.test(r6.replyText), r6.replyText);
+
+  // Angry with nothing to act on → a person, once.
+  const id4 = await newCustomer();
+  const r7 = await ask(id4, 'Loosu theliva thana solren', V('other', { mood: 'angry', meaning: 'insulting the bot' }));
+  const tickets = await dbService.getAllTickets();
+  check('an angry message with nothing to act on hands off to a person with a ticket', /team kitta anuppitten/.test(r7.replyText) && llmCalls === 0
+    && tickets.some(t => t.issueType === 'bot_handoff' && t.userId === id4), r7.replyText);
+  const r8 = await ask(id4, 'Loosu', V('other', { mood: 'angry' }));
+  check('…but not a second ticket within 2 hours', r8.intent !== 'understood_handoff', r8.intent);
+  // Angry WITH an action → the action, prefixed with a sorry.
+  const id5 = await newCustomer(base());
+  const r9 = await ask(id5, 'Loosu theliva thana solren address change panna pothum nu', V('change_address', { mood: 'angry' }));
+  check('an angry change_address does the change and says sorry first', /^Sorry, en thappu/.test(r9.replyText) && /Name, Address, Pincode, Mobile number/.test(r9.replyText), r9.replyText);
+
+  // The understanding call failed (what really happened live) → keyword fallback.
+  const id6 = await newCustomer(base());
+  const r10 = await ask(id6, 'Address change panniten', null);
+  s = await state(id6);
+  check('no verdict: "Address change panniten" still keeps the jersey and asks for the new address', s.cart.length === 1 && !s.addressDetails && /Name, Address, Pincode, Mobile number/.test(r10.replyText), r10.replyText);
+  const id7 = await newCustomer({ removedCart: { cart: [item(GUARDIOLA, 'M', 5)], selectedProduct: lockOf(GUARDIOLA), at: Date.now() }, addressDetails: { ...OLD } });
+  const r11 = await ask(id7, 'Ithu remove pannathenga, address matum change panna podhum', null);
+  s = await state(id7);
+  check('no verdict: "remove pannathenga, address mattum" restores the jersey and asks for the address', s.cart.length === 1 && /Name, Address, Pincode, Mobile number/.test(r11.replyText) && !TEAM_LIST.test(r11.replyText), r11.replyText);
+}
+
+// ---------------------------------------------------------------- 8c. re-order after expiry
+console.log('\n8c. "YES" after the expired-order note places the same order again');
+{
+  // Exactly the state followup.js leaves behind when an unpaid order was cancelled.
+  const id = await newCustomer({ cart: [item(GUARDIOLA, 'M', 5)], selectedProduct: lockOf(GUARDIOLA), state: 'CONFIRMING_ORDER',
+    addressDetails: ADDRESS, reorderOffered: true,
+    lastOrder: { orderId: 77997, checkoutUrl: PAY_URL, at: Date.now() - 70 * 60 * 1000, expiredNoticeAt: Date.now() } });
+  const realConfirm = aiService._confirmOrderNow;
+  let placed = null;
+  aiService._confirmOrderNow = async (s) => { placed = s.cart.map(i => `${i.productId}:${i.size}:${i.qty}`); return { ok: true, created: true, orderId: 88123, checkoutUrl: PAY_URL }; };
+  const r = await ask(id, 'Yes', V('confirm_order'));
+  aiService._confirmOrderNow = realConfirm;
+  check('the restored cart is ordered again, same jersey/size/qty', placed?.[0] === `${GUARDIOLA.id}:M:5` && /88123/.test(r.replyText), JSON.stringify({ placed, reply: r.replyText }));
+  check('the confirmation names the payment deadline', /kulla pay pannunga/.test(r.replyText), r.replyText);
+}
+
 // ---------------------------------------------------------------- 9. the module itself
 console.log('\n9. services/understand.js');
 {
@@ -313,6 +397,15 @@ console.log('\n9. services/understand.js');
   const got = await proto.understandMessage.call(aiService, 'x@c.us', s, 'Okay');
   check('understandMessage calls the chain with no tools and a small budget', seenOpts?.noTools === true && seenOpts?.maxTokens <= 1000, JSON.stringify(seenOpts));
   check('…and returns the verdict', got?.intent === 'closing' && got?.mood === 'frustrated', JSON.stringify(got));
+  const budgets = [];
+  aiService.callLLMWithFallback = async (m, lang, key, opts) => {
+    budgets.push(opts.maxTokens);
+    return budgets.length === 1
+      ? { choices: [{ message: { content: '' }, finish_reason: 'length' }] }
+      : { choices: [{ message: { content: '{"intent":"change_address","mood":"fine"}' } }] };
+  };
+  const retried = await proto.understandMessage.call(aiService, 'x@c.us', s, 'Address change panniten');
+  check('an EMPTY verdict is retried once with double the budget (live 2026-10-01)', retried?.intent === 'change_address' && budgets.length === 2 && budgets[1] === budgets[0] * 2, JSON.stringify(budgets));
   aiService.callLLMWithFallback = async () => { throw new Error('All LLM providers failed'); };
   check('a provider failure returns null (keyword fallback), never throws', (await proto.understandMessage.call(aiService, 'x@c.us', s, 'Okay')) === null, '');
   config.understand.enabled = false;

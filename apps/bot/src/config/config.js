@@ -174,6 +174,9 @@ const config = {
     gateway: (process.env.PAYMENT_GATEWAY || 'Razorpay').trim(),
     methods: (process.env.PAYMENT_METHODS || 'UPI,Debit/Credit card,Net banking')
       .split(',').map(s => s.trim()).filter(Boolean),
+    // WooCommerce "Hold stock (minutes)": an unpaid order is cancelled after this and its
+    // payment link dies. 60 on theaurax.in (verified 2026-09-20).
+    holdMinutes: parseInt(process.env.WC_HOLD_STOCK_MINUTES || '60', 10),
   },
   wati: {
     endpoint: process.env.WATI_API_ENDPOINT || '',
@@ -308,6 +311,14 @@ const config = {
     // Hard cap per 30-minute run. Without it the loop walks EVERY active lead in one pass,
     // sending near-identical templated text to all of them — the textbook bulk pattern.
     maxPerRun: parseInt(process.env.FOLLOWUP_MAX_PER_RUN || '8', 10),
+    // No cold nudge between these hours (IST, 24h clock) — it waits for the morning run.
+    // The payment reminder is exempt: it goes to someone who ordered minutes ago, and it
+    // has to land before the order auto-cancels. Same start and end = no quiet hours.
+    quietStartHour: parseInt(process.env.FOLLOWUP_QUIET_START_HOUR || '22', 10),
+    quietEndHour: parseInt(process.env.FOLLOWUP_QUIET_END_HOUR || '8', 10),
+    // Unpaid order → one payment reminder this many minutes after it was placed, while the
+    // link still works (WooCommerce cancels unpaid orders after payment.holdMinutes).
+    paymentReminderMinutes: parseInt(process.env.PAYMENT_REMINDER_MINUTES || '25', 10),
   },
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
   // Admin console accounts. Every person signs in with their own email + password and

@@ -1986,6 +1986,99 @@ ${sessionContext}`;
     session.state = 'IDLE';
   }
 
+  /*
+   * Removing a cart can be undone for an hour (2026-10-01). "Ithu venaam" was meant for the
+   * ADDRESS; the bot removed the jersey, and with nothing to put back every later "keep the
+   * jersey, change only the address" landed on an empty cart and got the team list.
+   */
+  _rememberRemovedCart(session) {
+    if (!session.cart?.length && !session.selectedProduct) return;
+    session.removedCart = {
+      cart: (session.cart || []).map(i => ({ ...i })),
+      selectedProduct: session.selectedProduct ? { ...session.selectedProduct } : null,
+      at: Date.now(),
+    };
+  }
+
+  _recentlyRemovedCart(session) {
+    const rc = session.removedCart;
+    if (!rc || !(rc.cart?.length || rc.selectedProduct)) return null;
+    return Date.now() - (rc.at || 0) < 60 * 60 * 1000 ? rc : null;
+  }
+
+  /** Put the removed cart back. True when there was something to restore. */
+  _restoreRemovedCart(session) {
+    const rc = this._recentlyRemovedCart(session);
+    if (!rc) return false;
+    session.cart = rc.cart.map(i => ({ ...i }));
+    const first = session.cart[0];
+    session.selectedProduct = rc.selectedProduct
+      || (first ? { productId: first.productId, name: first.name, price: first.price, sizes: [], permalink: '' } : null);
+    session.removedCart = null;
+    session.state = session.cart.length === 0 ? 'IDLE'
+      : orderState.isAddressComplete(session.addressDetails) ? 'CONFIRMING_ORDER' : 'COLLECTING_ADDRESS';
+    return true;
+  }
+
+  /**
+   * "Keep the jersey, give a new address": drop the old address and ask for the new one in the
+   * same "Name, Address, Pincode, Mobile number" format as the first time. The cart stays.
+   */
+  _startAddressChange(session, lead = '') {
+    const isT = session.language === 'tanglish';
+    session.addressDetails = null;
+    session.addressDraft = null;
+    session.customerProfile = null;
+    session.address = null;
+    session.state = 'COLLECTING_ADDRESS';
+    const item = session.cart[0];
+    const head = lead || (isT
+      ? `Seri 👍 *${item.name}* — ${item.size} size, ${item.qty} qty cart la apdiye iruku. Pazhaya address ah eduthutten.`
+      : `Sure 👍 *${item.name}* — Size ${item.size}, Qty ${item.qty} stays in your cart. I've removed the old address.`);
+    const ask = isT
+      ? 'Pudhu shipping details anuppunga — Name, Address, Pincode, Mobile number. 📦'
+      : 'Please send your new shipping details — Name, Address, Pincode, Mobile number. 📦';
+    return `${head}\n${ask}`;
+  }
+
+  /**
+   * The customer is angry, or frustrated twice running, and has nothing the code can act on:
+   * stop guessing, open a ticket and get a person. Repeating another list at this point is
+   * what turned the 2026-10-01 chat into "Loosu theliva thana solren".
+   */
+  async _handOffToHuman(senderId, session, userQuery, v) {
+    const isT = session.language === 'tanglish';
+    session.handoffAt = Date.now();
+    session.requiresEscalation = true;
+    let ticket = null;
+    try {
+      const cart = (session.cart || []).map(i => `${i.name} (size ${i.size}) x${i.qty}`).join('; ') || 'empty';
+      const recent = (session.history || []).slice(-6)
+        .map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${String(m.content || '').replace(/\s+/g, ' ').slice(0, 160)}`)
+        .join(' | ');
+      ticket = await dbService.saveTicket({
+        userId: senderId,
+        name: session.customerName || 'Customer',
+        phone: session.customerPhone || senderId.replace(/\D/g, ''),
+        email: '',
+        orderId: session.lastOrder?.orderId ? String(session.lastOrder.orderId) : '',
+        issueType: 'bot_handoff',
+        description: `Customer is upset with the bot — please take over this chat. They said: "${userQuery}". `
+          + `Bot read it as: ${v.meaning || v.intent}. Cart: ${cart}. Recent chat: ${recent}`,
+        hasPhoto: !!session.photoReceived,
+      });
+      session.lastTicketId = ticket.id;
+      this.sendSupportTicketAlert(senderId, ticket, session);
+    } catch (err) {
+      console.error('[AI Service] Could not raise hand-off ticket:', err.message);
+    }
+    const ref = ticket ? ` (ref ${ticket.id})` : '';
+    const text = isT
+      ? `Romba sorry 🙏 Naan sariya purinjukala. Unga chat ah team kitta anuppitten${ref} — oru person seekiram ungalukku message pannuvaanga.`
+      : `I'm really sorry 🙏 I didn't get that right. I've passed this chat to our team${ref} — a person will message you shortly.`;
+    return this._replyAndSave(senderId, session, userQuery, text, 'understood_handoff');
+  }
+
   /** Best known shipping details: this order's draft on top of the saved profile. */
   _knownAddress(session) {
     let d = orderState.mergeAddress(session.customerProfile || {}, {});
@@ -2743,8 +2836,10 @@ ${sessionContext}`;
       // JSON task — /no_think or not — and returned empty content on every Tanglish message,
       // so all of them fell back to keywords. Fireworks returned clean verdicts. The customer-
       // facing Tanglish reply still goes to Sarvam first; this call only reads the message.
-      callModel: (messages) => this.callLLMWithFallback(messages, 'english', senderId, {
-        noTools: true, maxTokens: config.understand?.maxTokens || 700, temperature: 0,
+      // The retry (attempt 2) gets double the budget: an empty or cut-off verdict is almost
+      // always a reasoning model running out of tokens before the JSON.
+      callModel: (messages, { attempt = 1 } = {}) => this.callLLMWithFallback(messages, 'english', senderId, {
+        noTools: true, maxTokens: (config.understand?.maxTokens || 700) * (attempt > 1 ? 2 : 1), temperature: 0,
       }),
     });
     if (verdict) {
@@ -2759,19 +2854,20 @@ ${sessionContext}`;
     session.history.push({ role: 'assistant', content: text });
     session.orderStep = orderState.computeStep(session);
     await this._saveSession(senderId, session);
-    if (orderState.hasActiveOrder(session)) {
-      await dbService.saveLead({
-        userId: senderId,
-        name: session.customerName || 'Customer',
-        phone: senderId.replace(/[^0-9]/g, ''),
-        channel: 'whatsapp',
-        cart: session.cart || [],
-        address: session.address || null,
-        requiresEscalation: session.requiresEscalation || false,
-        status: 'active',
-        conversation: session.history || [],
-      });
-    }
+    // Every customer turn keeps the lead current — not only mid-order. Otherwise a chat that
+    // ended on a code-built reply (browse menu, delivery answer…) kept an old updatedAt and
+    // whatever status it had before, and the follow-up timer read the wrong conversation.
+    await dbService.saveLead({
+      userId: senderId,
+      name: session.customerName || 'Customer',
+      phone: session.customerPhone || senderId.replace(/[^0-9]/g, ''),
+      channel: 'whatsapp',
+      cart: session.cart || [],
+      address: session.address || null,
+      requiresEscalation: session.requiresEscalation || false,
+      status: 'active',
+      conversation: session.history || [],
+    });
     return { replyText: text, intent, requiresEscalation: false, suggestedProductIds: productIds };
   }
 
@@ -2870,13 +2966,28 @@ ${sessionContext}`;
    */
   async _routeByUnderstanding(senderId, session, userQuery, v) {
     const isT = session.language === 'tanglish';
-    const reply = (text, intent, ids = []) => this._replyAndSave(senderId, session, userQuery, text, intent, ids);
+    // An upset customer gets one short sorry in front of whatever the code does next.
+    let sorry = null;
+    const reply = (text, intent, ids = []) =>
+      this._replyAndSave(senderId, session, userQuery, sorry ? `${sorry}\n${text}` : text, intent, ids);
     const item = session.cart?.[0] || null;
     const locked = orderState.lockedProduct(session);
     const active = Boolean(locked);
     const lo = this._recentOrder(session);
     const several = v.questions.length >= 2;
     if (v.intent !== 'closing') session.closedAt = null;
+
+    // Angry, or frustrated two messages running: say sorry, and when there is nothing concrete
+    // to act on, hand the chat to a person instead of guessing again (once per 2 hours).
+    const upset = v.mood === 'angry' || (v.mood === 'frustrated' && session.lastMood === 'frustrated');
+    session.lastMood = v.mood;
+    if (upset && v.intent !== 'closing') {
+      sorry = isT ? 'Sorry, en thappu dhaan 🙏' : "Sorry, that's my mistake 🙏";
+      const handedOff = session.handoffAt && Date.now() - session.handoffAt < 2 * 60 * 60 * 1000;
+      if (!handedOff && ['other', 'not_understood', 'complaint', 'human_request'].includes(v.intent)) {
+        return this._handOffToHuman(senderId, session, userQuery, v);
+      }
+    }
 
     // Our own "change the product? YES/NO" question is answered by the order-state turn.
     if (session.pendingClarify) {
@@ -2913,17 +3024,72 @@ ${sessionContext}`;
           return reply(isT ? 'Unga cart already empty dhaan 👍 Vera edhavadhu venumna sollunga.' : 'Your cart is already empty 👍 Let me know if you need anything else.', 'understood_cancel_cart');
         }
         const name = (item || locked).name;
+        // "Address change panniten" → "Ithu venaam": the "this" was the ADDRESS, and the bot
+        // removed the jersey (2026-10-01). When the address is what was being talked about
+        // and the jersey isn't named, ask — once — before deleting anything.
+        const prevUser = [...(session.history || [])].reverse().find(m => m.role === 'user')?.content || '';
+        const aboutAddress = /\b(address|addr|adress|addres)\b/i.test(`${userQuery} ${prevUser}`);
+        const namesJersey = Boolean(v.search) || /\b(jersey|jersy|jersi|shirt|order|cart|product|item|remove)\b/i.test(userQuery);
+        const askedRecently = session.cancelAskedAt && Date.now() - session.cancelAskedAt < 10 * 60 * 1000;
+        if (aboutAddress && !namesJersey && !askedRecently) {
+          session.cancelAskedAt = Date.now();
+          return reply(isT
+            ? `Jersey (*${name}*) ah remove pannanuma, illa address mattum maathanuma? 🙂\n• Address maathanum na "address" nu sollunga\n• Jersey venaam na "jersey remove" nu sollunga`
+            : `Do you want to remove the jersey (*${name}*), or only change the address? 🙂\n• To change the address, reply "address"\n• To remove the jersey, reply "remove jersey"`,
+          'understood_cancel_clarify');
+        }
+        this._rememberRemovedCart(session);
         this._clearOrderSelection(session);
         session.lastShownProducts = [];
         if (v.search) return { rewriteQuery: v.search, notePrefix: isT ? `*${name}* ah cart la irundhu remove panniten 👍` : `I've removed *${name}* from your cart 👍` };
         return reply(isT
-          ? `Done 👍 *${name}* ah cart la irundhu remove panniten. Vera jersey venumna sollunga.`
-          : `Done 👍 I've removed *${name}* from your cart. Let me know if you'd like anything else.`,
+          ? `Done 👍 *${name}* ah cart la irundhu remove panniten. Vera jersey venumna sollunga.\n(Thappa remove aayiduchuna "undo" nu sollunga.)`
+          : `Done 👍 I've removed *${name}* from your cart. Let me know if you'd like anything else.\n(Removed by mistake? Reply "undo".)`,
         'understood_cancel_cart');
+      }
+
+      case 'restore_cart': {
+        const rc = this._recentlyRemovedCart(session);
+        if (!rc || active) return { agentNote: true };
+        this._restoreRemovedCart(session);
+        sorry = null; // the lead below already apologises
+        const it = session.cart[0];
+        const ids = it ? [it.productId] : [];
+        const lead = it
+          ? (isT ? `Sorry 🙏 en thappu. *${it.name}* — ${it.size} size, ${it.qty} qty thirumba cart la vechitten ✅`
+                 : `Sorry 🙏 my mistake. *${it.name}* — Size ${it.size}, Qty ${it.qty} is back in your cart ✅`)
+          : (isT ? 'Sorry 🙏 en thappu. Neenga select panna jersey thirumba vechitten ✅' : "Sorry 🙏 my mistake. Your jersey is back ✅");
+        // "Don't remove it, I only want to change the address" — do both.
+        if (it && /\b(address|addr|adress|addres)\b/i.test(`${userQuery} ${v.meaning}`)) {
+          return reply(this._startAddressChange(session, lead), 'understood_restore_cart', ids);
+        }
+        return reply(`${lead}\n${this._nextStepPrompt(session)}`, 'understood_restore_cart', ids);
+      }
+
+      case 'change_address': {
+        let lead = '';
+        // The jersey was removed by mistake on the way here: put it back first.
+        if (!session.cart?.length && this._restoreRemovedCart(session)) {
+          const it = session.cart[0];
+          if (it) lead = isT
+            ? `*${it.name}* — ${it.size} size, ${it.qty} qty thirumba cart la vechitten ✅ Pazhaya address ah eduthutten.`
+            : `*${it.name}* — Size ${it.size}, Qty ${it.qty} is back in your cart ✅ I've removed the old address.`;
+        }
+        // No cart: a placed order's address is the team's to change — the agent raises it.
+        if (!session.cart?.length) return { agentNote: true };
+        // The new address may already be in this message: clear the old one and read it.
+        const parts = orderState.parseAddressParts(userQuery);
+        if (parts.phone || parts.pincode) {
+          this._startAddressChange(session);
+          const st = await this._handleOrderStateTurn(senderId, session, userQuery, { ...v, intent: 'give_address' });
+          if (st && typeof st.replyText === 'string') return st;
+        }
+        return reply(this._startAddressChange(session, lead), 'understood_change_address', [session.cart[0].productId]);
       }
 
       case 'start_over': {
         const had = active ? (item || locked).name : null;
+        this._rememberRemovedCart(session);
         this._clearOrderSelection(session);
         session.lastShownProducts = [];
         session.pendingBrowse = false;
@@ -3299,6 +3465,34 @@ ${sessionContext}`;
     }
 
     // ── Keyword chain: ONLY when the message could not be understood (model down). ──
+    if (!verdict && userQuery) {
+      // Address change / undo a removal. On 2026-10-01 the understanding call came back empty
+      // for exactly these messages, and the chain below had nothing for them: "keep the
+      // jersey, only change the address" got the team list three times.
+      const q = userQuery;
+      const mentionsAddress = /\b(address|addr|adress|addres)\b/i.test(q);
+      const wantsChange = /\b(change|maath\w*|maatt\w*|math\w*|venaam|vendaam|venam|vera|thappu|wrong|new|pudhu|puthu)\b/i.test(q);
+      const keepJersey = /\b(undo|remove\s+(?:panna\w*|pannadh\w*|pannath\w*)|don'?t\s+remove|keep\s+(?:it|the\s+jersey)|jersey\s+(?:okay|ok|ok\s+dhaan|venum|irukkatum))\b/i.test(q);
+      const parts = orderState.parseAddressParts(q);
+      const quickReply = (text, intent, ids = []) => this._replyAndSave(senderId, session, q, text, intent, ids);
+      const isT = session.language === 'tanglish';
+      if (keepJersey && !session.cart?.length && this._recentlyRemovedCart(session)) {
+        this._restoreRemovedCart(session);
+        const it = session.cart[0];
+        const lead = isT ? `Sorry 🙏 en thappu. *${it.name}* — ${it.size} size, ${it.qty} qty thirumba cart la vechitten ✅`
+                         : `Sorry 🙏 my mistake. *${it.name}* — Size ${it.size}, Qty ${it.qty} is back in your cart ✅`;
+        return quickReply(mentionsAddress ? this._startAddressChange(session, lead) : `${lead}\n${this._nextStepPrompt(session)}`, 'keyword_restore_cart', [it.productId]);
+      }
+      if (mentionsAddress && wantsChange && !parts.phone && !parts.pincode) {
+        let lead = '';
+        if (!session.cart?.length && this._restoreRemovedCart(session)) {
+          const it = session.cart[0];
+          lead = isT ? `*${it.name}* — ${it.size} size, ${it.qty} qty thirumba cart la vechitten ✅ Pazhaya address ah eduthutten.`
+                     : `*${it.name}* — Size ${it.size}, Qty ${it.qty} is back in your cart ✅ I've removed the old address.`;
+        }
+        if (session.cart?.length) return quickReply(this._startAddressChange(session, lead), 'keyword_change_address', [session.cart[0].productId]);
+      }
+    }
     if (!verdict) {
       // --- Deterministic "start a new order" reset ---
       // MUST run before the isIdle gate below, because its whole purpose is to rescue a
@@ -3531,10 +3725,14 @@ ${sessionContext}`;
           const payMethods = (config.payment?.methods || []).join(' / ');
           // The order ID and the payment link are printed ONLY when WooCommerce actually
           // returned them -- we are past `created`, so the ID is real either way.
+          // Unpaid orders are cancelled by WooCommerce after holdMinutes, so say so: "confirmed"
+          // alone read as done, and nobody knew the link would die (2026-10-01).
+          const hold = config.payment?.holdMinutes || 60;
+          const holdText = hold % 60 === 0 ? `${hold / 60} ${hold === 60 ? 'hour' : 'hours'}` : `${hold} minutes`;
           const reply = result.checkoutUrl
             ? (isTanglish
-                ? `Super! 🎉 Order #${result.orderId} confirm aayiduchu! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''} Thanks for shopping with Theaurax! ⚽🔥`
-                : `Awesome! 🎉 Your order #${result.orderId} is confirmed! Tap here to complete payment: ${result.checkoutUrl}${payMethods ? `\nPay by ${payMethods}.` : ''} Thanks for shopping with Theaurax! ⚽🔥`)
+                ? `Super! 🎉 Order #${result.orderId} place aayiduchu! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''}\n⏳ ${holdText} kulla pay pannunga — illana order auto-cancel aagidum. Thanks for shopping with Theaurax! ⚽🔥`
+                : `Awesome! 🎉 Your order #${result.orderId} is placed! Tap here to complete payment: ${result.checkoutUrl}${payMethods ? `\nPay by ${payMethods}.` : ''}\n⏳ Please pay within ${holdText} — unpaid orders are cancelled automatically. Thanks for shopping with Theaurax! ⚽🔥`)
             : (isTanglish
                 ? `Super! 🎉 Order #${result.orderId} place aayiduchu! Payment link konja neram la inga anuppuren — team confirm panniduvaanga. Thanks! ⚽🔥`
                 : `Great news! 🎉 Your order #${result.orderId} has been placed! I'll send your payment link here shortly — our team is confirming it now. Thanks for shopping with Theaurax! ⚽🔥`);
@@ -3553,7 +3751,11 @@ ${sessionContext}`;
           session.history.push({ role: 'assistant', content: reply });
           // Remember the order (so "how pay?" afterwards returns THIS link) and the address
           // (so the next order can say "same address"), then clear the per-order state.
-          session.lastOrder = { orderId: result.orderId, checkoutUrl: result.checkoutUrl || null, at: Date.now() };
+          session.lastOrder = {
+            orderId: result.orderId, checkoutUrl: result.checkoutUrl || null, at: Date.now(),
+            // Kept so an order that expires unpaid can be placed again with one "YES".
+            items: (cartSnapshot || []).map(i => ({ productId: i.productId, name: i.name, price: i.price, size: i.size, qty: i.qty })),
+          };
           if (session.addressDetails) session.customerProfile = { ...session.addressDetails };
           this._clearOrderSelection(session);
           session.lastShownProducts = [];
@@ -3747,8 +3949,12 @@ ${sessionContext}`;
                 // need"…) but the model searched anyway, found no team, and until 2026-09-30 the
                 // code below then REPLACED their question with the team list or the cart prompt.
                 // Hand the question back to the model instead.
-                if (found.matchQuality === 'broad' && verdict
-                    && !['product_search', 'list_teams', 'list_more', 'browse_catalogue'].includes(verdict.intent)) {
+                // Same when the message could not be read at all but the customer is mid-order
+                // or just had a cart removed: a vague search then is about THAT order, and the
+                // team list is the one reply that is certainly wrong (2026-10-01, three times).
+                const unreadMidOrder = !verdict && (orderState.hasActiveOrder(session) || this._recentlyRemovedCart(session));
+                if (found.matchQuality === 'broad' && (unreadMidOrder || (verdict
+                    && !['product_search', 'list_teams', 'list_more', 'browse_catalogue'].includes(verdict.intent)))) {
                   session.lastShownProducts = previouslyShown;
                   lastSearchResults = [];
                   matchedProductIds = [];
@@ -3759,7 +3965,9 @@ ${sessionContext}`;
                     content: JSON.stringify({
                       products: null,
                       matchQuality: 'not_a_product_request',
-                      message: `The customer did not ask for products. Their meaning: ${verdict.meaning || verdict.intent}. Answer that directly and briefly. Do not search again and do not list teams or products.`,
+                      message: verdict
+                        ? `The customer did not ask for products. Their meaning: ${verdict.meaning || verdict.intent}. Answer that directly and briefly. Do not search again and do not list teams or products.`
+                        : 'The customer is in the middle of an order (or just had one removed) and did not name a new team. Answer what they asked about that order directly and briefly. Do not search again and do not list teams or products.',
                     }),
                   });
                   continue;
@@ -4337,7 +4545,10 @@ ${sessionContext}`;
           error: 'Order was created but WooCommerce returned no payment link — send the customer one manually.'
         }, null);
       }
-      session.lastOrder = { orderId: session.orderIds?.[session.orderIds.length - 1] || null, checkoutUrl: checkoutUrl || null, at: Date.now() };
+      session.lastOrder = {
+        orderId: session.orderIds?.[session.orderIds.length - 1] || null, checkoutUrl: checkoutUrl || null, at: Date.now(),
+        items: (session.cart || []).map(i => ({ productId: i.productId, name: i.name, price: i.price, size: i.size, qty: i.qty })),
+      };
       if (session.addressDetails) session.customerProfile = { ...session.addressDetails };
       this._clearOrderSelection(session);
       session.lastShownProducts = [];
@@ -4364,12 +4575,15 @@ ${sessionContext}`;
     await dbService.saveLead({
       userId: senderId,
       name: session.customerName || customerName || 'Customer',
-      phone: senderId.replace(/[^0-9]/g, ''),
+      phone: session.customerPhone || senderId.replace(/[^0-9]/g, ''),
       channel: 'whatsapp',
       cart: session.cart || [],
       address: session.address || null,
       requiresEscalation: session.requiresEscalation || false,
-      status: session.state === 'IDLE' && session.cart.length === 0 ? 'completed' : 'active',
+      // 'completed' only when this turn placed an order or handed it to the team. An empty
+      // cart used to count too, so everyone who browsed and left — exactly who a reminder is
+      // for — was marked done and never followed up (2026-10-01).
+      status: isConfirmed || requiresEscalation ? 'completed' : 'active',
       conversation: session.history || []
     });
 

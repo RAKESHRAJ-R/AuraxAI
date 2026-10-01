@@ -33,9 +33,11 @@ const INTENTS = [
   'pick_product',        // choosing from the list on screen ("2", "the Kroos one")
   'size_qty',            // giving or changing size and/or quantity
   'give_address',        // sending name / address / pincode / phone
+  'change_address',      // "address maathanum", "intha address venaam" — keep the jersey, new address
   'confirm_order',       // saying yes to the order summary on screen
   'pause_order',         // "not now", "later", "I'll think about it" — keep the cart
   'cancel_cart',         // "remove it", "cancel the cart", "I don't want this" — before ordering
+  'restore_cart',        // "don't remove it", "that jersey is fine", "undo" — after the shop removed it
   'start_over',          // "start over", "forget my data", "reset"
   'delivery_question',   // when will it arrive, how many days
   'payment_question',    // how to pay, COD, payment link
@@ -69,7 +71,11 @@ Read the message together with the recent chat and the order state. Decide from 
 - "I want Man City jersey" is product_search even while the shop is waiting for an address. An address has real address parts (door no, street, area, city, pincode, phone).
 - "Already order place panniten" / "payment pending" after an order was placed = order_status.
 - "Delivery?" / "evolo naal agum" = delivery_question — and if an order was just placed it is about THAT order.
-- "cancel it from my cart" / "I don't want it" before ordering = cancel_cart. "not now" / "later" = pause_order.
+- "cancel it from my cart" / "I don't want it" before ordering = cancel_cart — ONLY when they mean the jersey/order. "not now" / "later" = pause_order.
+- "address change pannanum / address maathanum / intha address venaam / vera address kudukuren / address thappu / wrong address" = change_address: keep the jersey, they want to give a NEW address. "Address change panniten" means the same (they want it changed). If the message itself already carries the new address (street, pincode, phone), it is give_address.
+- "Ithu venaam" / "this one no" right after the customer talked about the ADDRESS means the address = change_address, not cancel_cart.
+- After the shop removed a jersey: "remove pannadheenga / don't remove / andha jersey okay dhaan / keep it / undo" = restore_cart (even if they also want to change the address).
+- Insults ("loosu", "waste", "mental") or repeating the same request because the shop got it wrong = mood angry or frustrated. Still pick the intent of what they are asking for.
 - "which countries / world cup options?" = list_teams or product_search with category. "list all / vera options / ellam kaatunga" = list_more.
 - "purila / puriyala / what are you saying" about the shop's last reply = not_understood (NOT a complaint — nothing went wrong with an order).
 - A message can hold several questions; list each one in plain English.
@@ -111,6 +117,11 @@ function stateSummary(session, orderState) {
   if (session.pendingBrowse && Array.isArray(session.browseGroups)) {
     lines.push(`Category menu on screen: ${session.browseGroups.map((g, i) => `${i + 1}. ${g.label}`).join(' | ')}`);
   }
+  const rc = session.removedCart;
+  if (rc?.cart?.[0] && Date.now() - (rc.at || 0) < 60 * 60 * 1000) {
+    lines.push(`The shop REMOVED ${clip(rc.cart[0].name, 70)} (size ${rc.cart[0].size}, qty ${rc.cart[0].qty}) from the cart ${Math.round((Date.now() - rc.at) / 60000)} min ago.`);
+  }
+  if (session.addressDetails?.address) lines.push(`Shipping address on file: ${clip(session.addressDetails.address, 80)}`);
   const lo = session.lastOrder;
   if (lo?.orderId) {
     const mins = Math.round((Date.now() - (lo.at || 0)) / 60000);
@@ -174,11 +185,21 @@ function parseVerdict(text) {
 async function understand({ session, message, orderState, callModel }) {
   if (!message || !String(message).trim()) return null;
   try {
-    const completion = await callModel(buildMessages(session, message, orderState));
-    const text = completion?.choices?.[0]?.message?.content;
-    const verdict = parseVerdict(text);
-    if (!verdict) console.warn('[Understand] Unusable verdict, falling back to keywords:', clip(text, 160));
-    return verdict;
+    const msgs = buildMessages(session, message, orderState);
+    // Two tries. Live on 2026-10-01 a third of the verdicts came back EMPTY (a reasoning model
+    // spending the budget before writing the JSON), and every one of those messages fell to
+    // the keyword chain, which answered "keep the jersey, change only the address" with the
+    // team list. The second try gets a bigger budget.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const completion = await callModel(msgs, { attempt });
+      const choice = completion?.choices?.[0];
+      const text = choice?.message?.content;
+      const verdict = parseVerdict(text);
+      if (verdict) return verdict;
+      console.warn(`[Understand] Unusable verdict (try ${attempt}/2, model=${completion?.model || '?'}, finish=${choice?.finish_reason || '?'}, `
+        + `reasoning=${String(choice?.message?.reasoning_content || '').length} chars)${attempt === 2 ? ', falling back to keywords' : ', retrying'}:`, clip(text, 300));
+    }
+    return null;
   } catch (err) {
     console.warn('[Understand] Model unavailable, falling back to keywords:', err.message);
     return null;

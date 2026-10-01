@@ -141,11 +141,15 @@ export function parseAddressParts(rawText) {
   const nameL = labelled(/^\s*(?:name|customer\s*name|peru|per)\s*[:\-–]\s*(.*)$/i);
   if (nameL) out.name = nameL.value.replace(/[,.;]+$/, '').trim();
 
-  // Address: everything under an "Address:" label until the next label.
-  const addrIdx = lines.findIndex(l => /^\s*(?:address|addr|adress|shipping\s*address|delivery\s*address)\s*[:\-–]?\s*/i.test(l));
+  // Address: everything under an "Address:" label until the next label. The label needs a
+  // separator, a line of its own, or a door number right after it: "Address change
+  // panniten" ("I want to change the address") once became the address "change panniten"
+  // (2026-10-01).
+  const ADDR_LABEL = /^\s*(?:address|addr|adress|shipping\s*address|delivery\s*address)\s*(?:[:\-–]\s*|$|\s(?=\s*(?:no\.?\s*)?\d))/i;
+  const addrIdx = lines.findIndex(l => ADDR_LABEL.test(l));
   if (addrIdx >= 0) {
     const collected = [];
-    const first = lines[addrIdx].replace(/^\s*(?:address|addr|adress|shipping\s*address|delivery\s*address)\s*[:\-–]?\s*/i, '').trim();
+    const first = lines[addrIdx].replace(ADDR_LABEL, '').trim();
     if (first) collected.push(first);
     for (let i = addrIdx + 1; i < lines.length; i++) {
       if (/^\s*(?:name|pin\s*code|pincode|pin|mobile|phone|ph|contact|number|cell)\b\s*(?:no\.?)?\s*[:\-–]?/i.test(lines[i])) break;
@@ -177,7 +181,8 @@ export function parseAddressParts(rawText) {
     // "I want Man City jersey" matched on "city" and became a shipping address (2026-09-29);
     // a message asking for something is a request, not an address, unless it carries a
     // pincode or phone number.
-    const isRequest = /\b(want|need|venum|vendum|iruka|irukka|jersey|jersy|jersi|kit|shirt|size|price|cancel|delivery|order)\b/i.test(addrText);
+    // "intha address venaam, vera address kudukuren" talks ABOUT the address; it is not one.
+    const isRequest = /\b(want|need|venum|vendum|venaam|vendaam|venam|iruka|irukka|jersey|jersy|jersi|kit|shirt|size|price|cancel|delivery|order|change|maathu\w*|mathu\w*|maatha\w*|matha\w*|kudukuren|anuppuren|anupuren)\b/i.test(addrText);
     if (addrText && addrText.length >= 12 && (out.pincode || pm || ADDRESS_WORDS.test(addrText)) && !(isRequest && !out.pincode && !pm)) {
       out.address = addrText;
     }

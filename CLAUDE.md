@@ -697,8 +697,29 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 ### Cold Lead Follow-Up
 
 `src/services/followup.js` runs a check every 30 minutes. Any active lead inactive for 3+ hours
-(up to 2 times, lifetime — `followUpCount` is never reset) gets a personalised re-engagement
-message via WhatsApp. Cart contents are referenced in the message if available.
+(up to 2 times per silence — the count restarts when the customer writes again, the 24h gap
+does not) gets a personalised re-engagement message via WhatsApp. Cart contents are referenced
+in the message if available. No cold nudge during quiet hours (`FOLLOWUP_QUIET_START_HOUR` 22 –
+`FOLLOWUP_QUIET_END_HOUR` 8, IST), or to a customer who ordered in the last 3 days, closed the
+chat ("no need"), or was handed to the team.
+
+**Unpaid-order reminder (2026-10-01)** — `runPaymentReminders()`, every 5 min. Order #77997 was
+placed at 10:52 PM, never paid, and the customer heard nothing: the lead went `completed` at
+order creation and WooCommerce cancelled it an hour later. Now, from each session's `lastOrder`
+(which carries `items`), the REAL WooCommerce status decides: `pending` and ≥
+`PAYMENT_REMINDER_MINUTES` (25) old, still inside `WC_HOLD_STOCK_MINUTES` (60) → one reminder
+with the link and minutes left (sent even in quiet hours — the link is about to die);
+`cancelled`/`failed` → one note, and the same cart + address restored at `CONFIRMING_ORDER` so
+"YES" re-places it (waits out quiet hours); paid → one thank-you, checked from 3 min after the
+order so a quick payer is thanked quickly; status unknown → retry next tick. Tanglish copy says
+"Indha jersey ippavum vaanganum na" — the owner rejected "innum venumna" as meaningless. The session is stamped before sending (`paymentReminderAt` / `expiredNoticeAt` /
+`paidSeenAt`), so the worst case is a missed reminder, never two. The confirmation message now
+states the payment deadline.
+
+⚠️ **Three bugs meant no live customer was ever followed up** (found 2026-10-01): leads were
+filtered on `@c.us` while this account's ids are `…@lid`; the agent path marked any empty-cart
+lead `completed` (so every browser who left was excluded); and code-built replies only touched
+the lead mid-order. Leads are now `completed` only when an order is placed or escalated.
 
 **Four guards decide who is eligible**, and they exist because this is the only path that
 messages someone who did not just write to us:
@@ -1119,6 +1140,20 @@ keyword chain (reset / order-state / complaint / FAQ / teams / browse) runs ONLY
   Tanglish replies still go to Sarvam first.
 - **Cost:** +1 small call per message (Fireworks, ~1–2s). `UNDERSTAND_ENABLED=false` turns it
   off (= old behaviour); `UNDERSTAND_MAX_TOKENS` (700).
+- **Change only the address (2026-10-01).** Live chat: "Address change panniten" became the address
+  "change panniten" (`parseAddressParts` took any line starting with "Address" as a label — it now
+  needs `:`/`-`, its own line, or a door number), "Ithu venaam" (meant the address) removed the
+  jersey, and every later "keep the jersey, change only the address" got the team list because
+  ~⅓ of verdicts came back EMPTY and the keyword chain had nothing for it. Now: intents
+  `change_address` (cart kept, old address dropped, asks "Name, Address, Pincode, Mobile number")
+  and `restore_cart` (`session.removedCart`, 1h undo); `cancel_cart` asks jersey-or-address once when
+  the address was the topic; angry, or frustrated twice running, with nothing to act on →
+  `_handOffToHuman()` (`bot_handoff` ticket + owner alert, once per 2h), otherwise the action gets a
+  "Sorry" prefix; an unusable verdict is retried once at double `maxTokens` and logs
+  model/finish_reason; with no verdict, keyword change-address/undo paths run first and a broad search
+  mid-order never becomes the team list. ⚠️ `console.warn` lands in pm2's ERROR log, which
+  `pm2 logs` prints as a separate block — the `Unusable verdict` lines are not in time order with
+  the `[Understand]` ones.
 - Existing suites stub `aiService.understandMessage = async () => null` — they test the action layer
   and the keyword fallback. `test_understanding.js` tests routing with scripted verdicts;
   `replay_understanding.js` is the only thing that tests the real model's reading (paid).
