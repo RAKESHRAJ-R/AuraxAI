@@ -138,7 +138,19 @@ class FollowUpService {
   coldNudgeBlocker(session, lastUpdate, now = this.now()) {
     if (!session) return null;
     const lo = session.lastOrder;
-    if (lo?.orderId && now - (lo.at || 0) < Math.max(1, config.followUp.maxLeadAgeDays) * 24 * HOUR_MS) return 'recent_order';
+    // The payment reminder / expired-order note already spoke after their last message.
+    const orderNoteAt = Math.max(lo?.paymentReminderAt || 0, lo?.expiredNoticeAt || 0);
+    if (orderNoteAt && orderNoteAt >= lastUpdate) return 'order_note_sent';
+    if (lo?.orderId && now - (lo.at || 0) < Math.max(1, config.followUp.maxLeadAgeDays) * 24 * HOUR_MS) {
+      // Order #77999 (10/1 8:31 AM, never paid) blocked every nudge for three days — though the
+      // customer came back at 8:39 to buy ANOTHER jersey and went quiet at 8:48 mid-purchase.
+      // A new purchase after the order is not "they already ordered".
+      const after = (lo.at || 0) + 2 * 60 * 1000;
+      const shoppingAgain = lastUpdate > after && Boolean(
+        session.cart?.length || session.selectedProduct || session.lastShownProducts?.length
+        || (session.removedCart?.at || 0) > after);
+      if (!shoppingAgain) return 'recent_order';
+    }
     if (session.closedAt && session.closedAt >= lastUpdate - 2 * 60 * 1000) return 'customer_closed';
     if (session.handoffAt && now - session.handoffAt < 24 * HOUR_MS) return 'with_team';
     return null;
@@ -298,6 +310,8 @@ class FollowUpService {
 
   async sendFollowUp(lead, session = null, { restart = false } = {}) {
     const firstName = (lead.name || 'Customer').split(' ')[0];
+    // The session is the live cart; the lead's copy is only as fresh as its last save.
+    if (!(lead.cart?.length) && session?.cart?.length) lead = { ...lead, cart: session.cart };
     const hasCartItems = lead.cart && lead.cart.length > 0;
     const followUpCount = lead.followUpCount || 0;
 

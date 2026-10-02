@@ -218,6 +218,29 @@ const quietOff = () => { config.followUp.quietStartHour = 0; config.followUp.qui
   ]);
   check('no "still looking for jerseys?" after an order, a "no need", or a hand-off to the team', ids.length === 0, JSON.stringify(ids));
 }
+{
+  // 10/1: order #77999 at 8:31 (never paid), back at 8:39 for ANOTHER jersey, quiet from 8:48
+  // with a jersey in the cart. Nothing was sent for 28 hours.
+  const mk = async (id, extra) => { const s = await dbService.getSession(id); Object.assign(s, extra); await dbService.saveSession(id, s); };
+  const ORDER_AT = Date.now() - 4.3 * HOUR;
+  const RM = { productId: 7, name: 'REAL MADRID 2017-18 HOME - RONALDO RN', price: '430', size: 'M', qty: 5 };
+  await mk('918888800011@lid', { language: 'tanglish', cart: [RM], lastOrder: { orderId: 77999, checkoutUrl: 'u', at: ORDER_AT } });
+  await mk('918888800012@lid', { language: 'tanglish', cart: [], selectedProduct: null, lastShownProducts: [], removedCart: { cart: [RM], at: ORDER_AT + 12 * 60 * 1000 }, lastOrder: { orderId: 77998, checkoutUrl: 'u', at: ORDER_AT } });
+  await mk('918888800013@lid', { language: 'tanglish', cart: [], lastShownProducts: [], lastOrder: { orderId: 77997, checkoutUrl: 'u', at: ORDER_AT } });
+  await mk('918888800014@lid', { language: 'tanglish', cart: [RM], lastOrder: { orderId: 77996, checkoutUrl: 'u', at: ORDER_AT, expiredNoticeAt: Date.now() - 1 * HOUR } });
+  const sent = [];
+  whatsappWebBot.sendText = async (userId, message) => { sent.push({ userId, message }); };
+  dbService.updateLeadFollowUp = async () => {};
+  dbService.getActiveLeads = async () => ['918888800011@lid', '918888800012@lid', '918888800013@lid', '918888800014@lid']
+    .map(userId => ({ userId, name: 'Sess', updatedAt: ago(4), followUpCount: 0, cart: [] }));
+  await followUpService.runFollowUpCheck();
+  const to = (id) => sent.filter(m => m.userId === id);
+  check('shopping again after an earlier order, then going quiet → nudged (10/1, order #77999)', to('918888800011@lid').length === 1, JSON.stringify(sent.map(s => s.userId)));
+  check('…naming the jersey in their cart (from the session, not the stale lead)', /REAL MADRID 2017-18/.test(to('918888800011@lid')[0]?.message || ''), to('918888800011@lid')[0]?.message);
+  check('…also when that jersey was removed by mistake on the way', to('918888800012@lid').length === 1, '');
+  check('only asking about the order they placed → still no sales nudge', to('918888800013@lid').length === 0, '');
+  check('the expired-order note already went out after their last message → no second message', to('918888800014@lid').length === 0, '');
+}
 
 // ── Unpaid-order reminder ────────────────────────────────────────────────────────────────
 console.log('\n🧪 Unpaid-order reminder (order #77997, 2026-09-29)\n');

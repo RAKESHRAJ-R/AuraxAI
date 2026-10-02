@@ -194,7 +194,11 @@ class AIService {
     if (!text) return null;
     if (/[஀-௿]/.test(text)) return 'tanglish'; // Tamil script present
     const tanglishWords = /\b(bro|machan|machi|da|di|anna|akka|thala|mapla|iruka|irukka|irukku|iruku|vennum|venum|vendum|poda|podi|illa|ila|enna|soldra|solra|sollunga|epdi|eppadi|saptiya|vanga|vanakkam|seri|aiyo|ayyo|kandippa|semma|super|nalla|romba|konjam|please pannunga|thanks bro)\b/i;
-    return tanglishWords.test(text) ? 'tanglish' : 'english';
+    // Everyday verbs and question words, none of them an English word. Without these, "Hi new
+    // order place pannanum" opened a returning Tanglish customer's chat in English (2026-10-02)
+    // — the language is re-detected after 6h idle, and this list had no "pannanum".
+    const tanglishCommon = /\b(pann(?:anum|unga|uren|ren|iten|itten|itenga|alama|ala|uvom|ra|unga)|kaat(?:tunga|unga|turen|uren|u)|kudu(?:nga|kuren|ka)|venaam|vendaam|venam|pudhusa|pudusa|theriyathu|theriyala|teriyala|puriyala|purila|evlo|evalo|evolo|ethana|eppo|yepo|epo|aagum|agum|varum|varuma|varathuku|vidu|vidunga|podhum|pothum|sari|ennaku|enaku|yennaku|neenga|unga|ungaluku|kitta|mattum|matum|thaan|dhaan|illama|athula|idhula|onnu|sluren|solren)\b/i;
+    return tanglishWords.test(text) || tanglishCommon.test(text) ? 'tanglish' : 'english';
   }
 
   /* ────────────────────────────────────────────────────────────────────────────
@@ -433,6 +437,45 @@ class AIService {
     return isTanglish
       ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
       : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
+  }
+
+  /**
+   * The customer has seen everything on the current shelf and asked for "more" / "other".
+   * Asked for best sellers → the shop-wide best sellers they haven't seen; otherwise → the
+   * category menu, led by one honest line that this shelf is all there is.
+   */
+  _somethingDifferentReply(session, userQuery, v, shelfQuery, shelfSize) {
+    const isT = session.language === 'tanglish';
+    const shelf = String(shelfQuery || '').replace(/\b(jerseys?|jersy|jersi|shirts?)\b/gi, '').trim();
+    const shelfName = shelf ? shelf.replace(/\b\w/g, c => c.toUpperCase()) : '';
+    const lead = shelfName && shelfSize > 0
+      ? (isT ? `${shelfName} la ippo ${shelfSize === 1 ? 'indha oru jersey' : `indha ${shelfSize} jerseys`} mattum dhaan stock la iruku.`
+             : `That's all we have in ${shelfName} right now (${shelfSize}).`)
+      : '';
+
+    if (/\b(best|top|popular|trending|most sold|hot)\b/i.test(`${userQuery} ${v.meaning || ''}`)) {
+      const seen = new Set((session.lastShownProducts || []).map(p => p.productId));
+      const top = woocommerceService.searchProductsDetailed('best selling jerseys').products
+        .filter(p => !seen.has(p.id)).slice(0, 5);
+      if (top.length > 0) {
+        session.lastShownProducts = top.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+        session.productListPending = true;
+        session.pendingProductIndex = null;
+        session.pendingBrowse = false;
+        session.lastListContext = { type: 'search', query: 'best selling jerseys' };
+        const lines = top.map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price}${p.sizes?.length ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n${p.permalink}` : ''}`).join('\n');
+        const range = top.length > 1 ? `1–${top.length}` : '1';
+        const body = isT
+          ? `Namma shop la adhigam vikkura jerseys 🔥\n${lines}\n\nEdhu venum (${range})? Size, quantity-um sollunga 🛍️`
+          : `Our best-selling jerseys 🔥\n${lines}\n\nWhich one would you like (${range})? Tell me the size and quantity too 🛍️`;
+        return { text: lead ? `${lead}\n${body}` : body, intent: 'understood_best_sellers', ids: top.map(p => p.id) };
+      }
+    }
+
+    const menu = this.browseMenuReply(session.language, session);
+    if (!menu) return null;
+    session.lastListContext = null;
+    return { text: lead ? `${lead}\n\n${menu}` : menu, intent: 'understood_browse', ids: [] };
   }
 
   // Said only when sanitizeOutgoing() found nothing worth sending. Deliberately asks the
@@ -2984,7 +3027,9 @@ ${sessionContext}`;
     if (upset && v.intent !== 'closing') {
       sorry = isT ? 'Sorry, en thappu dhaan 🙏' : "Sorry, that's my mistake 🙏";
       const handedOff = session.handoffAt && Date.now() - session.handoffAt < 2 * 60 * 60 * 1000;
-      if (!handedOff && ['other', 'not_understood', 'complaint', 'human_request'].includes(v.intent)) {
+      // A bare "hey" from an upset customer is "are you listening?", not a fresh hello — the
+      // 2026-10-02 chat got "Sorry" + the full "Vanakkam! Naan Aura…" introduction.
+      if (!handedOff && ['other', 'not_understood', 'complaint', 'human_request', 'greeting'].includes(v.intent)) {
         return this._handOffToHuman(senderId, session, userQuery, v);
       }
     }
@@ -3176,6 +3221,16 @@ ${sessionContext}`;
         if (ctx?.type === 'search' && ctx.query) {
           const found = woocommerceService.searchProductsDetailed(ctx.query);
           const all = found.products.slice(0, 10);
+          // "Show other teams" / "Arsenal illama vera" / "other best sellers" were read as
+          // "more of this list", and the same one-shirt Arsenal search was re-run and re-sent
+          // five times (2026-10-02). If the shelf has nothing the customer hasn't already seen,
+          // "more" can only mean "something DIFFERENT" — never send the same list again.
+          const seen = new Set((session.lastShownProducts || []).map(p => p.productId));
+          if (all.length === 0 || all.every(p => seen.has(p.id))) {
+            const diff = this._somethingDifferentReply(session, userQuery, v, ctx.query, all.length);
+            if (diff) return reply(diff.text, diff.intent, diff.ids);
+            return { agentNote: true };
+          }
           if (all.length > 0) {
             session.lastShownProducts = all.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
             session.productListPending = true;

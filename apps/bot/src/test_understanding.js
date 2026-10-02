@@ -381,7 +381,41 @@ console.log('\n9. services/understand.js');
   check('an unknown intent is rejected (→ keyword fallback)', parseVerdict('{"intent":"buy_everything"}') === null, '');
   check('prose is rejected', parseVerdict('The customer wants delivery info.') === null, '');
   check('junk values are cleaned', parseVerdict('{"intent":"other","mood":"sleepy","qty":-4,"pick":999,"size":"huge"}')?.mood === 'fine', '');
+}
 
+console.log('\n"Show other teams" after a one-shirt search (2026-10-02 chat)');
+{
+  const ARSENAL = products.find(p => /ARSENAL 2003-04 AWAY/.test(p.name));
+  const shown = [lockOf(ARSENAL)];
+  const id = await newCustomer({ lastShownProducts: shown, productListPending: true, lastListContext: { type: 'search', query: 'arsenal' } });
+  const sent = [];
+  let r = await ask(id, 'sari vera jersey\'s other teams ka kaatunga', V('list_more', { mood: 'fine' }));
+  sent.push(r.replyText);
+  check('"other teams" (read as list_more) does NOT resend the same Arsenal list', !/Stock la irukura ellaam 👇\n1\. \*?ARSENAL/.test(r.replyText), r.replyText.slice(0, 200));
+  check('…says Arsenal has only this one, then shows the category menu', /Arsenal la ippo indha oru jersey/.test(r.replyText) && /Namma kitta idhellaam iruku/.test(r.replyText), r.replyText.slice(0, 300));
+  check('…and costs no LLM call', llmCalls === 0, `llmCalls=${llmCalls}`);
+
+  const id2 = await newCustomer({ lastShownProducts: shown, productListPending: true, lastListContext: { type: 'search', query: 'arsenal' } });
+  r = await ask(id2, 'i asked u to show ur other best selling products', V('list_more', { mood: 'frustrated', meaning: 'wants other best selling products' }));
+  const s2 = await state(id2);
+  check('"other best selling products" shows shop-wide best sellers', /adhigam vikkura jerseys/.test(r.replyText) && (s2.lastShownProducts || []).length > 1, r.replyText.slice(0, 300));
+  check('…without the Arsenal shirt they already saw', !(s2.lastShownProducts || []).some(p => p.productId === ARSENAL.id), JSON.stringify(s2.lastShownProducts.map(p => p.name)));
+
+  const id3 = await newCustomer({ lastMood: 'frustrated', history: [{ role: 'user', content: 'show me other teams' }, { role: 'assistant', content: 'Stock la irukura ellaam 👇' }] });
+  r = await ask(id3, 'hey', V('greeting', { mood: 'frustrated' }));
+  check('"hey" from a customer frustrated twice running is not a fresh "Vanakkam! Naan Aura" intro', !/Naan Aura/.test(r.replyText), r.replyText);
+  // The 10/2 chat opened in English: after 6h idle the language is re-detected, and
+  // "Hi new order place pannanum" carried no word the detector knew.
+  for (const t of ['Hi new order place pannanum', 'Hi pudhusa order pannanum', 'sari vera jersey\'s other teams ka kaatunga', 'fine vidu']) {
+    check(`"${t}" is detected as Tanglish`, aiService.detectLanguage(t) === 'tanglish', aiService.detectLanguage(t));
+  }
+  for (const t of ['show me other teams', 'I want Man City jersey', 'What is the delivery time?']) {
+    check(`"${t}" stays English`, aiService.detectLanguage(t) === 'english', aiService.detectLanguage(t));
+  }
+}
+
+{
+  const { buildMessages } = understandMod;
   const s = await dbService.getSession('918000009999@c.us');
   Object.assign(s, { cart: [item(GUARDIOLA)], selectedProduct: lockOf(GUARDIOLA), state: 'CONFIRMING_ORDER',
     lastOrder: { orderId: 5, checkoutUrl: PAY_URL, at: Date.now() }, history: [{ role: 'assistant', content: 'Reply YES to confirm' }] });

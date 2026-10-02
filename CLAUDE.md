@@ -701,7 +701,10 @@ Every customer interaction upserts a record in `src/data/customers.json` (or Mon
 does not) gets a personalised re-engagement message via WhatsApp. Cart contents are referenced
 in the message if available. No cold nudge during quiet hours (`FOLLOWUP_QUIET_START_HOUR` 22 –
 `FOLLOWUP_QUIET_END_HOUR` 8, IST), or to a customer who ordered in the last 3 days, closed the
-chat ("no need"), or was handed to the team.
+chat ("no need"), or was handed to the team. Exception (2026-10-02): a customer who came back
+after an order to buy ANOTHER jersey and went quiet mid-purchase IS nudged — the 3-day rule
+used to silence them (order #77999). No nudge if a payment/expired note already went out after
+their last message.
 
 **Unpaid-order reminder (2026-10-01)** — `runPaymentReminders()`, every 5 min. Order #77997 was
 placed at 10:52 PM, never paid, and the customer heard nothing: the lead went `completed` at
