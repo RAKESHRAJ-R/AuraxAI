@@ -457,6 +457,43 @@ console.log('\n"Show other teams" after a one-shirt search (2026-10-02 chat)');
   aiService.callLLMWithFallback = saveCall;
 }
 
+console.log('\nThe 10/2 Sporting CP chat — "9 la enna iruku?", "ithula vera variety", the shipping name');
+{
+  const id = await newCustomer();
+  const s0 = await state(id);
+  aiService.bestSellersReply('club', s0, 10);
+  await dbService.saveSession(id, s0);
+  const shown = (await state(id)).lastShownProducts;
+  const nine = shown[8];
+  let r = await ask(id, '9 la enna la Iruku?', V('product_question', { pick: 9 }));
+  let s = await state(id);
+  check('"9 la enna la Iruku?" shows product 9: name, price, sizes, link', r.replyText.includes(nine.name) && r.replyText.includes(`₹${nine.price}`) && /Sizes:/.test(r.replyText), r.replyText);
+  check('…and selects it for size/qty', s.selectedProduct?.productId === nine.productId, JSON.stringify(s.selectedProduct));
+  check('…with no LLM call', llmCalls === 0, `llmCalls=${llmCalls}`);
+
+  r = await ask(id, 'Ithula inno enna enna variety Iruku?', V('list_more'));
+  s = await state(id);
+  check('"Ithula inno enna variety?" shows jerseys LIKE the selected one, not the same club list', !r.replyText.includes('Club football jerseys') && s.lastShownProducts.every(p => p.productId !== nine.productId), r.replyText.slice(0, 300));
+  if (/SPORTING/.test(nine.name)) check('…the other Sporting CP shirt first, then the same player', /SPORTING CP 2001-02 HOME FULL SLEEVE/.test(s.lastShownProducts[0]?.name || '') && /RONALDO/.test(r.replyText), r.replyText.slice(0, 300));
+
+  const id2 = await newCustomer();
+  const t0 = await state(id2);
+  aiService.bestSellersReply('club', t0, 10);
+  await dbService.saveSession(id2, t0);
+  r = await ask(id2, '9 okay bro athula vera type iruntha kaatunga', V('browse_catalogue'));
+  check('"9 okay, athula vera type kaatunga" is more like #9, not the category menu', !/Namma kitta idhellaam iruku/.test(r.replyText) && /vera options/.test(r.replyText), r.replyText.slice(0, 200));
+
+  const id3 = await newCustomer();
+  const t1 = await state(id3);
+  aiService.bestSellersReply('club', t1, 10);
+  await dbService.saveSession(id3, t1);
+  r = await ask(id3, '9', V('pick_product', { pick: 9 }));
+  r = await ask(id3, 'S 3', V('size_qty', { size: 'S', qty: 3 }));
+  check('after "S 3" the bot asks for the name too — never claims a name it was not given', !/Name save panniten|Name,? .*save panniten/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
+  r = await ask(id3, '90/1,state colony,salem\n636006\n9876789655', V('give_address'));
+  check('the WhatsApp display name never becomes the shipping name', !/Sessy/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 try { fs.rmSync(process.env.AURAX_DATA_DIR, { recursive: true, force: true }); } catch {}
 process.exit(failed > 0 ? 1 : 0);

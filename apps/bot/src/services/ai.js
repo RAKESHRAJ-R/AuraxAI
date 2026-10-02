@@ -447,6 +447,72 @@ class AIService {
       : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — ${pickRange(top.length, false)}? What size and how many? 🛍️`;
   }
 
+  /** Team and player read from a product name: "SPORTING CP 2001-2002 HOME - RONALDO RN". */
+  _teamAndPlayer(name) {
+    const n = String(name || '');
+    const team = n.split(/\s(?=\d|home\b|away\b|third\b)/i)[0].replace(/\b(fc|cf)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    const parts = n.split(/\s[-—–]\s/);
+    const player = parts.length > 1
+      ? parts[parts.length - 1].replace(/\b(rn|clr[-\w]*|5-slv|full sleeve|half sleeve|sublimation|\(.*?\))\b/gi, ' ').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim()
+      : '';
+    return { team, player: /^[a-z .']{3,30}$/i.test(player) ? player : '' };
+  }
+
+  /**
+   * "Ithula inno enna variety iruku?" / "9 okay, athula vera type kaatunga" — more like THE
+   * jersey they are looking at, not the shelf it came from. On 10/2 both got the same ten-item
+   * club list again, then the category menu. Same team first, then the same player.
+   */
+  _moreLikeThisReply(session, base) {
+    const isT = session.language === 'tanglish';
+    const { team, player } = this._teamAndPlayer(base.name);
+    const seen = new Set([String(base.productId)]);
+    const pick = [];
+    for (const q of [team, player].filter(Boolean)) {
+      for (const p of woocommerceService.searchProductsDetailed(q).products) {
+        if (pick.length >= 8 || seen.has(String(p.id))) continue;
+        seen.add(String(p.id));
+        pick.push(p);
+      }
+    }
+    // "SPORTING CP" → "Sporting CP": short tokens (CP, FC, PSG, AC) stay upper case.
+    const title = s => s.split(/\s+/).map(w => w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    if (pick.length === 0) {
+      return isT
+        ? `*${base.name}* maadhiri vera jersey ippo stock la illa 😕 Idhaye edukkalama? Enna size, evlo quantity venum? 🛍️`
+        : `We don't have anything else like *${base.name}* in stock right now 😕 Would you like this one? What size and how many? 🛍️`;
+    }
+    session.lastShownProducts = pick.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+    session.productListPending = true;
+    session.pendingProductIndex = null;
+    session.pendingBrowse = false;
+    session.lastListContext = { type: 'search', query: team || player };
+    const lines = pick.map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price}${p.sizes?.length ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n${p.permalink}` : ''}`).join('\n');
+    const about = [team && title(team), player && title(player)].filter(Boolean).join(' / ');
+    return isT
+      ? `${about} la vera options 👇\n${lines}\n\nEdhu venum (${pickRange(pick.length, true)})? Size, quantity-um sollunga 🛍️`
+      : `More from ${about} 👇\n${lines}\n\nWhich one would you like (${pickRange(pick.length, false)})? Tell me the size and quantity too 🛍️`;
+  }
+
+  /** "9 la enna iruku?" — what is number 9: name, price, sizes, link; then size and qty. */
+  _productDetailReply(session, p) {
+    const isT = session.language === 'tanglish';
+    this._lockProduct(session, p);
+    const sizes = p.sizes?.length ? p.sizes.join(', ') : null;
+    return isT
+      ? `*${p.name}*\n💰 ₹${p.price}${sizes ? `\n📏 Sizes: ${sizes}` : ''}${p.permalink ? `\n${p.permalink}` : ''}\n\nIdhu venumna enna size, evlo quantity venum nu sollunga 🛍️`
+      : `*${p.name}*\n💰 ₹${p.price}${sizes ? `\n📏 Sizes: ${sizes}` : ''}${p.permalink ? `\n${p.permalink}` : ''}\n\nWant this one? Tell me the size and how many 🛍️`;
+  }
+
+  /** The numbered product a message points at ("9 la enna iruku?"), or null. */
+  _pointedProduct(session, userQuery, v) {
+    const shown = session.lastShownProducts || [];
+    if (shown.length === 0) return null;
+    const nums = (String(userQuery).match(/(?<![\d₹.])\d{1,2}(?![\d%])/g) || []).map(Number);
+    const n = v?.pick || (nums.length === 1 ? nums[0] : null);
+    return n && n >= 1 && n <= shown.length ? shown[n - 1] : null;
+  }
+
   /**
    * The customer has seen everything on the current shelf and asked for "more" / "other".
    * Asked for best sellers → the shop-wide best sellers they haven't seen; otherwise → the
@@ -2135,7 +2201,8 @@ ${sessionContext}`;
     let d = orderState.mergeAddress(session.customerProfile || {}, {});
     if (session.addressDetails) d = orderState.mergeAddress(d, session.addressDetails);
     if (session.addressDraft) d = orderState.mergeAddress(d, session.addressDraft);
-    if (!d.name && session.customerName && session.customerName !== 'Customer') d.name = session.customerName;
+    // The WhatsApp display name is NOT a shipping name: on 10/2 "Saaraa🐾" went onto the order
+    // summary and the bot said "Name save panniten" for a name nobody typed. Ask for it.
     // A corrupted saved address is asked for again, never reused (see isPlausibleAddress).
     if (d.address && !orderState.isPlausibleAddress(d.address)) d.address = '';
     return d;
@@ -3051,6 +3118,25 @@ ${sessionContext}`;
       if (st) return st;
     }
 
+    if (!item) {
+      const pointed = this._pointedProduct(session, userQuery, v);
+      // "Ithula / athula vera type?" — more like the jersey they are on (10/2 chat).
+      const thisOne = /\b(ithula|idhula|athula|adhula|ithu\s+la|idhu\s+la|athu\s+la|adhu\s+la|in this|like this|like that|similar)\b/i.test(userQuery);
+      const base = pointed || locked;
+      if (thisOne && base && (['list_more', 'browse_catalogue', 'list_teams'].includes(v.intent) || (v.intent === 'product_search' && !v.search))) {
+        if (pointed) this._lockProduct(session, pointed);
+        return reply(this._moreLikeThisReply(session, base), 'understood_more_like_this', [base.productId]);
+      }
+      // "9 la enna iruku?" — a plain "what is number 9?", answered from the list on screen.
+      // Only when nothing but the number and question words is there; anything more specific
+      // ("9 la full sleeve iruka?") goes to the agent with the meaning attached.
+      const rest = String(userQuery).toLowerCase().replace(/(?<![\d₹.])\d{1,2}(?![\d%])/, ' ').replace(/[?!.,]/g, ' ').split(/\s+/).filter(Boolean);
+      const GENERIC = /^(la|le|enna|ennaa|ena|what|whats|what's|is|in|it|details?|iruku|irukku|irukoh|iruka|irukka|bro|anna|sollunga|solunga|about|number|no|option|options|item|jersey|pathi|patthi|info|show|kaatunga|katunga)$/;
+      if (pointed && !v.size && !v.qty && rest.length > 0 && rest.every(w => GENERIC.test(w)) && /enna|ena|what|details?|info|pathi|patthi|\?/i.test(userQuery)) {
+        return reply(this._productDetailReply(session, pointed), 'understood_product_detail', [pointed.productId]);
+      }
+    }
+
     switch (v.intent) {
       case 'closing':
         return reply(this._closingReply(session, v), 'understood_closing');
@@ -3226,7 +3312,18 @@ ${sessionContext}`;
       case 'list_more': {
         const ctx = session.lastListContext;
         if (ctx?.type === 'group' || (!ctx && v.category !== 'none')) {
-          const text = this.bestSellersReply(ctx?.key || v.category, session, 10);
+          // Same rule as the search shelf below: never resend a list they have already seen
+          // (10/2: the same ten club jerseys went out twice in two minutes).
+          const key = ctx?.key || v.category;
+          const seen = new Set((session.lastShownProducts || []).map(p => String(p.productId)));
+          const next = woocommerceService.bestSellersInGroup(key, 10);
+          if (next.length > 0 && next.every(p => seen.has(String(p.id)))) {
+            if (locked && !item) return reply(this._moreLikeThisReply(session, locked), 'understood_more_like_this', [locked.productId]);
+            const group = woocommerceService.listCatalogueGroups().find(g => g.key === key);
+            const diff = this._somethingDifferentReply(session, userQuery, v, group?.label || '', next.length);
+            if (diff) return reply(diff.text, diff.intent, diff.ids);
+          }
+          const text = this.bestSellersReply(key, session, 10);
           if (text) return reply(text, 'understood_list_more', (session.lastShownProducts || []).map(p => p.productId));
         }
         if (ctx?.type === 'search' && ctx.query) {
@@ -4533,6 +4630,9 @@ ${sessionContext}`;
                 resultText = intro + "\n\n" + top.map(p =>
                   `• *${p.name}* — ₹${p.price}${p.sizes && p.sizes.length > 0 ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n  ${p.permalink}` : ''}`
                 ).join('\n') + "\n\n" + outro;
+              } else if (this._pointedProduct(session, userQuery, null) && !(session.cart?.length)) {
+                // "9 la enna la Iruku?" ended here on 10/2 — the number names a product on screen.
+                resultText = this._productDetailReply(session, this._pointedProduct(session, userQuery, null));
               } else {
                 resultText = isTanglish
                   ? "Andha exact jersey kidaikala — team illa player peru innoru vaati sollunga? Illa website la paarunga: https://theaurax.in"
