@@ -189,7 +189,8 @@ const config = {
   // rating, as "pending" unless REVIEW_AUTO_APPROVE=true.
   reviews: {
     enabled: String(process.env.REVIEWS_ENABLED || 'true').toLowerCase() !== 'false',
-    googleUrl: (process.env.GOOGLE_REVIEW_URL || '').trim(),
+    // Theaurax's Google review link (given by the owner 2026-10-03). GOOGLE_REVIEW_URL overrides.
+    googleUrl: (process.env.GOOGLE_REVIEW_URL || 'https://share.google/NC9UWrGVukD97y7U6').trim(),
     autoApprove: String(process.env.REVIEW_AUTO_APPROVE || 'false').toLowerCase() === 'true',
     // WooCommerce requires an email on every review; bot orders have none.
     email: (process.env.REVIEW_EMAIL || '').trim(),

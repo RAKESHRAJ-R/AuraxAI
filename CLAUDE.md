@@ -130,7 +130,7 @@ ADMIN_ALLOWED_ORIGINS=     # Required for the Vercel-hosted admin console: comma
                            # origins allowed to call the API cross-origin. `*.`-prefixed
                            # entries are suffix matches (e.g. *.vercel.app for previews).
 PAYMENT_AUTO_CANCEL=true   # Bot cancels its own unpaid order after WC_HOLD_STOCK_MINUTES (WooCommerce won't)
-GOOGLE_REVIEW_URL=         # Optional: Google review link sent to happy customers
+GOOGLE_REVIEW_URL=         # Google review link sent to happy customers (default: Theaurax's, share.google/NC9UWrGVukD97y7U6)
 REVIEW_AUTO_APPROVE=false  # true = website reviews go live without the owner approving them
 REVIEW_EMAIL=              # Optional: email on bot-posted reviews (default whatsapp-reviews@<store>)
 PORT=3000
