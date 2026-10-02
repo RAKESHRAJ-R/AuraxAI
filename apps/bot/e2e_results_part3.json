@@ -1,0 +1,77 @@
+[
+  {
+    "feature": "Admin API auth guard (401 without token)",
+    "pass": true,
+    "detail": "GET /api/sessions -> 401 {\"error\":\"Unauthorized. Please log in.\"}"
+  },
+  {
+    "feature": "Login rejects wrong password",
+    "pass": true,
+    "detail": "-> 401 {\"error\":\"Incorrect password.\"}"
+  },
+  {
+    "feature": "Login accepts correct password (issues token)",
+    "pass": true,
+    "detail": "-> 200 team=aurax token=4276352c…"
+  },
+  {
+    "feature": "Endpoint: WhatsApp status (/api/whatsapp/status)",
+    "pass": true,
+    "detail": "-> 200 | {\"status\":\"CONNECTING\",\"qrDataUrl\":null}"
+  },
+  {
+    "feature": "Endpoint: Provider analytics stats (/api/provider-stats)",
+    "pass": true,
+    "detail": "-> 200 | {\"providers\":{\"groq\":{\"success\":0,\"errors\":0,\"quotaExhausted\":0,\"tokensUsed\":0,\"lastErrorAt\":null,\"lastErrorMsg\":null},\"openai\":{\"success\":0,\"errors\":0,\"quotaEx…"
+  },
+  {
+    "feature": "Endpoint: Retry queue stats (/api/retry-stats)",
+    "pass": true,
+    "detail": "-> 200 | {\"total\":0,\"due\":0,\"providers\":{\"groq\":true,\"openai\":true,\"gemini\":true,\"activeProvider\":\"groq\"},\"retries\":[]}"
+  },
+  {
+    "feature": "Endpoint: Active sessions (/api/sessions)",
+    "pass": true,
+    "detail": "-> 200 | [{\"userId\":\"199617228615734@lid\",\"state\":\"COLLECTING_ADDRESS\",\"cart\":[{\"productId\":74379,\"name\":\"BAYERN MUNICH 1995-97 HOME — KLINSMANN 5-SLV\",\"price\":450,\"size…"
+  },
+  {
+    "feature": "Endpoint: Knowledge list (/api/knowledge)",
+    "pass": true,
+    "detail": "-> 200 | [{\"id\":\"kn_1785050652167_hisgc\",\"keywords\":[\"warranty\",\"guarantee\",\"warranty period\"],\"question\":\"Do jerseys have warranty?\",\"answer\":\"All Theaurax jerseys carr…"
+  },
+  {
+    "feature": "Endpoint: Knowledge pending-count (/api/knowledge/pending-count)",
+    "pass": true,
+    "detail": "-> 200 | {\"count\":0}"
+  },
+  {
+    "feature": "Endpoint: Conversation review (/api/knowledge/review)",
+    "pass": true,
+    "detail": "-> 200 | {\"total\":70,\"flaggedCount\":5,\"flagged\":[{\"id\":\"lead_1783183460907\",\"name\":\"RAKESH\",\"phone\":\"199617228615734\",\"status\":\"active\",\"updatedAt\":\"2026-07-24T03:09:38.…"
+  },
+  {
+    "feature": "Endpoint: Support tickets (/api/tickets)",
+    "pass": true,
+    "detail": "-> 200 | []"
+  },
+  {
+    "feature": "Endpoint: Server logs (/api/logs)",
+    "pass": true,
+    "detail": "-> 200 | [{\"timestamp\":\"2026-07-26T08:19:56.122Z\",\"type\":\"info\",\"message\":\"[AI Service] Loaded 5 Groq API key(s) for rotation.\"},{\"timestamp\":\"2026-07-26T08:19:56.125Z\",…"
+  },
+  {
+    "feature": "Admin SPA served at /admin",
+    "pass": true,
+    "detail": "-> 200 | html=true"
+  },
+  {
+    "feature": "Telegram owner alert",
+    "pass": "WARN",
+    "detail": "TELEGRAM_BOT_TOKEN/CHAT_ID not set — feature disabled (not an error)"
+  },
+  {
+    "feature": "Google Sheets lead logging",
+    "pass": "WARN",
+    "detail": "appendRow returned undefined (permission error expected per earlier run)"
+  }
+]
