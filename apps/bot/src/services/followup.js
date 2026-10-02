@@ -195,7 +195,18 @@ class FollowUpService {
 
       const res = await woocommerceService.getOrder(lo.orderId);
       if (!res?.success) continue; // unknown — never guess, try next tick
-      const status = String(res.order?.status || '').toLowerCase();
+      let status = String(res.order?.status || '').toLowerCase();
+
+      // The hold ran out and it is still unpaid. WooCommerce will never cancel it (bot orders
+      // are 'rest-api'), so without this the customer heard nothing after the reminder and the
+      // order sat pending forever (#78000, 2026-10-02). Cancel it, then the note below goes out.
+      if (status === 'pending' && age >= holdMs && config.payment?.autoCancel) {
+        const c = await woocommerceService.cancelUnpaidOrder(lo.orderId,
+          `Not paid within ${Math.round(holdMs / 60000)} minutes — cancelled automatically by the WhatsApp bot.`);
+        if (c?.success) status = 'cancelled';
+        else if (c?.status) status = String(c.status).toLowerCase(); // paid in the meantime
+        else continue; // could not reach the store — try next tick
+      }
 
       if (PAID_STATUSES.has(status)) {
         // Paid → one thank-you. Right after paying it is the reply they expect, so it goes

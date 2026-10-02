@@ -708,7 +708,7 @@ their last message.
 
 **Unpaid-order reminder (2026-10-01)** — `runPaymentReminders()`, every 5 min. Order #77997 was
 placed at 10:52 PM, never paid, and the customer heard nothing: the lead went `completed` at
-order creation and WooCommerce cancelled it an hour later. Now, from each session's `lastOrder`
+order creation (and it was never cancelled either — see the ⚠️ below). Now, from each session's `lastOrder`
 (which carries `items`), the REAL WooCommerce status decides: `pending` and ≥
 `PAYMENT_REMINDER_MINUTES` (25) old, still inside `WC_HOLD_STOCK_MINUTES` (60) → one reminder
 with the link and minutes left (sent even in quiet hours — the link is about to die);
@@ -718,6 +718,13 @@ order so a quick payer is thanked quickly; status unknown → retry next tick. T
 "Indha jersey ippavum vaanganum na" — the owner rejected "innum venumna" as meaningless. The session is stamped before sending (`paymentReminderAt` / `expiredNoticeAt` /
 `paidSeenAt`), so the worst case is a missed reminder, never two. The confirmation message now
 states the payment deadline.
+
+⚠️ **WooCommerce never cancels the bot's orders** (found 2026-10-02 with order #78000: one reminder at
+25 min, then silence). Its hold-stock cancel only applies to `created_via=checkout`; bot orders are
+`rest-api`, so #77997/#77999/#78000 were all still `pending` days later and our "auto-cancel aagidum"
+was false. Now, still `pending` once `WC_HOLD_STOCK_MINUTES` has passed → `cancelUnpaidOrder()` re-reads
+the order (never cancels one that just got paid), cancels it with an order note, and the "cancelled —
+reply YES" note follows. `PAYMENT_AUTO_CANCEL=false` turns that off (the order then just stays pending).
 
 ⚠️ **Three bugs meant no live customer was ever followed up** (found 2026-10-01): leads were
 filtered on `@c.us` while this account's ids are `…@lid`; the agent path marked any empty-cart
@@ -792,7 +799,7 @@ Verified live 2026-09-20 via REST:
 | | |
 |---|---|
 | Payment gateways | **Razorpay only.** `cod`, `bacs` and `cheque` are all disabled |
-| Unpaid order lifetime | `hold stock = 60 minutes` — WooCommerce cancels unpaid `pending` orders and kills their payment link |
+| Unpaid order lifetime | `hold stock = 60 minutes` — but WooCommerce applies it ONLY to orders from its own checkout (`created_via=checkout`). Bot orders are `rest-api` and stay `pending` forever; the bot cancels them itself (`PAYMENT_AUTO_CANCEL`) |
 | Stock counts | **None.** `manage_stock=false` and `stock_quantity=null` across the catalogue; 92 of 100 sampled products are variable. Only `instock`/`outofstock` is knowable |
 | Products | 136 published · **655 draft** (566 priced, 541 in stock, 139 Player Version, 111 Fan Version, 14 × 26/27) |
 

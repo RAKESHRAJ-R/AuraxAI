@@ -1309,6 +1309,27 @@ class WooCommerceService {
   }
 
   /**
+   * Cancel an unpaid order the bot created (see config.payment.autoCancel — WooCommerce never
+   * cancels 'rest-api' orders itself). Re-reads the order first and refuses unless it is still
+   * 'pending', so a payment that landed a moment ago is never cancelled. Never throws.
+   */
+  async cancelUnpaidOrder(orderId, note) {
+    const id = String(orderId || '').replace(/\D/g, '');
+    if (!id) return { success: false, error: 'no order id' };
+    try {
+      const { data: current } = await this.client.get(`/orders/${id}`);
+      if (current.status !== 'pending') return { success: false, status: current.status, error: `status is ${current.status}` };
+      const { data: order } = await this.client.put(`/orders/${id}`, { status: 'cancelled' });
+      if (note) await this.client.post(`/orders/${id}/notes`, { note }).catch(() => {});
+      console.log(`[WooCommerce] Cancelled unpaid order #${id}.`);
+      return { success: order.status === 'cancelled', status: order.status };
+    } catch (err) {
+      console.error(`[WooCommerce] Could not cancel order #${id}:`, err.response?.data?.message || err.message);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
    * Fetch a single order by its numeric ID for the support/tracking agent.
    * Returns a SANITISED, minimal view — plus billingPhone so the caller can verify the
    * requester actually owns the order before revealing name/address details. Never throws.

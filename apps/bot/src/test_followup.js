@@ -328,6 +328,36 @@ console.log('\n🧪 Unpaid-order reminder (order #77997, 2026-09-29)\n');
   check('a customer who is mid-conversation is not interrupted', to(h.id).length === 0, '');
   shift = 10 * MIN;
 
+  // #78000 (2026-10-02): WooCommerce never cancels 'rest-api' orders, so after the hour the
+  // order stayed pending and the customer heard nothing after the reminder.
+  const cancelled = [];
+  woocommerceService.cancelUnpaidOrder = async (id) => {
+    if (orders[id] === undefined) return { success: false, error: 'down' };
+    if (orders[id] !== 'pending') return { success: false, status: orders[id] };
+    orders[id] = 'cancelled'; cancelled.push(id); return { success: true, status: 'cancelled' };
+  };
+  const j = await orderSession(65, 'pending');
+  await pay();
+  const js = await dbService.getSession(j.id);
+  check('still pending after the hour → the bot cancels it itself (WooCommerce never does for rest-api orders)', cancelled.includes(j.orderId), JSON.stringify(cancelled));
+  check('…and sends the "cancelled, reply YES" note with the cart restored', to(j.id).length === 1 && /auto-cancel aayiduchu/.test(to(j.id)[0].message) && js.state === 'CONFIRMING_ORDER', JSON.stringify(to(j.id)));
+  await pay();
+  check('…once', to(j.id).length === 0 && cancelled.filter(x => x === j.orderId).length === 1, '');
+
+  const k = await orderSession(65, 'pending');
+  orders[k.orderId] = 'processing'; // paid a moment before the cancel
+  const realGet = woocommerceService.getOrder;
+  woocommerceService.getOrder = async (id) => id === k.orderId ? { success: true, order: { id, status: 'pending' } } : realGet(id);
+  await pay();
+  woocommerceService.getOrder = realGet;
+  check('a payment that lands just before the cancel is never cancelled — they are thanked', !cancelled.includes(k.orderId) && /Payment vandhuduchu/.test(to(k.id)[0]?.message || ''), JSON.stringify(to(k.id)));
+
+  config.payment.autoCancel = false;
+  const l = await orderSession(65, 'pending');
+  await pay();
+  config.payment.autoCancel = true;
+  check('PAYMENT_AUTO_CANCEL=false → the order is left alone', !cancelled.includes(l.orderId) && to(l.id).length === 0, '');
+
   whatsappWebBot.status = 'DISCONNECTED';
   const i = await orderSession(30, 'pending');
   await pay();

@@ -174,9 +174,14 @@ const config = {
     gateway: (process.env.PAYMENT_GATEWAY || 'Razorpay').trim(),
     methods: (process.env.PAYMENT_METHODS || 'UPI,Debit/Credit card,Net banking')
       .split(',').map(s => s.trim()).filter(Boolean),
-    // WooCommerce "Hold stock (minutes)": an unpaid order is cancelled after this and its
-    // payment link dies. 60 on theaurax.in (verified 2026-09-20).
+    // WooCommerce "Hold stock (minutes)": 60 on theaurax.in (verified 2026-09-20).
+    // ⚠️ WooCommerce only auto-cancels orders made through its OWN checkout
+    // (created_via 'checkout'). The bot's orders are 'rest-api', so they stayed pending forever
+    // — #77997, #77999, #78000 all still pending days later (checked 2026-10-02) — and the
+    // "auto-cancel" promise in our messages was false. With autoCancel on, the bot cancels its
+    // own unpaid order once this hold runs out, then sends the "reply YES to re-order" note.
     holdMinutes: parseInt(process.env.WC_HOLD_STOCK_MINUTES || '60', 10),
+    autoCancel: String(process.env.PAYMENT_AUTO_CANCEL || 'true').toLowerCase() !== 'false',
   },
   wati: {
     endpoint: process.env.WATI_API_ENDPOINT || '',
