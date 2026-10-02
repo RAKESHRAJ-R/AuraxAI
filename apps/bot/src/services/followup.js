@@ -174,12 +174,20 @@ class FollowUpService {
    */
   async runPaymentReminders() {
     if (!config.followUp.enabled) return;
-    if (!whatsappWebBot.client || whatsappWebBot.status !== 'CONNECTED') return;
+    if (!whatsappWebBot.client || whatsappWebBot.status !== 'CONNECTED') {
+      console.log(`[FollowUp] Payment check skipped — WhatsApp is ${whatsappWebBot.status || 'not started'}.`);
+      return;
+    }
     const now = this.now();
     const holdMs = (config.payment?.holdMinutes || 60) * 60 * 1000;
     const remindAfterMs = (config.followUp.paymentReminderMinutes || 25) * 60 * 1000;
 
     const sessions = await dbService.getAllSessions();
+    // One line per open order, so "why did nothing happen?" is answered by the log (2026-10-02:
+    // #78000 sat pending with no message and no way to tell why).
+    const open = sessions.filter(s => s.lastOrder?.orderId && !s.lastOrder.paidSeenAt && !s.lastOrder.expiredNoticeAt
+      && now - (s.lastOrder.at || 0) < 24 * HOUR_MS);
+    console.log(`[FollowUp] Payment check: ${open.length} open order(s)${open.length ? ` — ${open.map(s => `#${s.lastOrder.orderId} ${Math.round((now - (s.lastOrder.at || 0)) / 60000)}min`).join(', ')}` : ''}; auto-cancel ${config.payment?.autoCancel ? 'on' : 'off'} after ${Math.round(holdMs / 60000)}min.`);
     for (const s of sessions) {
       const userId = s.userId;
       const lo = s.lastOrder;
@@ -191,11 +199,18 @@ class FollowUpService {
       if (lo.paidSeenAt || lo.expiredNoticeAt) continue;
       // Mid-conversation right now: don't talk over them, try again next tick.
       const lastActive = s.lastActive ? new Date(s.lastActive).getTime() : 0;
-      if (now - lastActive < 3 * 60 * 1000) continue;
+      if (now - lastActive < 3 * 60 * 1000) {
+        console.log(`[FollowUp] Order #${lo.orderId}: customer active in the last 3 min — waiting.`);
+        continue;
+      }
 
       const res = await woocommerceService.getOrder(lo.orderId);
-      if (!res?.success) continue; // unknown — never guess, try next tick
+      if (!res?.success) { // unknown — never guess, try next tick
+        console.log(`[FollowUp] Order #${lo.orderId}: could not read its status (${res?.error || 'unknown error'}) — retrying next check.`);
+        continue;
+      }
       let status = String(res.order?.status || '').toLowerCase();
+      console.log(`[FollowUp] Order #${lo.orderId}: ${status}, ${Math.round(age / 60000)} min old.`);
 
       // The hold ran out and it is still unpaid. WooCommerce will never cancel it (bot orders
       // are 'rest-api'), so without this the customer heard nothing after the reminder and the
@@ -205,7 +220,10 @@ class FollowUpService {
           `Not paid within ${Math.round(holdMs / 60000)} minutes — cancelled automatically by the WhatsApp bot.`);
         if (c?.success) status = 'cancelled';
         else if (c?.status) status = String(c.status).toLowerCase(); // paid in the meantime
-        else continue; // could not reach the store — try next tick
+        else { // could not reach the store — try next tick
+          console.log(`[FollowUp] Order #${lo.orderId}: cancel failed (${c?.error || 'unknown'}) — retrying next check.`);
+          continue;
+        }
       }
 
       if (PAID_STATUSES.has(status)) {
