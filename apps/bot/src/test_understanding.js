@@ -409,6 +409,15 @@ console.log('\n"Show other teams" after a one-shirt search (2026-10-02 chat)');
   for (const t of ['Hi new order place pannanum', 'Hi pudhusa order pannanum', 'sari vera jersey\'s other teams ka kaatunga', 'fine vidu']) {
     check(`"${t}" is detected as Tanglish`, aiService.detectLanguage(t) === 'tanglish', aiService.detectLanguage(t));
   }
+  // 10/2 Brazil order: pincode printed twice, a corrupted saved address reused.
+  const orderState = (await import('./services/orderState.js')).default;
+  const pa = orderState.parseAddressParts('sessy, 90/1,indian bank colony,678687,9940974356');
+  check('a bare pincode part is not kept inside the address text', pa.address === '90/1, indian bank colony' && pa.pincode === '678687', JSON.stringify(pa));
+  check('"change panniten, 678678" is not a usable saved address', !orderState.isPlausibleAddress('change panniten, 678678'), '');
+  check('…while real addresses still are', orderState.isPlausibleAddress('90/1, indian bank colony') && orderState.isPlausibleAddress('No.38 Mylappa Street, Chennai 600023'), '');
+  const bad = await newCustomer({ customerProfile: { name: 'Sess', address: 'change panniten, 678678', pincode: '678678', phone: '7655788766' } });
+  const badS = await state(bad);
+  check('a corrupted saved address is asked for again, not reused', !aiService._knownAddress(badS).address, JSON.stringify(aiService._knownAddress(badS)));
   for (const t of ['show me other teams', 'I want Man City jersey', 'What is the delivery time?']) {
     check(`"${t}" stays English`, aiService.detectLanguage(t) === 'english', aiService.detectLanguage(t));
   }

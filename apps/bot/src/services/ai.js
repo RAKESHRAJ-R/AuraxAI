@@ -16,6 +16,14 @@ import rulesService, { numbersIn } from './rules.js';
 import * as tanglishReader from './tanglish.js';
 import understandService from './understand.js';
 
+// "1, 2 illa 3?" was asked over a list of TWO Brazil shirts (2026-10-02). Ask for the numbers shown.
+function pickRange(n, tanglish) {
+  if (n <= 1) return '1';
+  if (n === 2) return tanglish ? '1 illa 2' : '1 or 2';
+  if (n === 3) return tanglish ? '1, 2 illa 3' : '1, 2, or 3';
+  return `1–${n}`;
+}
+
 class AIService {
   // --- Per-(provider, key) rate-limit throttling ---
   // Groq/Gemini/etc RPM limits are granted PER API KEY, not per provider. Throttling
@@ -435,8 +443,8 @@ class AIService {
         : `${group.emoji} *${group.label}* — everything we have in stock 👇\n${lines}\n\nWhich one would you like (${range})? Tell me the size and quantity too 🛍️`;
     }
     return isTanglish
-      ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
-      : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
+      ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — ${pickRange(top.length, true)}? Enna size, evlo quantity venum? 🛍️`
+      : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — ${pickRange(top.length, false)}? What size and how many? 🛍️`;
   }
 
   /**
@@ -2128,6 +2136,8 @@ ${sessionContext}`;
     if (session.addressDetails) d = orderState.mergeAddress(d, session.addressDetails);
     if (session.addressDraft) d = orderState.mergeAddress(d, session.addressDraft);
     if (!d.name && session.customerName && session.customerName !== 'Customer') d.name = session.customerName;
+    // A corrupted saved address is asked for again, never reused (see isPlausibleAddress).
+    if (d.address && !orderState.isPlausibleAddress(d.address)) d.address = '';
     return d;
   }
 
@@ -2141,7 +2151,8 @@ ${sessionContext}`;
       `• *${item.name}* — ${item.size} size, ${item.qty} qty — ₹${(parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0)}`
     ).join('\n');
     const d = session.addressDetails || {};
-    const ship = d.address ? `\n📦 ${d.name}, ${d.address}, ${d.pincode} | 📱 ${d.phone}` : '';
+    const pinShown = d.pincode && String(d.address).replace(/\s/g, '').includes(String(d.pincode));
+    const ship = d.address ? `\n📦 ${d.name}, ${d.address}${pinShown ? '' : `, ${d.pincode}`} | 📱 ${d.phone}` : '';
     const head = lead ? `${lead}\n` : '';
     return isT
       ? `${head}Unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm panna "YES" nu reply pannunga 🎉`
@@ -4115,8 +4126,8 @@ ${sessionContext}`;
                     return `${i + 1}. *${p.name}* — ₹${p.price}${sizeText}${p.permalink ? `\n${p.permalink}` : ''}`;
                   }).join('\n');
                   resultText = isTanglish
-                    ? `${opener}\n${lines}\n\nEdhu venum — 1, 2 illa 3? Enna size, evlo quantity venum? 🛍️`
-                    : `${opener}\n${lines}\n\nWhich one would you like — 1, 2, or 3? What size and how many? 🛍️`;
+                    ? `${opener}\n${lines}\n\nEdhu venum — ${pickRange(top.length, true)}? Enna size, evlo quantity venum? 🛍️`
+                    : `${opener}\n${lines}\n\nWhich one would you like — ${pickRange(top.length, false)}? What size and how many? 🛍️`;
                 }
 
                 messages.push({

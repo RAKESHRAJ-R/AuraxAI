@@ -174,6 +174,9 @@ export function parseAddressParts(rawText) {
     }
     const addrText = parts
       .filter(p => !/^\s*(?:pin\s*code|pincode|pin)\s*[:\-–]?\s*\d{3}\s?\d{3}\s*$/i.test(p))
+      // A bare pincode part is the pincode field, not address text — kept in, the summary
+      // printed it twice ("indian bank colony, 678687, 678687", 2026-10-02).
+      .filter(p => !(out.pincode && p.replace(/\s/g, '') === out.pincode))
       .filter(p => !/^\s*(?:mobile|phone|ph|contact|cell)\b/i.test(p))
       .join(', ')
       .trim();
@@ -221,6 +224,19 @@ export function missingAddressFields(details) {
 }
 
 export const isAddressComplete = (details) => missingAddressFields(details).length === 0;
+
+/**
+ * Does a SAVED address still read like one? Before 2026-10-01 "Address change panniten" was
+ * saved as the address "change panniten, 678678", and on 10/2 the bot reused it for a new
+ * order ("Munnadi kuduthha address ae use panren"). With the pincode taken out, a real address
+ * has a door number or an address word, and never reads as a request.
+ */
+export function isPlausibleAddress(address) {
+  const a = String(address || '').replace(/(?<!\d)[1-9]\d{2}\s?\d{3}(?!\d)/g, ' ').trim();
+  if (a.replace(/[\s,.-]/g, '').length < 6) return false;
+  if (/\b(change|maathu\w*|mathu\w*|maatha\w*|venaam|vendaam|venam|venum|panniten|pannitten|pannanum|kudukuren|anuppuren|want|need|jersey|order|cancel)\b/i.test(a)) return false;
+  return /\d/.test(a) || ADDRESS_WORDS.test(a);
+}
 
 // ── Entity extraction ─────────────────────────────────────────────────────────────────
 
@@ -380,6 +396,6 @@ export function computeStep(session) {
 export { productHasSize, CONFIRM_RE };
 
 export default {
-  extractEntities, parseAddressParts, mergeAddress, missingAddressFields, isAddressComplete,
+  extractEntities, parseAddressParts, mergeAddress, missingAddressFields, isAddressComplete, isPlausibleAddress,
   lockedProduct, hasActiveOrder, computeStep, productHasSize,
 };
