@@ -265,6 +265,8 @@ class WooCommerceService {
       '\\bman\\s*utd\\b': 'manchester united',
       '\\bman\\s*united\\b': 'manchester united',
       '\\bman\\s*city\\b': 'manchester city',
+      '\\btottenham\\s+hotspurs?\\b': 'tottenham',
+      '\\bspurs\\b': 'tottenham',
       '\\bjers[iy]\\b': 'jersey',
       '\\bjerseyy\\b': 'jersey',
     };
@@ -314,12 +316,20 @@ class WooCommerceService {
    * Get fallback products when search returns zero results.
    * Returns cheapest in-stock items as suggestions.
    */
-  getFallbackProducts(products, isAdultSearch) {
+  getFallbackProducts(products, isAdultSearch, query = '') {
     let candidates = [...products];
     if (isAdultSearch) candidates = candidates.filter(p => !this.isKidsProduct(p));
+    candidates = candidates.filter(p => p.stock_status === 'instock' && p.price && !isNaN(parseFloat(p.price)));
+    // "I want spurs jersey" (2026-10-02) got CSK and RCB — the cheapest things in the shop.
+    // A football request that misses is offered football: our real best sellers, never
+    // cricket shirts or balls unless they asked for cricket.
+    const cricketAsk = /\b(ipl|cricket|csk|rcb|kkr|srh|dhoni|kohli|virat|chennai super|royal challengers|mumbai indians)\b/i.test(String(query));
+    if (!cricketAsk) {
+      const football = candidates.filter(p => !['cricket', 'gear'].includes(this.productGroup(p)));
+      if (football.length > 0) candidates = football;
+    }
     return candidates
-      .filter(p => p.stock_status === 'instock' && p.price && !isNaN(parseFloat(p.price)))
-      .sort((a, b) => parseFloat(a.price) - parseFloat(b.price))
+      .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0) || parseFloat(a.price) - parseFloat(b.price))
       .slice(0, 5);
   }
 
@@ -946,7 +956,7 @@ class WooCommerceService {
       ? products.filter(p => this.isKidsProduct(p))
       : products.filter(p => !this.isKidsProduct(p));
 
-    const suggestionsFor = () => this.getFallbackProducts(products, isAdultSearch);
+    const suggestionsFor = () => this.getFallbackProducts(products, isAdultSearch, query);
     const constraints = {
       seasons: querySeasons.present ? querySeasons.label : null,
       version: queryVersion,
@@ -1306,6 +1316,37 @@ class WooCommerceService {
       trackingNumber: get(['_tracking_number', 'tracking_number', '_wc_shipment_tracking_items']),
       trackingUrl: get(['_tracking_url', 'tracking_url']),
     };
+  }
+
+  /**
+   * Post a customer's review on the products of their order (WooCommerce product reviews).
+   * Only ever called after the customer agreed and gave a star rating. Status 'hold' puts it
+   * in wp-admin → Products → Reviews for the owner to approve, unless autoApprove. Never throws.
+   */
+  async postOrderReview(orderId, { review, reviewer, rating, email, approve = false }) {
+    const id = String(orderId || '').replace(/\D/g, '');
+    if (!id || !review) return { success: false, error: 'missing order or text' };
+    try {
+      const { data: order } = await this.client.get(`/orders/${id}`);
+      const productIds = [...new Set((order.line_items || []).map(li => li.product_id).filter(Boolean))];
+      if (productIds.length === 0) return { success: false, error: 'order has no products' };
+      const host = (() => { try { return new URL(config.woocommerce.url).hostname.replace(/^www\./, ''); } catch { return 'theaurax.in'; } })();
+      const reviewerEmail = order.billing?.email || email || `whatsapp-reviews@${host}`;
+      const posted = [];
+      for (const productId of productIds) {
+        const { data } = await this.client.post('/products/reviews', {
+          product_id: productId, review, reviewer: reviewer || 'WhatsApp customer',
+          reviewer_email: reviewerEmail, rating: Math.max(1, Math.min(5, Math.round(rating) || 5)),
+          status: approve ? 'approved' : 'hold',
+        });
+        posted.push(data.id);
+      }
+      console.log(`[WooCommerce] Review for order #${id} posted on ${posted.length} product(s) (${approve ? 'approved' : 'pending approval'}).`);
+      return { success: true, reviewIds: posted, pending: !approve };
+    } catch (err) {
+      console.error(`[WooCommerce] Could not post review for order #${id}:`, err.response?.data?.message || err.message);
+      return { success: false, error: err.message };
+    }
   }
 
   /**

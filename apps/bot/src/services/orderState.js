@@ -238,6 +238,15 @@ export function isPlausibleAddress(address) {
   return /\d/.test(a) || ADDRESS_WORDS.test(a);
 }
 
+/** "25/26", "2025-26", "1995-97", "26/27 season", "2026" → removed. */
+export function stripSeasons(text) {
+  return String(text || '')
+    .replace(/(?<!\d)(?:19|20)?\d{2}\s*[\/\-–]\s*(?:19|20)?\d{2}(?!\d)/g, ' ')
+    .replace(/(?<!\d)(?:19|20)\d{2}(?!\d)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ── Entity extraction ─────────────────────────────────────────────────────────────────
 
 /**
@@ -285,6 +294,10 @@ export function extractEntities(text, ctx = {}) {
   // Long free text is chat, not a size/qty reply — a coincidental "m" or "2" inside a
   // sentence must not rewrite the cart.
   if (q.length > 80) return out;
+
+  // A season is never a quantity: "Real Madrid 25/26 jersey venum XXL" carted 26 shirts
+  // (2026-10-02). Remove seasons and years before any number is read.
+  q = stripSeasons(q);
 
   // Normalise size words ("medium", "2xl") before numbers are read, so "2xl" isn't qty 2.
   for (const [re, rep] of SIZE_WORDS) q = q.replace(re, rep);
@@ -364,9 +377,16 @@ export function extractEntities(text, ctx = {}) {
 
 // ── State helpers ─────────────────────────────────────────────────────────────────────
 
-/** The product this customer has committed to, if any. Cart wins over a pending pick. */
+/**
+ * The cart holds any number of jerseys (2026-10-02: "I also want a Real Madrid jersey"
+ * removed the Bayern one). A jersey being set up (picked, size/qty not done yet) is the
+ * one the customer is talking about; otherwise the last one added.
+ */
+export const isConfiguring = (session) => Boolean(session?.selectedProduct && session.state === 'COLLECTING_SIZE');
+
 export function lockedProduct(session) {
-  if (session?.cart?.length > 0) return session.cart[0];
+  if (isConfiguring(session)) return session.selectedProduct;
+  if (session?.cart?.length > 0) return session.cart[session.cart.length - 1];
   return session?.selectedProduct || null;
 }
 
@@ -378,6 +398,7 @@ export const hasActiveOrder = (session) => Boolean(lockedProduct(session));
  */
 export function computeStep(session) {
   const s = session || {};
+  if (isConfiguring(s)) return s.pendingSize ? 'QUANTITY_SELECTION' : 'SIZE_SELECTION';
   if (s.cart?.length > 0) {
     if (s.state === 'CONFIRMING_ORDER') return 'CART_REVIEW';
     return 'ADDRESS_COLLECTION';
@@ -397,5 +418,5 @@ export { productHasSize, CONFIRM_RE };
 
 export default {
   extractEntities, parseAddressParts, mergeAddress, missingAddressFields, isAddressComplete, isPlausibleAddress,
-  lockedProduct, hasActiveOrder, computeStep, productHasSize,
+  lockedProduct, hasActiveOrder, computeStep, productHasSize, isConfiguring, stripSeasons,
 };

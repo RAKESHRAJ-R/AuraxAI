@@ -267,18 +267,22 @@ console.log('\n8. In CART_REVIEW / payment → "how pay?"');
 }
 
 // ---------------------------------------------------------------- TEST 9
-console.log('\n9. In ADDRESS_COLLECTION → "Barcelona"');
+console.log('\n9. In ADDRESS_COLLECTION → "Barcelona" (several jerseys per order since 2026-10-02)');
 {
   const id = await newCustomer();
   await ask(id, '2');
   await ask(id, 'M 1');
+  llmScript = [toolCall('search_products', { query: 'Barcelona' })];
   let r = await ask(id, 'Barcelona');
   let s = await state(id);
-  check('asks a clarification question', /change|maathi/i.test(r.replyText) && /YES/.test(r.replyText), r.replyText);
-  check('does not restart the flow', !TEAM_LIST.test(r.replyText) && s.cart[0]?.productId === MESSI.id, r.replyText);
-  r = await ask(id, 'no');
+  check('a team name mid-order searches it — no "change it? YES/NO"', !/maathi vera|Reply YES to change/i.test(r.replyText) && /BARCELONA/i.test(r.replyText), r.replyText.slice(0, 200));
+  check('the jersey already in the cart stays', s.cart.length === 1 && s.cart[0]?.productId === MESSI.id, JSON.stringify(s.cart));
+  const second = s.lastShownProducts[0];
+  await ask(id, '1');
+  r = await ask(id, 'L 2');
   s = await state(id);
-  check('"no" keeps the order and resumes it', s.cart[0]?.productId === MESSI.id && /Pincode|Mobile|address/i.test(r.replyText), r.replyText);
+  check('picking from the new list ADDS a second jersey', s.cart.length === 2 && s.cart[0].productId === MESSI.id && s.cart[1].productId === second.productId && s.cart[1].size === 'L' && s.cart[1].qty === 2, JSON.stringify(s.cart));
+  check('…and the reply shows both', (r.replyText.match(/•/g) || []).length >= 2, r.replyText);
 }
 
 // ---------------------------------------------------------------- TEST 10

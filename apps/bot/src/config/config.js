@@ -183,6 +183,17 @@ const config = {
     holdMinutes: parseInt(process.env.WC_HOLD_STOCK_MINUTES || '60', 10),
     autoCancel: String(process.env.PAYMENT_AUTO_CANCEL || 'true').toLowerCase() !== 'false',
   },
+  // Happy customers' reviews (2026-10-02). Google has no API for posting a review on a
+  // customer's behalf (and doing it breaks Google's rules), so the bot sends them the link.
+  // On the website, a review is posted only with the customer's OK and their own star
+  // rating, as "pending" unless REVIEW_AUTO_APPROVE=true.
+  reviews: {
+    enabled: String(process.env.REVIEWS_ENABLED || 'true').toLowerCase() !== 'false',
+    googleUrl: (process.env.GOOGLE_REVIEW_URL || '').trim(),
+    autoApprove: String(process.env.REVIEW_AUTO_APPROVE || 'false').toLowerCase() === 'true',
+    // WooCommerce requires an email on every review; bot orders have none.
+    email: (process.env.REVIEW_EMAIL || '').trim(),
+  },
   wati: {
     endpoint: process.env.WATI_API_ENDPOINT || '',
     accessToken: process.env.WATI_ACCESS_TOKEN || '',

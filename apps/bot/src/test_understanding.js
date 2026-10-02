@@ -189,7 +189,8 @@ console.log('\n3. Screenshots 1–2 — the English customer who wanted out, the
   s = await state(id);
   check('"I want Man City jersey" is NEVER saved as the address', !/want/i.test(JSON.stringify(s.addressDraft || {})) && !/want/i.test(s.address || ''), JSON.stringify(s.addressDraft));
   check('…it searches Man City instead', /MAN(CHESTER)? CITY/i.test(r.replyText), r.replyText.slice(0, 200));
-  check('…and says the old shirt left the cart', /GUARDIOLA/.test(r.replyText) && /out of your cart|remove/i.test(r.replyText), r.replyText.slice(0, 200));
+  // Since 2026-10-02 the cart holds several jerseys: the Guardiola shirt STAYS.
+  check('…and the jersey already in the cart stays (several per order)', s.cart.length === 1 && s.cart[0].productId === GUARDIOLA.id && /apdiye iruku|stay/i.test(r.replyText), r.replyText.slice(0, 200));
   check('…no order summary with the old product', !/Reply "YES" to confirm/i.test(r.replyText), r.replyText.slice(0, 200));
 }
 
@@ -492,6 +493,89 @@ console.log('\nThe 10/2 Sporting CP chat — "9 la enna iruku?", "ithula vera va
   check('after "S 3" the bot asks for the name too — never claims a name it was not given', !/Name save panniten|Name,? .*save panniten/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
   r = await ask(id3, '90/1,state colony,salem\n636006\n9876789655', V('give_address'));
   check('the WhatsApp display name never becomes the shipping name', !/Sessy/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
+}
+
+console.log('\nThe 10/2 Nikss chat — several jerseys, seasons, lists, Spurs, greeting, reviews');
+{
+  const orderState = (await import('./services/orderState.js')).default;
+  const BAYERN = products.find(p => /BAYERN MUNICH 1995-97 HOME — KLINSMANN/.test(p.name));
+  const RM_FS = products.find(p => /REAL MADRID 25-26 THIRD FULL SLEEVE JERSEY — MBAPPE/.test(p.name));
+
+  const e = orderState.extractEntities('Real Madrid 25/26 jersey Venum XXL', { awaiting: 'product', shownCount: 3 });
+  check('"Real Madrid 25/26 jersey Venum XXL" is size XXL and NO quantity (was 26)', e.size === 'XXL' && e.qty === null, JSON.stringify(e));
+  check('"Arsenal 2003-04 L 2" still reads qty 2', orderState.extractEntities('Arsenal 2003-04 L 2', { awaiting: 'size_qty' }).qty === 2, '');
+
+  // The 10/2 "Real Madrid 25/26" pick was right: the half-sleeve one is out of stock, so only
+  // the full sleeve fits. Two IN-STOCK Sporting CP Ronaldo shirts test the real ambiguity.
+  if (RM_FS) check('"Real Madrid 25/26" with only one in stock is not ambiguous', aiService._ambiguousMatches('Real Madrid 25/26 jersey Venum XXL', { productId: RM_FS.id, name: RM_FS.name }) === null, '');
+  const SPORT = products.find(p => /SPORTING CP 2001-2002 HOME - RONALDO RN/.test(p.name));
+  if (SPORT) {
+    const amb = aiService._ambiguousMatches('Sporting CP Ronaldo jersey venum M', { productId: SPORT.id, name: SPORT.name });
+    check('"Sporting CP Ronaldo" fits two in-stock jerseys → the bot asks which', Array.isArray(amb) && amb.length === 2, JSON.stringify(amb?.map(p => p.name)));
+    const SPORT_FS = products.find(p => /SPORTING CP 2001-02 HOME FULL SLEEVE/.test(p.name));
+    if (SPORT_FS) check('…but "Sporting CP Ronaldo full sleeve" is clear', aiService._ambiguousMatches('Sporting CP Ronaldo full sleeve M', { productId: SPORT_FS.id, name: SPORT_FS.name }) === null, '');
+  }
+
+  const spurs = woo.searchProductsDetailed('spurs');
+  check('"spurs" miss suggests football, never IPL/cricket', spurs.suggestions.length > 0 && !spurs.suggestions.some(p => /IPL|CSK|RCB|CHENNAI SUPER|ROYAL CHALLENGERS/i.test(p.name)), spurs.suggestions.map(p => p.name).join(' | '));
+
+  // Bayern in the cart, then "I also want a Real Madrid jersey".
+  const id = await newCustomer({ cart: [{ ...item(BAYERN, 'XXL', 1) }], selectedProduct: lockOf(BAYERN), state: 'COLLECTING_ADDRESS' });
+  llmScript = [toolCall('search_products', { query: 'real madrid' })];
+  let r = await ask(id, 'I also want a Real Madrid jersey ??', V('product_search', { search: 'real madrid' }));
+  let s = await state(id);
+  check('"I also want a Real Madrid jersey" keeps Bayern in the cart', s.cart.length === 1 && s.cart[0].productId === BAYERN.id && !/remove panniten/.test(r.replyText), r.replyText.slice(0, 160));
+  const shownNow = (r.replyText.match(/^\d+\. /gm) || []).length;
+  check('the stored list is exactly what was shown (3, not 10)', s.lastShownProducts.length === shownNow && shownNow > 0, `${s.lastShownProducts.length} vs ${shownNow}`);
+  r = await ask(id, 'XXL', V('size_qty', { size: 'XXL' }));
+  check('"XXL" with no pick asks among the numbers SHOWN only', !new RegExp(`\\b${shownNow + 1}\\b`).test(r.replyText.split('?')[0]), r.replyText);
+  const pickedRM = s.lastShownProducts[0];
+  await ask(id, '1', V('pick_product', { pick: 1 }));
+  r = await ask(id, '1', V('size_qty', { qty: 1 }));
+  s = await state(id);
+  check('picking a Real Madrid one ADDS it: 2 jerseys in the cart', s.cart.length === 2 && s.cart[0].productId === BAYERN.id && s.cart[1].productId === pickedRM.productId && s.cart[1].size === 'XXL', JSON.stringify(s.cart.map(i => [i.name, i.size, i.qty])));
+  check('…and the reply lists both', /BAYERN/.test(r.replyText) && /REAL MADRID/.test(r.replyText), r.replyText);
+
+  r = await ask(id, 'remove the Bayern one', V('cancel_cart', { search: 'bayern' }));
+  s = await state(id);
+  check('"remove the Bayern one" removes only Bayern', s.cart.length === 1 && s.cart[0].productId === pickedRM.productId, JSON.stringify(s.cart.map(i => i.name)));
+
+  // Summary + WooCommerce get every line.
+  const id2 = await newCustomer({ cart: [item(BAYERN, 'XXL', 1), item(GUARDIOLA, 'M', 2)], state: 'CONFIRMING_ORDER', addressDetails: ADDRESS, customerProfile: ADDRESS });
+  const s2 = await state(id2);
+  const sum = aiService._summaryReply(s2);
+  check('the order summary lists every jersey and the right total', /BAYERN/.test(sum) && /GUARDIOLA/.test(sum) && sum.includes(`₹${parseFloat(BAYERN.price) + 2 * parseFloat(GUARDIOLA.price)}`), sum);
+
+  const line = { name: BAYERN.name, size: 'XXL', qty: 1 };
+  check('qty 1 that the customer never said is pointed out', /1 jersey nu vechirukken/.test(aiService._addedLine({ language: 'tanglish', cart: [line] }, line, 'Bayern Munich klinsmann jersey XXL')), '');
+  check('…but not when they said it', !/vechirukken/.test(aiService._addedLine({ language: 'tanglish', cart: [line] }, line, 'XXL 1')), '');
+
+  // First message of a brand-new conversation gets a hello, whatever answers it.
+  const fresh = `9188${Date.now() % 100000000}@c.us`;
+  r = await ask(fresh, 'Hii bro jersey kadikuma??', V('browse_catalogue'));
+  check('"Hii bro jersey kadikuma??" opens with a greeting (was missing)', /^Vanakkam! 👋 Naan Aura/.test(r.replyText), r.replyText.slice(0, 80));
+  r = await ask(fresh, 'Club jerseys kaatunga', V('browse_catalogue'));
+  check('…only on the first reply', !/^Vanakkam/.test(r.replyText), r.replyText.slice(0, 60));
+
+  // Reviews.
+  const posted = [];
+  const realPost = woo.postOrderReview;
+  woo.postOrderReview = async (orderId, opts) => { posted.push({ orderId, ...opts }); return { success: true, pending: true }; };
+  const id3 = await newCustomer({ lastOrder: { orderId: 78005, checkoutUrl: PAY_URL, at: Date.now() - 5 * 24 * 3600 * 1000 }, customerProfile: ADDRESS });
+  r = await ask(id3, 'Jersey vandhuchu bro, semma quality! Fit perfect', V('positive_review', { mood: 'fine' }));
+  check('praise gets a thank-you and asks permission + stars', /thanks/i.test(r.replyText) && /star/i.test(r.replyText) && /website/i.test(r.replyText), r.replyText);
+  check('…nothing is posted before the customer agrees', posted.length === 0, '');
+  r = await ask(id3, '5 ⭐', V('other'));
+  check('"5 ⭐" posts THEIR words with THEIR rating on order #78005', posted.length === 1 && posted[0].orderId === 78005 && posted[0].rating === 5 && /semma quality/.test(posted[0].review) && posted[0].reviewer === 'PRANAV', JSON.stringify(posted));
+  check('…and says it will appear after approval', /team check panni/.test(r.replyText), r.replyText);
+  const id4 = await newCustomer({ lastOrder: { orderId: 78006, checkoutUrl: PAY_URL, at: Date.now() } });
+  await ask(id4, 'Super jersey bro', V('positive_review'));
+  r = await ask(id4, 'no', V('closing'));
+  check('"no" posts nothing', posted.length === 1 && /no problem/i.test(r.replyText), r.replyText);
+  const id5 = await newCustomer();
+  r = await ask(id5, 'Your jerseys are super', V('positive_review'));
+  check('praise without any order: thanks, but no website review offer', !/website/i.test(r.replyText) && /thanks/i.test(r.replyText), r.replyText);
+  woo.postOrderReview = realPost;
 }
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);

@@ -307,8 +307,12 @@ class FollowUpService {
   paymentReminderText(session, lo, minsLeft) {
     const isT = session.language === 'tanglish';
     const first = this._firstName(session);
-    const it = lo.items?.[0];
-    const what = it ? (isT ? ` (*${it.name}* — ${it.size} size, ${it.qty} qty)` : ` (*${it.name}* — Size ${it.size}, Qty ${it.qty})`) : '';
+    const items = lo.items || [];
+    const it = items[0];
+    // Several jerseys in one order: count them instead of naming only the first.
+    const what = items.length > 1
+      ? (isT ? ` (${items.length} jerseys)` : ` (${items.length} jerseys)`)
+      : it ? (isT ? ` (*${it.name}* — ${it.size} size, ${it.qty} qty)` : ` (*${it.name}* — Size ${it.size}, Qty ${it.qty})`) : '';
     return isT
       ? `Hi${first} 👋 Unga order #${lo.orderId}${what} ku payment innum pending la iruku.\n⏳ ${minsLeft} nimishathukkulla pay pannalana, order auto-cancel aagidum.\nPay panna: ${lo.checkoutUrl}\nPay panradhula edhavadhu problem na inga sollunga 🙏`
       : `Hi${first} 👋 Payment for your order #${lo.orderId}${what} is still pending.\n⏳ If it isn't paid in the next ${minsLeft} minutes, the order is cancelled automatically.\nPay here: ${lo.checkoutUrl}\nAny trouble paying? Just tell me here 🙏`;
@@ -359,7 +363,10 @@ class FollowUpService {
 
     let message;
     if (hasCartItems) {
-      const item = lead.cart[0];
+      // Several jerseys: name them all ("A, B") in the one slot the copy has.
+      const item = lead.cart.length > 1
+        ? { name: lead.cart.map(i => i.name).join('*, *') }
+        : lead.cart[0];
       if (followUpCount === 0) {
         message = isTanglish
           ? `Hey ${firstName}! 👋 Neenga *${item.name}* paathinga illa?\n\nInnum venuma? Reply pannunga, naan continue panren! 🔥`

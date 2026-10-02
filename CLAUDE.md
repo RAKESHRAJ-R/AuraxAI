@@ -129,6 +129,10 @@ ADMIN_CONSOLE_URL=         # Sign-in link in those emails (the Vercel URL); defa
 ADMIN_ALLOWED_ORIGINS=     # Required for the Vercel-hosted admin console: comma-separated
                            # origins allowed to call the API cross-origin. `*.`-prefixed
                            # entries are suffix matches (e.g. *.vercel.app for previews).
+PAYMENT_AUTO_CANCEL=true   # Bot cancels its own unpaid order after WC_HOLD_STOCK_MINUTES (WooCommerce won't)
+GOOGLE_REVIEW_URL=         # Optional: Google review link sent to happy customers
+REVIEW_AUTO_APPROVE=false  # true = website reviews go live without the owner approving them
+REVIEW_EMAIL=              # Optional: email on bot-posted reviews (default whatsapp-reviews@<store>)
 PORT=3000
 ```
 
@@ -275,7 +279,36 @@ Sessions progress through: `IDLE → COLLECTING_ADDRESS → CONFIRMING_ORDER →
 
 On `confirm_order`, a real WooCommerce order is created via REST API (`woocommerce.createOrder()`). The customer receives a direct payment URL (`/checkout/order-pay/{id}/?pay_for_order=true&key={key}`) to complete checkout. If WooCommerce order creation fails, the bot falls back to a PDF invoice.
 
-The cart holds only one product at a time (replaced on each `update_cart` call).
+**The cart holds any number of jerseys (since 2026-10-02).** It used to hold one and replace
+it, so *"I also want a Real Madrid jersey"* removed the Bayern shirt already chosen.
+- `selectedProduct` + `state:'COLLECTING_SIZE'` (`orderState.isConfiguring()`) = the jersey being
+  set up; `lockedProduct()` returns it, else the LAST cart line. `_lockProduct` always sets
+  `COLLECTING_SIZE` — picking a jersey with a cart means "add this one", never "replace".
+- `_commitCart` appends; same product + same size = one line (qty updated). `update_cart` (LLM
+  tool) does the same and never replaces the cart.
+- Size/qty with nothing being set up corrects the line the customer names (`_cartItemsNamed`:
+  "the Bayern one", "2nd one"), else the last one; the reply names which line changed.
+- `cancel_cart` naming one jersey removes only that one; otherwise the whole cart (undo 1h).
+- A team name mid-order is a search (the old "change it? YES/NO" step is gone).
+- Summary, reminders, the agent's order-state block and the understanding call all list every
+  line. `createOrder` always sent every line to WooCommerce.
+- ⚠️ A season is never a quantity: `orderState.stripSeasons()` runs before numbers are read
+  ("Real Madrid 25/26 … XXL" carted 26 shirts). The understanding verdict's qty is dropped too
+  when that number only exists inside a season.
+- When the customer's words fit several IN-STOCK jerseys (`_ambiguousMatches`), `update_cart`
+  lists them and asks instead of letting the model pick one.
+
+**Reviews (2026-10-02).** Intent `positive_review` → thanks, and (if they have an order) asks
+to post it on the website with a 1–5 star rating; `GOOGLE_REVIEW_URL` is sent as a link.
+Google has no API to post a review for a customer, and posting on their behalf breaks Google's
+policy — the link is the only legitimate way. On "5"/"⭐⭐⭐⭐⭐",
+`woocommerceService.postOrderReview()` posts THEIR words with THEIR rating on each product of the
+order, `status:'hold'` (wp-admin → Products → Reviews) unless `REVIEW_AUTO_APPROVE=true`. Nothing
+is posted without a rating; "no" posts nothing.
+
+**First reply of a conversation opens with a greeting** (new session or 6h+ idle), added at the
+egress in `_answerQueryLocked` — the greeting FAQ only fires for a message that is nothing but
+a greeting, so *"Hii bro jersey kadikuma??"* got no hello.
 
 ### Deterministic Fast Paths (Zero LLM Calls)
 

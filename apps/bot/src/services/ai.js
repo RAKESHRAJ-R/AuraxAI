@@ -101,6 +101,8 @@ class AIService {
     this._senderLocks = new Map();
     // Per-turn bookkeeping for the optimistic-version retry (conflict / side effects).
     this._turnMeta = new Map();
+    // senderId → language, for the first reply of a conversation (see _answerQueryLocked).
+    this._greetNext = new Map();
 
     // --- Primary LLM Provider (Groq) — supports multiple API keys for rotation ---
     this.groqClients = (config.groq.apiKeys || []).map(key => new OpenAI({
@@ -445,6 +447,73 @@ class AIService {
     return isTanglish
       ? `${group.emoji} *${group.label}* — idhula ippo adhigam vikkuradhu idhu dhaan bro! 🔥\n${lines}\n\nEthu venum — ${pickRange(top.length, true)}? Enna size, evlo quantity venum? 🛍️`
       : `${group.emoji} *${group.label}* — these are our best sellers right now! 🔥\n${lines}\n\nWhich one would you like — ${pickRange(top.length, false)}? What size and how many? 🛍️`;
+  }
+
+  /*
+   * HAPPY CUSTOMERS → REVIEWS (2026-10-02)
+   * Google: no API lets a business post a review for a customer, and doing it any other way
+   * breaks Google's rules — so the customer gets the review link (GOOGLE_REVIEW_URL).
+   * Website: posted only after the customer says yes AND gives their own 1–5 stars, on the
+   * products of their order, as "pending" for the owner to approve (REVIEW_AUTO_APPROVE).
+   */
+  _reviewInvite(session, userQuery) {
+    const isT = session.language === 'tanglish';
+    const cfg = config.reviews || {};
+    const orderId = session.lastOrder?.orderId || (session.orderIds || []).slice(-1)[0] || null;
+    let text = isT
+      ? 'Romba thanks! 🙏😊 Neenga sonnadhu namma team ku romba santhosham.'
+      : 'Thank you so much! 🙏😊 That really makes our day.';
+    if (cfg.enabled !== false && orderId) {
+      session.pendingReview = { text: String(userQuery).slice(0, 1000), orderId, at: Date.now() };
+      text += isT
+        ? '\nIdha namma website la unga review ah podalama? Podalam na 1 la irundhu 5 kulla evlo star nu sollunga (example: 5 ⭐). Vendaam na "no" nu sollunga.'
+        : '\nMay we post this as your review on our website? If yes, reply with a star rating from 1 to 5 (e.g. 5 ⭐). Reply "no" if you\'d rather not.';
+    }
+    if (cfg.googleUrl) {
+      text += isT
+        ? `\nGoogle la oru review kudutha innum neraya peruku help aagum 🙏\n${cfg.googleUrl}`
+        : `\nIf you have a minute, a Google review helps us a lot 🙏\n${cfg.googleUrl}`;
+    }
+    return text;
+  }
+
+  /** Reads the reply to the review question. null = not an answer to it (the turn goes on). */
+  async _reviewAnswer(senderId, session, userQuery) {
+    const isT = session.language === 'tanglish';
+    const pr = session.pendingReview;
+    if (Date.now() - (pr.at || 0) > 60 * 60 * 1000) { session.pendingReview = null; return null; }
+    const q = String(userQuery || '').trim();
+    const emojiStars = (q.match(/⭐|🌟/g) || []).length;
+    const num = q.match(/(?<![\d.])([1-5])(?![\d.])/);
+    const rating = num ? parseInt(num[1], 10) : (emojiStars >= 1 && emojiStars <= 5 ? emojiStars : null);
+    if (/^\W*(no|nope|venaam|vendaam|venam|vendam|illa|wait|later|skip)\b/i.test(q)) {
+      session.pendingReview = null;
+      return { text: isT ? 'Seri, no problem 👍 Romba thanks! 🙏' : 'No problem 👍 Thanks again! 🙏', intent: 'review_declined' };
+    }
+    if (rating && q.length <= 40) {
+      session.pendingReview = null;
+      const name = session.customerProfile?.name || session.addressDetails?.name
+        || String(session.customerName || '').replace(/[^\p{L}\p{N} .'-]/gu, '').trim() || 'WhatsApp customer';
+      this._markSideEffect(senderId);
+      const res = await woocommerceService.postOrderReview(pr.orderId, {
+        review: pr.text, reviewer: name, rating, email: config.reviews?.email, approve: config.reviews?.autoApprove,
+      });
+      if (!res.success) {
+        return { text: isT ? 'Romba thanks! 🙏 Unga review ah namma team website la podum.' : 'Thank you! 🙏 Our team will add your review to the website.', intent: 'review_failed' };
+      }
+      return {
+        text: isT
+          ? `${rating} ⭐ — romba thanks! 🙏 Unga review namma website la varum${res.pending ? ' (team check panni podum)' : ''}.`
+          : `${rating} ⭐ — thank you! 🙏 Your review will appear on our website${res.pending ? ' once the team has approved it' : ''}.`,
+        intent: 'review_posted',
+      };
+    }
+    if (/^\W*(yes|yeah|yep|ok|okay|sure|seri|sari|podunga|podalam|pottukonga|aama|aamaa|done)\b/i.test(q) && !pr.askedStars) {
+      pr.askedStars = true;
+      return { text: isT ? 'Super 👍 1 la irundhu 5 kulla evlo star kudupeenga?' : 'Great 👍 How many stars would you give, from 1 to 5?', intent: 'review_ask_stars' };
+    }
+    session.pendingReview = null;
+    return null;
   }
 
   /** Team and player read from a product name: "SPORTING CP 2001-2002 HOME - RONALDO RN". */
@@ -833,15 +902,16 @@ Open the link, pay by UPI, card or net banking, and your order is placed!"
     const locked = orderState.lockedProduct(session);
     const known = this._knownAddress(session);
     const missingAddr = orderState.missingAddressFields(known);
-    const item = session.cart?.[0];
+    const configuring = orderState.isConfiguring(session);
+    const cartText = (session.cart || []).length
+      ? session.cart.map((i, n) => `${n + 1}) ${i.name} (id ${i.productId}) — size ${i.size}, qty ${i.qty}, ₹${i.price} each`).join('; ')
+      : 'empty';
     const sessionContext = `---
 Current Session Context (this is the ONLY part that changes per turn):
 ORDER STATE (authoritative — code-maintained, do not contradict):
 - Current step: ${orderState.computeStep(session)}
-- Selected product: ${locked ? `${locked.name} (id ${locked.productId}) — ₹${locked.price}` : 'none yet'}
-- Size: ${item?.size || session.pendingSize || 'not given yet'}
-- Quantity: ${item?.qty || session.pendingQty || 'not given yet'}
-- Cart: ${JSON.stringify(session.cart || [])}
+- Jersey being chosen now: ${configuring && locked ? `${locked.name} (id ${locked.productId}) — ₹${locked.price}; size ${session.pendingSize || 'not given yet'}, quantity ${session.pendingQty || 'not given yet'}` : 'none'}
+- Cart (several jerseys allowed — adding one never removes another): ${cartText}${(session.cart || []).length ? ` | Total ₹${this._cartTotal(session)}` : ''}
 - Customer name: ${known.name || 'missing'} | Mobile: ${known.phone || 'missing'} | Pincode: ${known.pincode || 'missing'}
 - Address: ${known.address || 'missing'}
 - Shipping details still needed: ${missingAddr.length ? missingAddr.join(', ') : 'NONE — all on file, never ask again'}${session.lastOrder?.orderId && !locked ? `
@@ -883,7 +953,7 @@ Tone & Style:
 Instructions:
 1. ALWAYS use 'search_products' when asked about jerseys. Never guess prices or stock.
 2. If products are found, provide exact name, price, sizes, and permalink, with one short line on why it's a good pick — genuine, not over the top.
-3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'.
+3. When a user wants to buy, ask for size and quantity. Once BOTH are provided, use 'update_cart'. A customer can buy SEVERAL different jerseys in one order: "I also want X" means ADD X — never say you removed or replaced a jersey already in the cart.
 4. After updating the cart, ask for their full shipping address (Name, Pincode, Mobile).
 5. Once the address is provided, use 'set_shipping_address'. The order summary and total are shown to the customer automatically right after — you do NOT need to (and must not try to) write your own summary or total for this step.
 6. Once the tool result confirms the cart is valid, use 'confirm_order'. If the tool says it's a Bulk Order, follow the tool's instructions.
@@ -1035,7 +1105,7 @@ ${sessionContext}`;
         type: "function",
         function: {
           name: "update_cart",
-          description: "Add a jersey to the user's cart. Call this ONLY after confirming size and quantity with the user.",
+          description: "Add a jersey to the user's cart, or change the size/quantity of a jersey already in it. The cart holds several jerseys — other jerseys stay. Call this ONLY after confirming size and quantity with the user.",
           parameters: {
             type: "object",
             properties: {
@@ -2071,6 +2141,13 @@ ${sessionContext}`;
   /** The question the bot is currently waiting on — decides what a bare "2" or "M" means. */
   _awaiting(session) {
     if (session.productListPending && session.lastShownProducts?.length > 0) return 'product';
+    // A jersey being set up comes before the cart: with several jerseys allowed, "M 2" after
+    // picking a second one is that one's size and quantity.
+    if (orderState.isConfiguring(session)) {
+      if (!session.pendingSize && !session.pendingQty) return 'size_qty';
+      if (!session.pendingSize) return 'size';
+      return 'qty';
+    }
     if (session.cart?.length > 0) return session.state === 'CONFIRMING_ORDER' ? 'confirm' : 'address';
     if (session.selectedProduct) {
       if (!session.pendingSize && !session.pendingQty) return 'size_qty';
@@ -2088,7 +2165,41 @@ ${sessionContext}`;
     };
     session.productListPending = false;
     session.pendingProductIndex = null;
-    if (!(session.cart?.length > 0)) session.state = 'COLLECTING_SIZE';
+    // Picking a jersey always means "set this one up" — with a cart already holding others,
+    // it is the NEXT jersey, not a replacement (2026-10-02).
+    session.state = 'COLLECTING_SIZE';
+  }
+
+  /** "• *NAME* — M size, 2 qty — ₹860" for every jersey in the cart. */
+  _cartLines(session) {
+    const isT = session.language === 'tanglish';
+    return (session.cart || []).map(i => {
+      const line = (parseFloat(i.price) || 0) * (parseInt(i.qty, 10) || 0);
+      return isT ? `• *${i.name}* — ${i.size} size, ${i.qty} qty — ₹${line}` : `• *${i.name}* — Size ${i.size}, Qty ${i.qty} — ₹${line}`;
+    }).join('\n');
+  }
+
+  /** "2 jerseys" / "Bayern … and Real Madrid …" — short names for messages. */
+  _cartNames(session) {
+    return (session.cart || []).map(i => `*${i.name}*`).join(session.language === 'tanglish' ? ', ' : ' and ');
+  }
+
+  /**
+   * Cart lines the customer's words point at: by number ("2nd one", "remove 1") or by a
+   * distinctive word of the name ("remove the Bayern one"). [] when nothing is named.
+   */
+  _cartItemsNamed(session, text) {
+    const cart = session.cart || [];
+    if (cart.length === 0) return [];
+    const q = String(text || '').toLowerCase();
+    const ord = q.match(/\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\b/);
+    if (ord) {
+      const idx = { first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2, fourth: 3, '4th': 3, fifth: 4, '5th': 4, last: cart.length - 1 }[ord[1]];
+      return cart[idx] ? [cart[idx]] : [];
+    }
+    const generic = new Set(['home', 'away', 'third', 'full', 'half', 'sleeve', 'jersey', 'kit', 'edition', 'version', 'player', 'fan', 'world', 'cup', 'special', 'retro', 'kids']);
+    const words = i => String(i.name).toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !generic.has(w));
+    return cart.filter(i => words(i).some(w => new RegExp(`\\b${w}`).test(q)));
   }
 
   /** Forget the product/cart (explicit change or restart). Shipping details are kept. */
@@ -2148,10 +2259,10 @@ ${sessionContext}`;
     session.customerProfile = null;
     session.address = null;
     session.state = 'COLLECTING_ADDRESS';
-    const item = session.cart[0];
+    const lines = this._cartLines(session);
     const head = lead || (isT
-      ? `Seri 👍 *${item.name}* — ${item.size} size, ${item.qty} qty cart la apdiye iruku. Pazhaya address ah eduthutten.`
-      : `Sure 👍 *${item.name}* — Size ${item.size}, Qty ${item.qty} stays in your cart. I've removed the old address.`);
+      ? `Seri 👍 Cart la ellaam apdiye iruku:\n${lines}\nPazhaya address ah eduthutten.`
+      : `Sure 👍 Everything stays in your cart:\n${lines}\nI've removed the old address.`);
     const ask = isT
       ? 'Pudhu shipping details anuppunga — Name, Address, Pincode, Mobile number. 📦'
       : 'Please send your new shipping details — Name, Address, Pincode, Mobile number. 📦';
@@ -2214,16 +2325,14 @@ ${sessionContext}`;
 
   _summaryReply(session, lead = '') {
     const isT = session.language === 'tanglish';
-    const lines = session.cart.map(item =>
-      `• *${item.name}* — ${item.size} size, ${item.qty} qty — ₹${(parseFloat(item.price) || 0) * (parseInt(item.qty, 10) || 0)}`
-    ).join('\n');
+    const lines = this._cartLines(session);
     const d = session.addressDetails || {};
     const pinShown = d.pincode && String(d.address).replace(/\s/g, '').includes(String(d.pincode));
     const ship = d.address ? `\n📦 ${d.name}, ${d.address}${pinShown ? '' : `, ${d.pincode}`} | 📱 ${d.phone}` : '';
     const head = lead ? `${lead}\n` : '';
     return isT
-      ? `${head}Unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm panna "YES" nu reply pannunga 🎉`
-      : `${head}Here's your order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nReply "YES" to confirm! 🎉`;
+      ? `${head}Unga order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nConfirm panna "YES" nu reply pannunga 🎉 (Innum vera jersey add pannanum na team peru sollunga)`
+      : `${head}Here's your order summary:\n${lines}\nTotal: ₹${this._cartTotal(session)}${ship}\n\nReply "YES" to confirm! 🎉 (Want to add another jersey? Just tell me the team)`;
   }
 
   _fieldLabel(field, isT) {
@@ -2285,16 +2394,75 @@ ${sessionContext}`;
     return { bulk: false };
   }
 
-  /** Commit selectedProduct + pending size/qty into the one-line cart. */
+  /**
+   * Add selectedProduct + pending size/qty to the cart. The same jersey in the same size is
+   * one line (its quantity is updated); anything else is a new line. Returns the line.
+   */
   _commitCart(session) {
     const p = session.selectedProduct;
-    session.cart = [{
-      productId: p.productId, name: p.name, price: p.price,
-      size: session.pendingSize, qty: session.pendingQty,
-    }];
+    session.cart = session.cart || [];
+    const size = session.pendingSize;
+    let line = session.cart.find(i => String(i.productId) === String(p.productId) && String(i.size) === String(size));
+    if (line) {
+      line.qty = session.pendingQty;
+    } else {
+      line = { productId: p.productId, name: p.name, price: p.price, size, qty: session.pendingQty };
+      session.cart.push(line);
+    }
     session.pendingSize = null;
     session.pendingQty = null;
     session.state = 'COLLECTING_ADDRESS';
+    return line;
+  }
+
+  /**
+   * "Done! X added" — plus, when they never said how many, that we took 1 (2026-10-02: "Bayern
+   * Munich klinsmann jersey XXL" became 1 qty without a word), and with several jerseys, the
+   * whole cart.
+   */
+  _addedLine(session, line, userQuery) {
+    const isT = session.language === 'tanglish';
+    const saidQty = /(?<![\d.])\d{1,2}(?![\d%])|\b(one|two|three|four|five|six|seven|eight|nine|ten|onnu|rendu|moonu|naalu|anju|aaru)\b/i
+      .test(orderState.stripSeasons(String(userQuery || '')).replace(/\b(xxx?l|xl|2xl|3xl)\b/gi, ' '));
+    const assumed = line.qty === 1 && !saidQty
+      ? (isT ? ' (1 jersey nu vechirukken — adhigam venumna sollunga)' : " (I've put 1 — tell me if you want more)")
+      : '';
+    let text = isT
+      ? `Done! 🛒 *${line.name}* — ${line.size} size, ${line.qty} qty cart la potten!${assumed}`
+      : `Done! 🛒 Added *${line.name}* — Size ${line.size}, Qty ${line.qty} to your cart!${assumed}`;
+    if ((session.cart || []).length > 1) {
+      text += isT
+        ? `\nCart la ippo ${session.cart.length} jerseys iruku:\n${this._cartLines(session)}`
+        : `\nYour cart now has ${session.cart.length} jerseys:\n${this._cartLines(session)}`;
+    }
+    return text;
+  }
+
+  /**
+   * The in-stock jerseys the customer's own words fit, when there is more than one and
+   * nothing they said tells `chosen` apart from the rest. null = no ambiguity.
+   */
+  _ambiguousMatches(userQuery, chosen) {
+    const query = String(userQuery || '').replace(/\b(xxxl|xxl|xl|s|m|l|size|venum|vendum|want|i|need|jersey|jerseys|please|bro|qty|quantity)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    if (!query) return null;
+    const found = woocommerceService.searchProductsDetailed(query);
+    if (found.matchQuality !== 'exact' || found.products.length < 2) return null;
+    // The real candidates fit EVERY word they used ("sporting" AND "ronaldo"), so a word that
+    // narrows it ("full", "kane") leaves one and nothing is asked.
+    const words = query.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !/^\d+$/.test(w));
+    const lc = s => String(s || '').toLowerCase();
+    const matches = found.products
+      .filter(p => p.stock_status !== 'outofstock' && words.every(w => lc(p.name).includes(w)))
+      .slice(0, 5);
+    if (matches.length < 2 || !matches.some(p => String(p.id) === String(chosen.productId))) return null;
+    return matches;
+  }
+
+  /** One line inviting another jersey, so customers know the cart takes more than one. */
+  _moreJerseysHint(session) {
+    return session.language === 'tanglish'
+      ? 'Innum vera jersey venumna team peru sollunga 🙂'
+      : 'Want another jersey too? Just tell me the team 🙂';
   }
 
   /** What to say to move the customer on from wherever they are. Never restarts discovery. */
@@ -2304,12 +2472,9 @@ ${sessionContext}`;
       if (session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)) {
         return this._summaryReply(session);
       }
-      const item = session.cart[0];
       const missing = orderState.missingAddressFields(this._knownAddress(session));
-      const head = isT
-        ? `Unga cart la *${item.name}* — ${item.size} size, ${item.qty} qty iruku 🛒`
-        : `You have *${item.name}* — Size ${item.size}, Qty ${item.qty} in your cart 🛒`;
-      return `${head}\n${this._askMissingAddress(session, missing)}`;
+      const head = isT ? `Unga cart la iruku 🛒\n${this._cartLines(session)}` : `In your cart 🛒\n${this._cartLines(session)}`;
+      if (!orderState.isConfiguring(session)) return `${head}\n${this._askMissingAddress(session, missing)}`;
     }
     const p = session.selectedProduct;
     if (p) {
@@ -2392,35 +2557,50 @@ ${sessionContext}`;
         && !/(change|update|different|vera)\s+(address|details)/i.test(t)) {
       problems.push('asked for shipping details that are already on file');
     }
-    if ((item?.qty || session.pendingQty) && /(how many|evlo quantity|enna quantity|quantity venum|how much quantity)/i.test(t)) {
+    const configuring = orderState.isConfiguring(session);
+    // Quantity already known for the jersey in question: the one being set up, or the only
+    // one in the cart. (With several in the cart, "how many?" can be about a new one.)
+    const qtyKnown = configuring ? Boolean(session.pendingQty)
+      : (session.cart?.length === 1 ? Boolean(item?.qty) : (!session.cart?.length && Boolean(session.pendingQty)));
+    if (qtyKnown && /(how many|evlo quantity|enna quantity|quantity venum|how much quantity)/i.test(t)) {
       problems.push('asked for the quantity again');
     }
-    if (item) {
+    // Several jerseys: a number or size is fine if it belongs to ANY line in the cart.
+    const cart = session.cart || [];
+    if (cart.length > 0) {
+      const qtys = new Set([...cart.map(i => parseInt(i.qty, 10)), cart.reduce((s, i) => s + (parseInt(i.qty, 10) || 0), 0)]);
+      if (configuring && session.pendingQty) qtys.add(parseInt(session.pendingQty, 10));
       for (const m of t.matchAll(/(?<![\d₹])(\d{1,2})\s*(?:qty|quantity|pcs|pieces)\b|\bqty[:\s]+(\d{1,2})\b/gi)) {
         const n = parseInt(m[1] || m[2], 10);
-        if (n && n !== parseInt(item.qty, 10)) { problems.push(`quantity ${n} contradicts cart qty ${item.qty}`); break; }
+        if (n && !qtys.has(n) && !configuring) { problems.push(`quantity ${n} matches no cart line (${[...qtys].join('/')})`); break; }
       }
+      const sizes = new Set(cart.map(i => String(i.size).toUpperCase()));
+      if (configuring && session.pendingSize) sizes.add(String(session.pendingSize).toUpperCase());
       for (const m of t.matchAll(/\b(xxxl|xxl|xl|s|m|l)\s*size\b|\bsize[:\s]+(xxxl|xxl|xl|s|m|l)\b/gi)) {
         const sz = (m[1] || m[2]).toUpperCase();
-        if (sz !== String(item.size).toUpperCase()) { problems.push(`size ${sz} contradicts cart size ${item.size}`); break; }
+        if (!sizes.has(sz) && !configuring) { problems.push(`size ${sz} matches no cart line`); break; }
       }
     }
     if (locked && !searchRan) {
       const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const lockedNorm = norm(locked.name);
+      const allowed = new Set([norm(locked.name), ...cart.map(i => norm(i.name))]);
       const replyNorm = norm(t);
       const pool = [...(session.lastShownProducts || []), ...(woocommerceService.getLocalProducts() || [])];
       const other = pool.find(p => {
         const n = norm(p.name);
-        return n && n.length >= 12 && n !== lockedNorm && replyNorm.includes(n);
+        return n && n.length >= 12 && !allowed.has(n) && ![...allowed].some(a => a.includes(n)) && replyNorm.includes(n);
       });
-      if (other) problems.push(`mentions a different product ("${other.name}") than the locked one`);
-      if (item) {
-        const unit = parseFloat(item.price) || 0;
-        const total = this._cartTotal(session);
+      if (other) problems.push(`mentions a product ("${other.name}") that is neither in the cart nor the one being chosen`);
+      if (cart.length > 0) {
+        const prices = new Set([this._cartTotal(session)]);
+        for (const i of cart) {
+          prices.add(parseFloat(i.price) || 0);
+          prices.add((parseFloat(i.price) || 0) * (parseInt(i.qty, 10) || 0));
+        }
+        if (locked?.price) prices.add(parseFloat(locked.price) || 0);
         for (const m of t.matchAll(/₹\s?(\d{2,6})/g)) {
           const v = parseInt(m[1], 10);
-          if (v !== unit && v !== total) { problems.push(`price ₹${v} matches neither the unit price nor the total`); break; }
+          if (!prices.has(v)) { problems.push(`price ₹${v} matches no price, line total or cart total`); break; }
         }
       }
     }
@@ -2475,7 +2655,11 @@ ${sessionContext}`;
       if (it === 'pick_product' && ents.productIndex === null && verdict.pick) ents.productIndex = verdict.pick - 1;
       if (['pick_product', 'size_qty'].includes(it)) {
         if (!ents.size && verdict.size) { ents.size = verdict.size; ents.sizeConfident = true; }
-        if (!ents.qty && verdict.qty) ents.qty = verdict.qty;
+        // The reader can copy the 26 out of "25/26" too — a number that only exists inside a
+        // season is never a quantity.
+        const onlyInSeason = verdict.qty && new RegExp(`(?<!\\d)${verdict.qty}(?!\\d)`).test(userQuery)
+          && !new RegExp(`(?<!\\d)${verdict.qty}(?!\\d)`).test(orderState.stripSeasons(userQuery));
+        if (!ents.qty && verdict.qty && !onlyInSeason) ents.qty = verdict.qty;
       } else {
         // A size- or number-looking token in a question or an address is not an order change.
         ents.size = null; ents.qty = null; ents.productIndex = null;
@@ -2547,16 +2731,9 @@ ${sessionContext}`;
         }
       } else if (!locked || String(p.productId) !== String(locked.productId)) {
         // An explicit pick from the presented options is the one other thing (besides
-        // "change product") allowed to move the lock.
-        if (session.cart?.length > 0) {
-          const old = session.cart[0];
-          session.cart = [];
-          this._lockProduct(session, p);
-          session.pendingSize = orderState.productHasSize(p, old.size) ? old.size : null;
-          session.pendingQty = old.qty;
-        } else {
-          this._lockProduct(session, p);
-        }
+        // "change product") allowed to move the lock. Jerseys already in the cart stay —
+        // this one is ADDED (2026-10-02: "I also want a Real Madrid jersey" removed Bayern).
+        this._lockProduct(session, p);
         picked = true;
         locked = orderState.lockedProduct(session);
       } else {
@@ -2566,7 +2743,6 @@ ${sessionContext}`;
     } else if (awaiting === 'product' && shown.length === 1 && (ents.size || ents.qty)
         && (!locked || String(shown[0].productId) !== String(locked.productId))) {
       // One product on screen, which they searched for themselves: size/qty is for THAT one.
-      if (session.cart?.length > 0) session.cart = [];
       this._lockProduct(session, shown[0]);
       picked = true;
       locked = orderState.lockedProduct(session);
@@ -2582,18 +2758,24 @@ ${sessionContext}`;
     }
 
     if (!locked) return null;
-    const target = session.cart?.[0] || null;
-    const productIds = [locked.productId];
+    // Being set up → the size/qty is for that jersey. Otherwise it corrects a cart line: the
+    // one they name ("Bayern one L size"), else the one added last.
+    const named = this._cartItemsNamed(session, userQuery);
+    const target = orderState.isConfiguring(session) ? null
+      : (named.length === 1 ? named[0] : (session.cart?.length ? session.cart[session.cart.length - 1] : null));
+    const subject = target || locked;
+    const productIds = [subject.productId];
 
-    // 4. Size and quantity — applied to the LOCKED product only.
+    // 4. Size and quantity — applied to that one jersey only.
     let changed = false;
     const sizeUsable = ents.size && (ents.sizeConfident || ['size', 'size_qty', 'qty'].includes(awaiting) || picked);
     if (sizeUsable) {
-      if (!orderState.productHasSize(locked, ents.size)) {
-        const avail = (locked.sizes || []).map(s => String(s).split('-')[0]).join(', ');
+      const sizesOf = target ? ((woocommerceService.getLocalProducts() || []).find(p => String(p.id) === String(target.productId)) || target) : locked;
+      if (!orderState.productHasSize(sizesOf, ents.size)) {
+        const avail = (sizesOf.sizes || []).map(s => String(s).split('-')[0]).join(', ');
         return respond(isT
-          ? `Sorry, *${locked.name}* ku ${ents.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
-          : `Sorry, *${locked.name}* isn't available in ${ents.size} 😕 ${avail ? `Available sizes: ${avail}. ` : ''}Which size would you like?`,
+          ? `Sorry, *${subject.name}* ku ${ents.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
+          : `Sorry, *${subject.name}* isn't available in ${ents.size} 😕 ${avail ? `Available sizes: ${avail}. ` : ''}Which size would you like?`,
         'state_size_unavailable', productIds);
       }
       if (target) target.size = ents.size; else session.pendingSize = ents.size;
@@ -2607,20 +2789,17 @@ ${sessionContext}`;
     if (!target) {
       // Still before the cart: commit once both are known, otherwise ask for what's missing.
       if (session.pendingSize && session.pendingQty) {
-        this._commitCart(session);
-        const item = session.cart[0];
+        const line = this._commitCart(session);
         const known = this._knownAddress(session);
-        const added = isT
-          ? `Done! 🛒 *${item.name}* — ${item.size} size, ${item.qty} qty cart la potten!`
-          : `Done! 🛒 Added *${item.name}* — Size ${item.size}, Qty ${item.qty} to your cart!`;
+        const added = this._addedLine(session, line, userQuery);
         if (orderState.isAddressComplete(known)) {
           // Already have their details — don't ask again, go straight to the summary.
           const res = this._applyAddress(senderId, session, known);
           if (res.bulk) return this._bulkReply(senderId, session, userQuery);
-          const note = isT ? `${added}\nMunnadi kuduthha address ae use panren 👍` : `${added}\nI'll use the address you already gave me 👍`;
+          const note = isT ? `${added.split('\nCart la ippo')[0]}\nMunnadi kuduthha address ae use panren 👍` : `${added.split('\nYour cart now has')[0]}\nI'll use the address you already gave me 👍`;
           return respond(this._summaryReply(session, note), 'deterministic_cart', productIds);
         }
-        return respond(`${added} ${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'deterministic_cart', productIds);
+        return respond(`${added}\n${this._askMissingAddress(session, orderState.missingAddressFields(known))}\n${this._moreJerseysHint(session)}`, 'deterministic_cart', productIds);
       }
       // "andha first one ku name podalama? messi nu" picks a product AND asks something. The
       // canned "what size?" answered only the pick and ignored the question (seen live
@@ -2669,7 +2848,9 @@ ${sessionContext}`;
 
     // 7. Size/qty corrections on the committed cart.
     if (changed) {
-      const lead = isT ? 'Update panniten ✅' : 'Updated ✅';
+      // With several jerseys, say WHICH one changed so a wrong guess is easy to spot.
+      const which = (session.cart || []).length > 1 ? ` — *${subject.name}*` : '';
+      const lead = isT ? `Update panniten ✅${which}` : `Updated ✅${which}`;
       if (session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)) {
         return respond(this._summaryReply(session, lead), 'state_update', productIds);
       }
@@ -2682,16 +2863,9 @@ ${sessionContext}`;
       if (missing.length > 0) return respond(this._askMissingAddress(session, missing), 'state_address_partial', productIds);
     }
 
-    // 9. A bare team/player name mid-order is ambiguous — ask, never restart the flow.
-    const shortMsg = userQuery.trim().split(/\s+/).length <= 4 && !userQuery.includes('?');
-    if (shortMsg && !ents.confirm && woocommerceService.extractSubject(userQuery)) {
-      session.pendingClarify = { type: 'product_change', query: userQuery };
-      return respond(isT
-        ? `Bro, unga cart la ippo *${target.name}* (${target.size}, ${target.qty} qty) iruku. Idha maathi vera "${userQuery.trim()}" jersey venuma? Maathanum na "YES", idhe continue panna "NO" nu reply pannunga.`
-        : `You currently have *${target.name}* (Size ${target.size}, Qty ${target.qty}) in your cart. Do you want to change it to a different "${userQuery.trim()}" jersey? Reply YES to change, or NO to continue with this order.`,
-      'state_clarify_change', productIds);
-    }
-
+    // 9. A bare team/player name mid-order used to ask "change it? YES/NO". The cart now takes
+    // several jerseys, so it is simply a search — the cart stays as it is and anything
+    // picked from the results is added.
     return null;
   }
 
@@ -3118,6 +3292,13 @@ ${sessionContext}`;
       if (st) return st;
     }
 
+    // The answer to our own "may we post your review?" question (stars, yes, or no).
+    if (session.pendingReview && session.state !== 'CONFIRMING_ORDER') {
+      const r = await this._reviewAnswer(senderId, session, userQuery);
+      if (r) return reply(r.text, r.intent);
+    }
+    if (v.intent === 'positive_review') return reply(this._reviewInvite(session, userQuery), 'understood_review');
+
     if (!item) {
       const pointed = this._pointedProduct(session, userQuery, v);
       // "Ithula / athula vera type?" — more like the jersey they are on (10/2 chat).
@@ -3144,8 +3325,8 @@ ${sessionContext}`;
       case 'greeting': {
         if (item) {
           return reply(isT
-            ? `Hi! 👋 Unga cart la *${item.name}* (${item.size}, ${item.qty} qty) save aagi iruku. Adhe continue pannalama, illa vera jersey paakanuma?`
-            : `Hi! 👋 You still have *${item.name}* (Size ${item.size}, Qty ${item.qty}) in your cart. Would you like to continue with it, or look at something else?`,
+            ? `Hi! 👋 Unga cart la save aagi iruku:\n${this._cartLines(session)}\nAdhe continue pannalama, illa vera jersey um paakanuma?`
+            : `Hi! 👋 You still have these in your cart:\n${this._cartLines(session)}\nWould you like to continue, or look at another jersey too?`,
           'understood_greeting');
         }
         const g = faqService.getFAQs().find(f => f.category === 'Greetings');
@@ -3155,17 +3336,33 @@ ${sessionContext}`;
 
       case 'pause_order':
         if (!item && !locked) return reply(this._closingReply(session, v), 'understood_closing');
-        return reply(isT
-          ? `Seri, no problem 👍 *${(item || locked).name}* ah cart la vechirukken. Venumna "YES" sollunga, vendaamna "cancel" nu sollunga.`
-          : `No problem 👍 I'll keep *${(item || locked).name}* in your cart. Say "YES" when you want it, or "cancel" to remove it.`,
-        'understood_pause');
+        {
+          const names = item ? this._cartNames(session) : `*${locked.name}*`;
+          return reply(isT
+            ? `Seri, no problem 👍 ${names} ah cart la vechirukken. Venumna "YES" sollunga, vendaamna "cancel" nu sollunga.`
+            : `No problem 👍 I'll keep ${names} in your cart. Say "YES" when you want it, or "cancel" to remove it.`,
+          'understood_pause');
+        }
 
       case 'cancel_cart': {
         if (!active) {
           if (lo && v.aboutPlacedOrder) return { agentNote: true };
           return reply(isT ? 'Unga cart already empty dhaan 👍 Vera edhavadhu venumna sollunga.' : 'Your cart is already empty 👍 Let me know if you need anything else.', 'understood_cancel_cart');
         }
-        const name = (item || locked).name;
+        // Several jerseys: "remove the Bayern one" removes only that one.
+        const toRemove = (session.cart || []).length > 1 ? this._cartItemsNamed(session, `${userQuery} ${v.search || ''}`) : [];
+        if (toRemove.length > 0 && toRemove.length < session.cart.length) {
+          this._rememberRemovedCart(session);
+          session.cart = session.cart.filter(i => !toRemove.includes(i));
+          if (orderState.isConfiguring(session)) session.selectedProduct = null;
+          const gone = toRemove.map(i => `*${i.name}*`).join(', ');
+          const rest = session.state === 'CONFIRMING_ORDER' && orderState.isAddressComplete(session.addressDetails)
+            ? this._summaryReply(session) : this._nextStepPrompt(session);
+          return reply(isT
+            ? `Done 👍 ${gone} ah remove panniten.\n${rest}`
+            : `Done 👍 I've removed ${gone}.\n${rest}`, 'understood_remove_item');
+        }
+        const name = item ? this._cartNames(session) : `*${locked.name}*`;
         // "Address change panniten" → "Ithu venaam": the "this" was the ADDRESS, and the bot
         // removed the jersey (2026-10-01). When the address is what was being talked about
         // and the jersey isn't named, ask — once — before deleting anything.
@@ -3176,17 +3373,17 @@ ${sessionContext}`;
         if (aboutAddress && !namesJersey && !askedRecently) {
           session.cancelAskedAt = Date.now();
           return reply(isT
-            ? `Jersey (*${name}*) ah remove pannanuma, illa address mattum maathanuma? 🙂\n• Address maathanum na "address" nu sollunga\n• Jersey venaam na "jersey remove" nu sollunga`
-            : `Do you want to remove the jersey (*${name}*), or only change the address? 🙂\n• To change the address, reply "address"\n• To remove the jersey, reply "remove jersey"`,
+            ? `Jersey (${name}) ah remove pannanuma, illa address mattum maathanuma? 🙂\n• Address maathanum na "address" nu sollunga\n• Jersey venaam na "jersey remove" nu sollunga`
+            : `Do you want to remove the jersey (${name}), or only change the address? 🙂\n• To change the address, reply "address"\n• To remove the jersey, reply "remove jersey"`,
           'understood_cancel_clarify');
         }
         this._rememberRemovedCart(session);
         this._clearOrderSelection(session);
         session.lastShownProducts = [];
-        if (v.search) return { rewriteQuery: v.search, notePrefix: isT ? `*${name}* ah cart la irundhu remove panniten 👍` : `I've removed *${name}* from your cart 👍` };
+        if (v.search) return { rewriteQuery: v.search, notePrefix: isT ? `${name} ah cart la irundhu remove panniten 👍` : `I've removed ${name} from your cart 👍` };
         return reply(isT
-          ? `Done 👍 *${name}* ah cart la irundhu remove panniten. Vera jersey venumna sollunga.\n(Thappa remove aayiduchuna "undo" nu sollunga.)`
-          : `Done 👍 I've removed *${name}* from your cart. Let me know if you'd like anything else.\n(Removed by mistake? Reply "undo".)`,
+          ? `Done 👍 ${name} ah cart la irundhu remove panniten. Vera jersey venumna sollunga.\n(Thappa remove aayiduchuna "undo" nu sollunga.)`
+          : `Done 👍 I've removed ${name} from your cart. Let me know if you'd like anything else.\n(Removed by mistake? Reply "undo".)`,
         'understood_cancel_cart');
       }
 
@@ -3359,14 +3556,26 @@ ${sessionContext}`;
         // They asked for something else while a product is in the cart. The cart holds one
         // product, so the new request replaces it — and we say so, instead of reading their
         // words as an address or pushing the old order (2026-09-29: "I want Man City jersey").
+        // Another jersey while some are in the cart is an ADDITION — the cart keeps them all
+        // (2026-10-02: "I also want a Real Madrid jersey" removed the Bayern one). Only a jersey
+        // that was picked but never given a size is dropped, and we say so.
         let notePrefix = null;
         if (active && v.search) {
           const norm = s => String(s || '').toLowerCase();
-          // Same product named again ("the Barcelona one in L") keeps it.
           const sameProduct = norm(locked.name).includes(norm(v.search));
-          if (!sameProduct) {
-            notePrefix = isT ? `*${locked.name}* ah cart la irundhu remove panniten.` : `I've taken *${locked.name}* out of your cart.`;
-            this._clearOrderSelection(session);
+          if (!sameProduct && orderState.isConfiguring(session)) {
+            const dropped = session.selectedProduct.name;
+            session.selectedProduct = null;
+            session.pendingSize = null;
+            session.pendingQty = null;
+            session.state = session.cart?.length ? 'COLLECTING_ADDRESS' : 'IDLE';
+            notePrefix = isT
+              ? `(*${dropped}* ku size sollala — adhuvum venumna appram sollunga.)`
+              : `(You hadn't given a size for *${dropped}* — tell me later if you still want it.)`;
+          }
+          if (session.cart?.length) {
+            const keep = isT ? `Cart la ulla ${session.cart.length} jersey apdiye iruku 👍` : `The ${session.cart.length === 1 ? 'jersey' : `${session.cart.length} jerseys`} in your cart stay 👍`;
+            notePrefix = notePrefix ? `${notePrefix}\n${keep}` : keep;
           }
         }
         if (!v.search && v.category !== 'none') {
@@ -3498,11 +3707,18 @@ ${sessionContext}`;
       }
       break;
     }
+    const greetLang = this._greetNext.get(String(senderId));
+    this._greetNext.delete(String(senderId));
     // A delayed retry that the conversation has already moved past: say nothing.
     if (result && result.intent === 'stale_retry') return result;
     if (!result || typeof result.replyText !== 'string') return result;
 
-    const cleaned = this.sanitizeOutgoing(result.replyText);
+    let cleaned = this.sanitizeOutgoing(result.replyText);
+    if (cleaned && greetLang && !/^\W*(hi|hii+|hello|hey|vanakkam|welcome)\b|naan aura|i'?m aura/i.test(cleaned)) {
+      cleaned = greetLang === 'tanglish'
+        ? `Vanakkam! 👋 Naan Aura, Theaurax.in la irundhu.\n${cleaned}`
+        : `Hi! 👋 I'm Aura from Theaurax.in.\n${cleaned}`;
+    }
     // Compare with whitespace ignored. The sanitiser also tidies spacing, and some product
     // names in WooCommerce genuinely carry double spaces ("HOME —  MESSI"), so a plain !==
     // logged a leak warning on perfectly healthy replies — which is how a real warning ends
@@ -3553,6 +3769,7 @@ ${sessionContext}`;
     // drop the old lock so detection decides fresh from this turn.
     const NEW_CONVERSATION_GAP_MS = 6 * 60 * 60 * 1000; // 6h
     const lastActiveMs = session.lastActive ? new Date(session.lastActive).getTime() : 0;
+    const newConversation = !lastActiveMs || (Date.now() - lastActiveMs) > NEW_CONVERSATION_GAP_MS;
     if (lastActiveMs && (Date.now() - lastActiveMs) > NEW_CONVERSATION_GAP_MS) {
       session.language = null;
     }
@@ -3563,6 +3780,10 @@ ${sessionContext}`;
     } else if (!session.language) {
       session.language = 'english';
     }
+    // "Hii bro jersey kadikuma??" got a team list with no hello (2026-10-02): the greeting
+    // FAQ only answers a message that is NOTHING but a greeting. The first reply of every
+    // conversation now opens with one, whatever path answers it.
+    if (newConversation) this._greetNext.set(String(senderId), session.language);
 
     session.history = session.history || [];
 
@@ -4194,6 +4415,13 @@ ${sessionContext}`;
                 // the five cheapest in-stock shirts when the search had found nothing at all --
                 // the single biggest reason the 2026-09-20 tester reviews read as the bot faking
                 // a match. Hype is now reserved for a genuine, fully-constrained hit.
+                // The numbered list on screen is exactly `top`. Storing all ten results meant
+                // "XXL" got "List la edhu venum — 1, 2, … 10?" over three shirts, and a "7"
+                // would have carted one the customer never saw (2026-10-02).
+                session.lastShownProducts = top.map(p => ({
+                  productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || ''
+                }));
+
                 let opener;
                 if (found.matchQuality === 'none') {
                   opener = isTanglish
@@ -4275,7 +4503,8 @@ ${sessionContext}`;
               // Size and quantity also come from the customer's words first. The model's value
               // is used only when this message didn't state one AND nothing is stored yet, or
               // when the number it sent actually appears in the customer's message.
-              const current = session.cart?.[0] || {};
+              // The line for THIS jersey, if it is already in the cart (several are allowed).
+              const current = (session.cart || []).slice().reverse().find(i => String(i.productId) === String(chosen.productId)) || {};
               const mentions = (n) => n != null && new RegExp(`(?<!\\d)${parseInt(n, 10)}(?!\\d)`).test(userQuery);
               const size = (ents.size && (ents.sizeConfident || !current.size)) ? ents.size
                 : (current.size || session.pendingSize || args.size);
@@ -4286,17 +4515,43 @@ ${sessionContext}`;
                 || (String(locked?.productId) === String(chosen.productId) ? locked : null)
                 || chosen;
 
+              // "Real Madrid 25/26 jersey venum XXL" fits TWO jerseys (full and half sleeve); the
+              // model carted one without asking (2026-10-02). When the customer named the jersey
+              // in words (not a list number) and those words fit several, list them and ask.
+              const ambiguous = ents.productIndex === null && !orderState.isConfiguring(session)
+                ? this._ambiguousMatches(userQuery, chosen) : null;
+              if (ambiguous) {
+                session.lastShownProducts = ambiguous.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+                session.productListPending = true;
+                session.pendingProductIndex = null;
+                if (ents.size) session.pendingSize = ents.size;
+                if (ents.qty) session.pendingQty = ents.qty;
+                const isTa = session.language === 'tanglish';
+                const lines = ambiguous.map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price}${p.permalink ? `\n${p.permalink}` : ''}`).join('\n');
+                resultText = isTa
+                  ? `Idhula ${ambiguous.length} jersey iruku 👇\n${lines}\n\nEdhu venum — ${pickRange(ambiguous.length, true)}?${ents.size ? ` (${ents.size} size note panniten 👍)` : ''}`
+                  : `There are ${ambiguous.length} that match 👇\n${lines}\n\nWhich one — ${pickRange(ambiguous.length, false)}?${ents.size ? ` (I've noted Size ${ents.size} 👍)` : ''}`;
+                messages.push({ role: "tool", tool_call_id: toolCall.id, name: fnName, content: JSON.stringify({ status: "needs_choice" }) });
+                keepLooping = false;
+                break;
+              }
+
               if (size && !orderState.productHasSize(chosenFull, String(size).toUpperCase())) {
                 toolResultObj = { status: "error", message: `Size ${size} is not available for ${chosen.name}. Available sizes: ${(chosenFull.sizes || []).join(', ')}. Ask the customer to pick one of those. Do NOT change the product.` };
               } else {
+                // Add or update THIS jersey's line; every other jersey stays in the cart. The
+                // model used to replace the whole cart here ("I also want a Real Madrid
+                // jersey" removed the Bayern one, 2026-10-02).
                 this._lockProduct(session, { ...chosenFull, ...chosen });
-                session.cart = [{
-                  productId: chosen.productId,
-                  name: chosen.name,
-                  price: chosen.price,
-                  size: String(size || '').toUpperCase(),
-                  qty
-                }];
+                const wantsAnother = /\b(also|another|one more|add|innoru|innum oru|kooda|um venum)\b/i.test(userQuery);
+                const sizeUp = String(size || '').toUpperCase();
+                if (current.productId && !(wantsAnother && current.size && current.size !== sizeUp)) {
+                  current.size = sizeUp;
+                  current.qty = qty;
+                } else {
+                  session.cart = session.cart || [];
+                  session.cart.push({ productId: chosen.productId, name: chosen.name, price: chosen.price, size: sizeUp, qty });
+                }
                 session.pendingSize = null;
                 session.pendingQty = null;
                 session.state = 'COLLECTING_ADDRESS';
@@ -4317,8 +4572,9 @@ ${sessionContext}`;
                   const missing = orderState.missingAddressFields(known);
                   toolResultObj = {
                     status: "success",
-                    message: `Cart updated: ${chosen.name}, size ${session.cart[0].size}, qty ${qty}. `
-                      + `Ask the customer ONLY for these missing shipping details: ${missing.join(', ')}. Do not ask for anything else.`
+                    message: `Cart updated: ${chosen.name}, size ${sizeUp}, qty ${qty}. The cart now holds: `
+                      + `${session.cart.map(i => `${i.name} (${i.size}, qty ${i.qty})`).join('; ')}. `
+                      + `Ask the customer ONLY for these missing shipping details: ${missing.join(', ')}, and say they can add another jersey by naming the team. Do not ask for anything else.`
                   };
                 }
               }

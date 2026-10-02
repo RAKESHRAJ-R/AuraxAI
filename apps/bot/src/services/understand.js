@@ -46,6 +46,7 @@ const INTENTS = [
   'order_status',        // about an order ALREADY PLACED: status, "already ordered", payment pending
   'cancel_placed_order', // cancel an order that was already placed
   'complaint',           // something went wrong with an order they received
+  'positive_review',     // praise for a jersey/order they received: "super quality", "semma bro, thanks"
   'human_request',       // wants a person
   'not_understood',      // cannot understand the SHOP's reply ("purila", "what are you saying")
   'closing',             // ending the chat: "okay", "no need", "thanks", "bye" — nothing to do
@@ -72,6 +73,9 @@ Read the message together with the recent chat and the order state. Decide from 
 - "Already order place panniten" / "payment pending" after an order was placed = order_status.
 - "Delivery?" / "evolo naal agum" = delivery_question — and if an order was just placed it is about THAT order.
 - "cancel it from my cart" / "I don't want it" before ordering = cancel_cart — ONLY when they mean the jersey/order. "not now" / "later" = pause_order.
+- The cart holds SEVERAL jerseys. "I also want X" / "X um venum" / "innoru jersey" = product_search for X (the cart is kept). "remove the Bayern one" = cancel_cart with search "Bayern" (only that jersey goes).
+- A season ("25/26", "2006", "1998-99") is never a quantity. Put qty only when they said how many.
+- Praise for a jersey or order they RECEIVED ("jersey vandhuchu, semma quality", "fit perfect, thanks bro", "super product") = positive_review. A plain "thanks" / "ok thanks" that closes the chat is closing, not a review.
 - "address change pannanum / address maathanum / intha address venaam / vera address kudukuren / address thappu / wrong address" = change_address: keep the jersey, they want to give a NEW address. "Address change panniten" means the same (they want it changed). If the message itself already carries the new address (street, pincode, phone), it is give_address.
 - "Ithu venaam" / "this one no" right after the customer talked about the ADDRESS means the address = change_address, not cancel_cart.
 - After the shop removed a jersey: "remove pannadheenga / don't remove / andha jersey okay dhaan / keep it / undo" = restore_cart (even if they also want to change the address).
@@ -104,11 +108,12 @@ function stateSummary(session, orderState) {
   const lines = [];
   const step = orderState.computeStep(session);
   lines.push(`Order step: ${step}`);
-  const item = session.cart?.[0];
-  const locked = orderState.lockedProduct(session);
-  if (item) lines.push(`Cart: ${item.name} — size ${item.size}, qty ${item.qty}`);
-  else if (locked) lines.push(`Product chosen (no size/qty yet): ${locked.name}`);
+  const cart = session.cart || [];
+  if (cart.length) lines.push(`Cart (${cart.length} jersey${cart.length > 1 ? 's' : ''} — several allowed): ${cart.map((i, n) => `${n + 1}) ${clip(i.name, 70)} — size ${i.size}, qty ${i.qty}`).join(' | ')}`);
   else lines.push('Cart: empty');
+  if (orderState.isConfiguring?.(session) && session.selectedProduct) {
+    lines.push(`Jersey being chosen now (no size/qty yet): ${clip(session.selectedProduct.name, 70)}`);
+  }
   if (session.state === 'CONFIRMING_ORDER') lines.push('The shop has shown the order summary and asked the customer to reply YES to confirm.');
   const shown = session.lastShownProducts || [];
   if (shown.length > 0) {
@@ -122,6 +127,7 @@ function stateSummary(session, orderState) {
     lines.push(`The shop REMOVED ${clip(rc.cart[0].name, 70)} (size ${rc.cart[0].size}, qty ${rc.cart[0].qty}) from the cart ${Math.round((Date.now() - rc.at) / 60000)} min ago.`);
   }
   if (session.addressDetails?.address) lines.push(`Shipping address on file: ${clip(session.addressDetails.address, 80)}`);
+  if (session.pendingReview) lines.push('The shop just asked whether it may post the customer\'s review on the website, and for a 1–5 star rating.');
   const lo = session.lastOrder;
   if (lo?.orderId) {
     const mins = Math.round((Date.now() - (lo.at || 0)) / 60000);
@@ -130,7 +136,9 @@ function stateSummary(session, orderState) {
   return lines.join('\n');
 }
 
-function recentChat(session, turns = 8) {
+// 12 lines ≈ the last six exchanges. "I also want…", "the first one", "that one in L" only
+// make sense with the earlier turns in view.
+function recentChat(session, turns = 12) {
   const h = (session.history || []).filter(m => m.role === 'user' || m.role === 'assistant').slice(-turns);
   if (h.length === 0) return '(no earlier messages)';
   return h.map(m => `${m.role === 'user' ? 'Customer' : 'Shop'}: ${clip(m.content, 280)}`).join('\n');
