@@ -540,6 +540,21 @@ console.log('\nThe 10/2 Nikss chat — several jerseys, seasons, lists, Spurs, g
   s = await state(id);
   check('"remove the Bayern one" removes only Bayern', s.cart.length === 1 && s.cart[0].productId === pickedRM.productId, JSON.stringify(s.cart.map(i => i.name)));
 
+  // The AI writes the list itself (two searches in one turn → no template): the bot must
+  // remember ONLY the shirts the AI showed, never the 10 results behind them.
+  const rm = woo.searchProductsDetailed('real madrid').products;
+  const idN = await newCustomer();
+  const two = { role: 'assistant', content: '', tool_calls: [
+    { id: 'c1', type: 'function', function: { name: 'search_products', arguments: JSON.stringify({ query: 'real madrid' }) } },
+    { id: 'c2', type: 'function', function: { name: 'search_products', arguments: JSON.stringify({ query: 'real madrid' }) } },
+  ] };
+  llmScript = [two, say(`Iruku 👇\n1. *${rm[3].name}* — ₹${rm[3].price}\n2. *${rm[5].name}* — ₹${rm[5].price}\nEdhu venum?`)];
+  await ask(idN, 'Real Madrid jersey iruka?', V('product_search', { search: 'real madrid' }));
+  let sN = await state(idN);
+  check('an AI-written list of 2 is remembered as exactly those 2, in order', sN.lastShownProducts.length === 2 && sN.lastShownProducts[0].productId === rm[3].id && sN.lastShownProducts[1].productId === rm[5].id, JSON.stringify(sN.lastShownProducts.map(p => p.name)));
+  r = await ask(idN, 'XXL', V('size_qty', { size: 'XXL' }));
+  check('…so "XXL" is asked "1 illa 2?" — never "1 … 10"', /1 illa 2/.test(r.replyText) && !/\b10\b/.test(r.replyText), r.replyText);
+
   // Summary + WooCommerce get every line.
   const id2 = await newCustomer({ cart: [item(BAYERN, 'XXL', 1), item(GUARDIOLA, 'M', 2)], state: 'CONFIRMING_ORDER', addressDetails: ADDRESS, customerProfile: ADDRESS });
   const s2 = await state(id2);

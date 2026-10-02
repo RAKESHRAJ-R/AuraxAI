@@ -2458,6 +2458,23 @@ ${sessionContext}`;
     return matches;
   }
 
+  /**
+   * Keep `lastShownProducts` equal to the products the reply actually names, in the order
+   * they appear. Unchanged when the reply names none of them (nothing to correct against).
+   */
+  _syncShownToReply(session, text) {
+    const shown = session.lastShownProducts || [];
+    if (shown.length === 0) return;
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const body = norm(text);
+    const named = shown
+      .map(p => ({ p, at: body.indexOf(norm(p.name)) }))
+      .filter(x => x.at >= 0)
+      .sort((a, b) => a.at - b.at)
+      .map(x => x.p);
+    if (named.length > 0 && named.length < shown.length) session.lastShownProducts = named;
+  }
+
   /** One line inviting another jersey, so customers know the cart takes more than one. */
   _moreJerseysHint(session) {
     return session.language === 'tanglish'
@@ -2752,8 +2769,8 @@ ${sessionContext}`;
       session.pendingSize = ents.size;
       if (ents.qty) session.pendingQty = ents.qty;
       return respond(isT
-        ? `List la edhu venum — ${shown.map((_, i) => i + 1).join(', ')}? (${ents.size} size${ents.qty ? `, ${ents.qty} qty` : ''} note panniten 👍)`
-        : `Which one from the list — ${shown.map((_, i) => i + 1).join(', ')}? (I've noted Size ${ents.size}${ents.qty ? `, Qty ${ents.qty}` : ''} 👍)`,
+        ? `List la edhu venum — ${pickRange(shown.length, true)}? (${ents.size} size${ents.qty ? `, ${ents.qty} qty` : ''} note panniten 👍)`
+        : `Which one from the list — ${pickRange(shown.length, false)}? (I've noted Size ${ents.size}${ents.qty ? `, Qty ${ents.qty}` : ''} 👍)`,
       'state_clarify_product');
     }
 
@@ -4921,6 +4938,11 @@ ${sessionContext}`;
               ? this._paymentReply(session)
               : (this._nextStepPrompt(session) || this.brokenReplyFallback(session.language));
           }
+
+          // The model wrote this list itself: the numbered list on screen is whatever IT
+          // showed, not the 10 search results behind it — "1, 2 … 10?" over three shirts must
+          // never come back (2026-10-02).
+          if (searchRanThisTurn) this._syncShownToReply(session, resultText);
 
           keepLooping = false;
         }
