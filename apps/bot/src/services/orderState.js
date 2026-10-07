@@ -375,6 +375,62 @@ export function extractEntities(text, ctx = {}) {
   return out;
 }
 
+/**
+ * Several sizes of one jersey in one message: "m size one and L size one", "1 M 1 L",
+ * "M 2 L 1", "one M and one L", "M and L". Returns [{size, qty}] (≥2 distinct sizes), else
+ * null. extractEntities reads ONE size, so "m size one and L size one" became Size M × 2
+ * (2026-10-06, the qty came from the reader adding the two "one"s together).
+ *
+ * A size token counts only when "size" or a number sits next to it, or when the message is
+ * nothing but sizes — so "I m fine, L8r" never splits a cart.
+ */
+export function extractSizeSplit(text) {
+  const raw = String(text || '');
+  const addr = parseAddressParts(raw);
+  if (addr.phone || addr.pincode) return null;
+  let q = stripSeasons(clean(raw));
+  for (const [re, rep] of SIZE_WORDS) q = q.replace(re, rep);
+  const tokens = q.replace(/[,.;:!?\-–/+&()]/g, ' ').split(/\s+/).filter(Boolean);
+  if (tokens.length > 20) return null;
+
+  const isSize = t => /^(xxxl|xxl|xl|s|m|l)$/.test(t);
+  const numOf = t => (/^\d{1,2}$/.test(t) ? parseInt(t, 10) : WORD_NUMBERS[t]) || null;
+  const SKIP = /^(size|sizes|qty|quantity|pcs|piece|pieces|x|nos|jersey|jerseys|la|le|ku|of|in)$/;
+  // The number on the far side of the "size"/"qty" words next to token i (dir -1 or +1).
+  const near = (i, dir) => {
+    let j = i + dir;
+    let viaSize = false;
+    while (j >= 0 && j < tokens.length && SKIP.test(tokens[j])) { viaSize = viaSize || /^sizes?$/.test(tokens[j]); j += dir; }
+    const n = j >= 0 && j < tokens.length ? numOf(tokens[j]) : null;
+    return { n, viaSize };
+  };
+
+  const hits = [];
+  tokens.forEach((t, i) => { if (isSize(t)) hits.push(i); });
+  if (hits.length < 2) return null;
+
+  // "1 M 1 L" puts the number before the size, "M 1 L 1" after it. The first size decides.
+  const before = near(hits[0], -1).n !== null;
+  const FILLER = /^(and|n|&|um|also|plus|with|one|bro|anna|sir|ji|pls|please|venum|vendum|want|i|need|actually|ok|okay|size|sizes|each|oru|ah|la)$/;
+  const onlySizes = tokens.every(t => isSize(t) || FILLER.test(t) || numOf(t) !== null);
+
+  const out = [];
+  for (const i of hits) {
+    const b = near(i, -1); const a = near(i, +1);
+    const n = before ? b.n : a.n;
+    // "M and L" / "M, L": two sizes joined to each other vouch for each other.
+    const joined = [-1, 1].some(d => /^(and|n)$/.test(tokens[i + d] || '') ? isSize(tokens[i + 2 * d] || '') : isSize(tokens[i + d] || ''));
+    const tied = n !== null || b.viaSize || a.viaSize || onlySizes || joined;
+    if (!tied) continue;
+    const size = tokens[i].toUpperCase();
+    const prev = out.find(x => x.size === size);
+    if (prev) prev.qty += n || 1;
+    else out.push({ size, qty: n || 1 });
+  }
+  if (out.length < 2 || out.some(x => x.qty < 1 || x.qty > 50)) return null;
+  return out;
+}
+
 // ── State helpers ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -417,6 +473,6 @@ export function computeStep(session) {
 export { productHasSize, CONFIRM_RE };
 
 export default {
-  extractEntities, parseAddressParts, mergeAddress, missingAddressFields, isAddressComplete, isPlausibleAddress,
+  extractEntities, extractSizeSplit, parseAddressParts, mergeAddress, missingAddressFields, isAddressComplete, isPlausibleAddress,
   lockedProduct, hasActiveOrder, computeStep, productHasSize, isConfiguring, stripSeasons,
 };

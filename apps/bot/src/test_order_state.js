@@ -137,7 +137,10 @@ console.log('\n2. Product selected (address on file from before) → "already se
   });
   await ask(id, '2');
   let r = await ask(id, 'M 1');
-  check('with an address on file, carting goes straight to the summary', /YES/.test(r.replyText) && !/Pincode, Mobile/i.test(r.replyText), r.replyText);
+  // Since 2026-10-07 a new jersey is followed by "need another jersey?" first.
+  check('with an address on file, carting asks "another jersey?" and never for the address', /vera jersey venuma/.test(r.replyText) && !/Pincode, Mobile/i.test(r.replyText), r.replyText);
+  r = await ask(id, 'illa');
+  check('…then "illa" goes straight to the summary', /YES/.test(r.replyText) && !/Pincode, Mobile/i.test(r.replyText), r.replyText);
   r = await ask(id, 'already send paniten');
   const s = await state(id);
   check('existing address is used', s.addressDetails?.pincode === '600023', JSON.stringify(s.addressDetails));

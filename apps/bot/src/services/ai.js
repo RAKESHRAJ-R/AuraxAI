@@ -2482,6 +2482,67 @@ ${sessionContext}`;
       : 'Want another jersey too? Just tell me the team 🙂';
   }
 
+  /*
+   * "Need another jersey?" — asked every time a jersey lands in the cart, BEFORE the address
+   * or the order summary (2026-10-07, owner: a second jersey is most likely right after the
+   * first). The answer is read by _answerMoreJerseys on the next message. A bulk-size cart is
+   * not upsold: it goes to the wholesale team anyway.
+   */
+  _cartAddedReply(senderId, session, added) {
+    const totalQty = (session.cart || []).reduce((s, i) => s + (parseInt(i.qty, 10) || 0), 0);
+    if (totalQty >= (config.owner?.bulkThreshold || 10)) return null;
+    session.awaitingMoreJerseys = Date.now();
+    session.state = 'COLLECTING_ADDRESS';
+    const ask = session.language === 'tanglish'
+      ? 'Innum vera jersey venuma? 🙂 Venumna team illa player peru sollunga — illana "NO" nu reply pannunga, checkout ku poidalaam.'
+      : 'Would you like to add another jersey? 🙂 Just tell me the team or player — or reply "NO" to go to checkout.';
+    return `${added}\n\n${ask}`;
+  }
+
+  /**
+   * The reply to "need another jersey?". Only a clear no / bare yes is handled here, so "no"
+   * can never be read as "cancel my cart" or a goodbye. Anything else (a team, an address, a
+   * question) goes through the normal pipeline. Returns a reply object or null.
+   */
+  async _answerMoreJerseys(senderId, session, userQuery) {
+    const askedAt = session.awaitingMoreJerseys;
+    if (!askedAt) return null;
+    session.awaitingMoreJerseys = null;   // one turn only, answered or not
+    if (Date.now() - askedAt > 2 * 60 * 60 * 1000 || !session.cart?.length) return null;
+    const isT = session.language === 'tanglish';
+    const q = String(userQuery || '').toLowerCase()
+      .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, ' ')
+      .replace(/[^a-z0-9' ]/g, ' ')
+      .replace(/\b(bro|anna|ji|sir|pls|please|thanks|thank you|thank u|da|ma|boss)\b/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    const NO = /^(no+|nope|nah|na|no thanks|no thank you|no need|not needed|dont need|don't need|nothing|nothing else|that's all|thats all|that's it|thats it|only this|only this one|just this|just this one|this is enough|enough|podhum|pothum|idhu podhum|ithu pothum|idhu mattum podhum|venaam|vendaam|venam|vendam|venda|illa|illai|vera venaam|vera vendaam|checkout|check out|go to checkout|continue|proceed|next|done|no more|no other|no proceed|no checkout|confirm|confirm order|confirm it|place order|place the order|order pannunga|book pannunga)$/;
+    const YES = /^(yes+|yeah|ya+|yep|yup|sure|s|ok yes|haan|aama|aamaa|amam|venum|vendum|innum venum|innoru venum|one more|another one|add another|add one more)$/;
+    // "illa podhum", "no that's all", "venaam checkout pannunga": every word a decline word,
+    // at least one of them a real no.
+    const words = q.split(' ').filter(Boolean);
+    const DECLINE_WORD = /^(no+|nope|nah|illa|illai|podhum|pothum|venaam|vendaam|venam|vendam|venda|enough|nothing|else|that'?s|all|it|only|just|this|idhu|ithu|mattum|vera|checkout|check|out|proceed|continue|pannunga|panunga|done|need|not|more|other|ok|okay|seri|sari)$/;
+    const declined = words.length > 0 && words.length <= 6 && words.every(w => DECLINE_WORD.test(w))
+      && words.some(w => /^(no+|nope|nah|illa|illai|podhum|pothum|venaam|vendaam|venam|vendam|venda|enough|nothing|checkout|proceed|continue|done)$/.test(w));
+    if (NO.test(q) || declined) {
+      const known = this._knownAddress(session);
+      if (orderState.isAddressComplete(known)) {
+        const res = this._applyAddress(senderId, session, known);
+        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+        const lead = isT ? 'Seri 👍 Munnadi kuduthha address ae use panren.' : "Great 👍 I'll use the address you gave me before.";
+        return this._replyAndSave(senderId, session, userQuery, this._summaryReply(session, lead), 'state_more_declined');
+      }
+      const lead = isT ? `Seri 👍 Unga cart:\n${this._cartLines(session)}` : `Great 👍 Your cart:\n${this._cartLines(session)}`;
+      return this._replyAndSave(senderId, session, userQuery,
+        `${lead}\n${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'state_more_declined');
+    }
+    if (YES.test(q)) {
+      return this._replyAndSave(senderId, session, userQuery, isT
+        ? 'Super! 🔥 Endha team illa player jersey venum? Peru sollunga.'
+        : 'Awesome! 🔥 Which team or player would you like? Just tell me the name.', 'state_more_yes');
+    }
+    return null;
+  }
+
   /** What to say to move the customer on from wherever they are. Never restarts discovery. */
   _nextStepPrompt(session) {
     const isT = session.language === 'tanglish';
@@ -2783,6 +2844,46 @@ ${sessionContext}`;
     const subject = target || locked;
     const productIds = [subject.productId];
 
+    // 3b. Several sizes of this jersey in one message ("m size one and L size one"). The
+    // single-size reading below made it Size M × 2 (2026-10-06). Each size is its own line.
+    const split = (!verdict || ['pick_product', 'size_qty'].includes(verdict.intent)) && ents.size
+      ? orderState.extractSizeSplit(userQuery) : null;
+    if (split) {
+      const sizesOf = target ? ((woocommerceService.getLocalProducts() || []).find(p => String(p.id) === String(target.productId)) || target) : locked;
+      const missingSize = split.find(x => !orderState.productHasSize(sizesOf, x.size));
+      if (missingSize) {
+        const avail = (sizesOf.sizes || []).map(s => String(s).split('-')[0]).join(', ');
+        return respond(isT
+          ? `Sorry, *${subject.name}* ku ${missingSize.size} size illa 😕 ${avail ? `Available: ${avail}. ` : ''}Vera size sollunga.`
+          : `Sorry, *${subject.name}* isn't available in ${missingSize.size} 😕 ${avail ? `Available sizes: ${avail}. ` : ''}Which size would you like?`,
+        'state_size_unavailable', productIds);
+      }
+      // The message describes the whole order for this jersey: its old lines are replaced.
+      const base = { productId: subject.productId, name: subject.name, price: subject.price };
+      const cart = session.cart || [];
+      const at = target ? cart.indexOf(target) : cart.length;
+      const others = cart.filter(i => String(i.productId) !== String(subject.productId));
+      const insertAt = Math.min(at, others.length);
+      session.cart = [...others.slice(0, insertAt), ...split.map(x => ({ ...base, size: x.size, qty: x.qty })), ...others.slice(insertAt)];
+      session.pendingSize = null;
+      session.pendingQty = null;
+      if (!target) session.state = 'COLLECTING_ADDRESS';
+      const lines = split.map(x => (isT ? `${x.size} size × ${x.qty}` : `Size ${x.size} × ${x.qty}`)).join(', ');
+      const lead = isT
+        ? `Done! 🛒 *${subject.name}* — ${lines} cart la potten!`
+        : `Done! 🛒 *${subject.name}* — ${lines} in your cart!`;
+      // Only a NEW jersey earns the question; re-sizing one already in the cart does not.
+      const upsell = !target && this._cartAddedReply(senderId, session, lead);
+      if (upsell) return respond(upsell, 'state_size_split', productIds);
+      const known = this._knownAddress(session);
+      if (orderState.isAddressComplete(known)) {
+        const res = this._applyAddress(senderId, session, known);
+        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+        return respond(this._summaryReply(session, lead), 'state_size_split', productIds);
+      }
+      return respond(`${lead}\n${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'state_size_split', productIds);
+    }
+
     // 4. Size and quantity — applied to that one jersey only.
     let changed = false;
     const sizeUsable = ents.size && (ents.sizeConfident || ['size', 'size_qty', 'qty'].includes(awaiting) || picked);
@@ -2809,6 +2910,8 @@ ${sessionContext}`;
         const line = this._commitCart(session);
         const known = this._knownAddress(session);
         const added = this._addedLine(session, line, userQuery);
+        const upsell = this._cartAddedReply(senderId, session, added);
+        if (upsell) return respond(upsell, 'deterministic_cart', productIds);
         if (orderState.isAddressComplete(known)) {
           // Already have their details — don't ask again, go straight to the summary.
           const res = this._applyAddress(senderId, session, known);
@@ -3853,6 +3956,12 @@ ${sessionContext}`;
     let agentNote = null;
     let notePrefix = null;
     let forceConfirm = false;
+    // The answer to our own "need another jersey?" — a clear no/yes is handled in code, before
+    // the reader could take a bare "no" for "cancel the cart" or a goodbye.
+    if (session.awaitingMoreJerseys && userQuery && !/^\s*\[/.test(userQuery)) {
+      const more = await this._answerMoreJerseys(senderId, session, userQuery);
+      if (more) return more;
+    }
     if (userQuery && userQuery.trim()) {
       verdict = await this.understandMessage(senderId, session, userQuery);
     }
@@ -4562,17 +4671,27 @@ ${sessionContext}`;
                 this._lockProduct(session, { ...chosenFull, ...chosen });
                 const wantsAnother = /\b(also|another|one more|add|innoru|innum oru|kooda|um venum)\b/i.test(userQuery);
                 const sizeUp = String(size || '').toUpperCase();
+                let newLine = null;
                 if (current.productId && !(wantsAnother && current.size && current.size !== sizeUp)) {
                   current.size = sizeUp;
                   current.qty = qty;
                 } else {
                   session.cart = session.cart || [];
-                  session.cart.push({ productId: chosen.productId, name: chosen.name, price: chosen.price, size: sizeUp, qty });
+                  newLine = { productId: chosen.productId, name: chosen.name, price: chosen.price, size: sizeUp, qty };
+                  session.cart.push(newLine);
                 }
                 session.pendingSize = null;
                 session.pendingQty = null;
                 session.state = 'COLLECTING_ADDRESS';
                 const known = this._knownAddress(session);
+                // A jersey just went in: ask "need another one?" before checkout, in fixed text.
+                const upsell = newLine && this._cartAddedReply(senderId, session, this._addedLine(session, newLine, userQuery));
+                if (upsell) {
+                  resultText = upsell;
+                  messages.push({ role: "tool", tool_call_id: toolCall.id, name: fnName, content: JSON.stringify({ status: "success" }) });
+                  keepLooping = false;
+                  break;
+                }
                 if (orderState.isAddressComplete(known)) {
                   // Their details are already on file — never ask again. Go to the summary.
                   const res = this._applyAddress(senderId, session, known);

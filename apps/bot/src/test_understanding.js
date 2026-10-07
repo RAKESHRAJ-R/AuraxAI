@@ -490,6 +490,7 @@ console.log('\nThe 10/2 Sporting CP chat — "9 la enna iruku?", "ithula vera va
   await dbService.saveSession(id3, t1);
   r = await ask(id3, '9', V('pick_product', { pick: 9 }));
   r = await ask(id3, 'S 3', V('size_qty', { size: 'S', qty: 3 }));
+  r = await ask(id3, 'no', V('closing'));   // "need another jersey?" → no (2026-10-07)
   check('after "S 3" the bot asks for the name too — never claims a name it was not given', !/Name save panniten|Name,? .*save panniten/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
   r = await ask(id3, '90/1,state colony,salem\n636006\n9876789655', V('give_address'));
   check('the WhatsApp display name never becomes the shipping name', !/Sessy/.test(r.replyText) && /Name/.test(r.replyText), r.replyText);
@@ -591,6 +592,75 @@ console.log('\nThe 10/2 Nikss chat — several jerseys, seasons, lists, Spurs, g
   r = await ask(id5, 'Your jerseys are super', V('positive_review'));
   check('praise without any order: thanks, but no website review offer', !/website/i.test(r.replyText) && /thanks/i.test(r.replyText), r.replyText);
   woo.postOrderReview = realPost;
+}
+
+// ---------------------------------------------------------------- several sizes, one jersey
+console.log('\nSeveral sizes of one jersey (2026-10-06 screenshot)');
+{
+  const hasML = p => ['M', 'L'].every(sz => (p.sizes || []).some(x => String(x).toUpperCase().split(/[-\s]/)[0] === sz));
+  const KROOS = products.find(p => /REAL MADRID 14-15 THIRD.*KROOS/i.test(p.name) && hasML(p))
+    || products.find(p => p.stock_status === 'instock' && woo.hasValidPrice(p) && hasML(p));
+  const id = await newCustomer({
+    language: 'english', cart: [item(KROOS, 'M', 1)], selectedProduct: lockOf(KROOS),
+    state: 'CONFIRMING_ORDER', addressDetails: ADDRESS, customerProfile: ADDRESS,
+  });
+  // The reader added the two "one"s up: size M, qty 2 — exactly what produced "Size M, Qty 2".
+  const r = await ask(id, 'Actually I want m size one and L size one', V('size_qty', { size: 'M', qty: 2 }));
+  const s = await state(id);
+  const lines = s.cart.map(i => `${i.size}x${i.qty}`).sort().join(',');
+  check('"m size one and L size one" → one M and one L, not M × 2', lines === 'Lx1,Mx1', JSON.stringify(s.cart));
+  check('…the summary shows both and the right total', /Size M, Qty 1/.test(r.replyText) && /Size L, Qty 1/.test(r.replyText) && r.replyText.includes(`₹${2 * parseFloat(KROOS.price)}`), r.replyText);
+  check('…still ready to confirm, no LLM call', s.state === 'CONFIRMING_ORDER' && llmCalls === 0, `${s.state} llm=${llmCalls}`);
+
+  const id2 = await newCustomer({ language: 'english', selectedProduct: lockOf(KROOS), state: 'COLLECTING_SIZE' });
+  await ask(id2, '2 M 1 L', V('size_qty', { size: 'M', qty: 3 }));
+  const s2 = await state(id2);
+  check('"2 M 1 L" while choosing → two lines, M × 2 and L × 1', s2.cart.map(i => `${i.size}x${i.qty}`).sort().join(',') === 'Lx1,Mx2', JSON.stringify(s2.cart));
+
+  const orderState = (await import('./services/orderState.js')).default;
+  for (const t of ['M size 2', 'I m fine', 'is size m available in l?', 'm or l which fits me?', 'No.38 Ishwaryam flats, Chennai 600023, 9361475788']) {
+    check(`"${t}" is not a size split`, orderState.extractSizeSplit(t) === null, JSON.stringify(orderState.extractSizeSplit(t)));
+  }
+}
+
+// ---------------------------------------------------------------- "need another jersey?"
+console.log('\n"Need another jersey?" before checkout (2026-10-07)');
+{
+  const MORE = /add another jersey|vera jersey venuma/i;
+  // Address on file: the question comes first, the summary only after "no".
+  let id = await newCustomer({ language: 'english', selectedProduct: lockOf(GUARDIOLA), state: 'COLLECTING_SIZE', customerProfile: ADDRESS });
+  let r = await ask(id, 'M 1', V('size_qty', { size: 'M', qty: 1 }));
+  let s = await state(id);
+  check('a jersey added → "would you like another jersey?"', MORE.test(r.replyText) && /NO/.test(r.replyText), r.replyText);
+  check('…before the order summary', !/Reply "YES" to confirm/.test(r.replyText) && s.state === 'COLLECTING_ADDRESS' && s.cart.length === 1, `${s.state} ${r.replyText}`);
+  // The reader misreading "No" as "cancel the cart" must not matter.
+  r = await ask(id, 'No', V('cancel_cart'));
+  s = await state(id);
+  check('"No" → the order summary with the saved address, cart kept', /Reply "YES" to confirm/.test(r.replyText) && s.cart.length === 1 && s.state === 'CONFIRMING_ORDER', r.replyText);
+  check('…with no LLM call', llmCalls === 0, `llmCalls=${llmCalls}`);
+  r = await ask(id, 'yes', V('confirm_order'));
+  check('…and the next "yes" confirms as before (not another upsell)', !MORE.test(r.replyText), r.replyText.slice(0, 120));
+
+  // No address yet: "no thanks" asks for the shipping details.
+  id = await newCustomer({ selectedProduct: lockOf(GUARDIOLA), state: 'COLLECTING_SIZE' });
+  r = await ask(id, 'M size 2', V('size_qty', { size: 'M', qty: 2 }));
+  check('Tanglish: "Innum vera jersey venuma?"', /vera jersey venuma/.test(r.replyText), r.replyText);
+  r = await ask(id, 'illa bro podhum', V('closing'));
+  s = await state(id);
+  check('"illa bro podhum" → asks the shipping details, cart kept', /Name, Address, Pincode, Mobile number/.test(r.replyText) && s.cart.length === 1, r.replyText);
+
+  // "yes" asks which team; the cart stays.
+  id = await newCustomer({ language: 'english', selectedProduct: lockOf(GUARDIOLA), state: 'COLLECTING_SIZE' });
+  await ask(id, 'L 1', V('size_qty', { size: 'L', qty: 1 }));
+  r = await ask(id, 'Yes', V('confirm_order'));
+  s = await state(id);
+  check('"Yes" → "which team or player?", no order placed', /which team or player/i.test(r.replyText) && s.cart.length === 1 && !s.lastOrder, r.replyText);
+  check('…the question is asked once, not on every message', !s.awaitingMoreJerseys, String(s.awaitingMoreJerseys));
+
+  // A bulk-size cart is not upsold.
+  id = await newCustomer({ language: 'english', selectedProduct: lockOf(GUARDIOLA), state: 'COLLECTING_SIZE' });
+  r = await ask(id, 'M 15', V('size_qty', { size: 'M', qty: 15 }));
+  check('a bulk quantity is not asked "another jersey?"', !MORE.test(r.replyText), r.replyText);
 }
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);

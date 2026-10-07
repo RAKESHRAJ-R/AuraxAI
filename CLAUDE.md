@@ -295,6 +295,17 @@ it, so *"I also want a Real Madrid jersey"* removed the Bayern shirt already cho
 - ⚠️ A season is never a quantity: `orderState.stripSeasons()` runs before numbers are read
   ("Real Madrid 25/26 … XXL" carted 26 shirts). The understanding verdict's qty is dropped too
   when that number only exists inside a season.
+- **"Need another jersey?" before checkout (2026-10-07, owner's request).** Every time a NEW
+  jersey lands in the cart (code path, size split, or the LLM's `update_cart`),
+  `_cartAddedReply()` asks it BEFORE the address/summary and sets `session.awaitingMoreJerseys`.
+  The next message goes to `_answerMoreJerseys()` ahead of the understanding call: a clear no
+  ("no", "illa podhum", "checkout") → summary (address on file) or the address ask; a bare yes →
+  "which team?"; anything else (a team, an address) → normal pipeline. One turn only, 2h expiry.
+  A bulk-size cart and re-sizing an existing line are never asked.
+- Several sizes of ONE jersey in one message ("m size one and L size one", "2 M 1 L", "M and L")
+  → `orderState.extractSizeSplit()` → one cart line per size, replacing that jersey's lines
+  (2026-10-06: it became "Size M, Qty 2"). A size only counts next to "size", a number, or
+  another size, so "I m fine" / "M or L?" never split.
 - When the customer's words fit several IN-STOCK jerseys (`_ambiguousMatches`), `update_cart`
   lists them and asks instead of letting the model pick one.
 
