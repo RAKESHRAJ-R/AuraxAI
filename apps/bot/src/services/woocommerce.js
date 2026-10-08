@@ -110,6 +110,11 @@ class WooCommerceService {
         });
 
         const products = response.data;
+        // A blocked or intercepted REST call can answer 200 with an object instead of a list
+        // ({"success":false,"message":"API is working, Site Connected"}, 2026-09-20).
+        if (!Array.isArray(products)) {
+          throw new Error(`WooCommerce returned ${typeof products} instead of a product list on page ${page}: ${JSON.stringify(products).slice(0, 200)}`);
+        }
         console.log(`[WooCommerce] Retrieved ${products.length} products on page ${page}.`);
 
         if (products.length === 0) {
@@ -178,6 +183,21 @@ class WooCommerceService {
       const rawProducts = await this.fetchAllProducts();
       const cleanProducts = this.mapProducts(rawProducts);
 
+      // Never replace a working catalogue with an empty or gutted one. On 2026-10-08 the live
+      // cache was found holding [] — a sync had saved an empty answer from the store — and the
+      // bot told every customer "Andha exact jersey kidaikala" with nothing to search, list or
+      // offer. A real catalogue does not lose most of its products in 30 minutes; a blocked or
+      // half-working API does. Keep the last good cache and say so loudly.
+      const previous = this._readCacheFile();
+      const prevCount = Array.isArray(previous) ? previous.length : 0;
+      if (cleanProducts.length === 0) {
+        throw new Error(`WooCommerce returned 0 products — keeping the existing cache (${prevCount}). Run \`npm run check-woo\`.`);
+      }
+      if (prevCount >= 20 && cleanProducts.length < prevCount * 0.5 && process.env.WOO_SYNC_ALLOW_SHRINK !== 'true') {
+        throw new Error(`WooCommerce returned ${cleanProducts.length} products, under half of the ${prevCount} cached — keeping the existing cache. `
+          + 'If products really were removed, run once with WOO_SYNC_ALLOW_SHRINK=true.');
+      }
+
       fs.writeFileSync(CACHE_FILE, JSON.stringify(cleanProducts, null, 2), 'utf-8');
       console.log(`[WooCommerce] Successfully cached ${cleanProducts.length} products to ${CACHE_FILE}`);
       return cleanProducts;
@@ -195,14 +215,23 @@ class WooCommerceService {
    * cache drops to the seed rather than to []. The warning is deliberately loud and repeated
    * -- serving a months-old catalogue quietly would be worse than the empty one.
    */
-  getLocalProducts() {
-    if (fs.existsSync(CACHE_FILE)) {
-      try {
-        return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-      } catch (error) {
-        console.error('[WooCommerce] Error reading cache file:', error.message);
-      }
+  /** The live cache file as parsed, or null when missing/unreadable. */
+  _readCacheFile() {
+    if (!fs.existsSync(CACHE_FILE)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+    } catch (error) {
+      console.error('[WooCommerce] Error reading cache file:', error.message);
+      return null;
     }
+  }
+
+  getLocalProducts() {
+    const cached = this._readCacheFile();
+    // An EMPTY cache is treated like a missing one: falling through to the seed is far better
+    // than a bot with nothing to sell (live server 2026-10-08 held []).
+    if (Array.isArray(cached) && cached.length > 0) return cached;
+    if (Array.isArray(cached)) console.error('[WooCommerce] ⚠️  products_cache.json is EMPTY — ignoring it.');
     if (fs.existsSync(SEED_FILE)) {
       try {
         const seeded = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));

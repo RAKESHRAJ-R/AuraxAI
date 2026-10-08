@@ -64,6 +64,7 @@ npm run test-watchdog  # WhatsApp self-healing (hung/crashed/runaway Chrome, lea
 npm run test-search    # Product-search regression from the 2026-09-20 tester reviews (60 checks):
                        # season/version constraints, honest partial + no-match replies,
                        # context carried across turns, and the real agent reply path
+npm run test-product-cache # A sync never empties/guts the catalogue; empty cache → seed (5, stubbed)
 npm run test-order-flow # Order confirmation integrity (43 checks) — a failed order must never
                        # be reported as confirmed. Stubbed: places no orders, sends nothing
 npm run test-tanglish  # Tanglish quality, machine-output leakage and guided browse (182
@@ -1356,6 +1357,16 @@ the real `answerQuery` egress with a stubbed LLM. No network, no LLM spend, noth
 nothing ordered; it writes to a temp `AURAX_DATA_DIR` and never touches live data.
 
 ### Product Cache
+
+⚠️ **An empty catalogue was found on the live server (2026-10-08).** `products_cache.json` held
+`[]`: the 30-min auto-sync (`index.js runProductSync`) saved whatever WooCommerce returned, and it
+returned nothing. With no products the browse menu, team list, search and offers were all empty,
+so the agent answered "Andha exact jersey kidaikala" to *"Enna enna jersey's iruku"* even when the
+reader understood it. Now `syncAndCacheProducts()` refuses to save 0 products, or under half of
+the cached count (override once with `WOO_SYNC_ALLOW_SHRINK=true`), and a non-list API answer
+throws; `getLocalProducts()` treats an empty file like a missing one and serves the committed
+seed. `npm run test-product-cache` (5 checks, stubbed). Quick server check:
+`node --input-type=module -e "const w=(await import('./src/services/woocommerce.js')).default; console.log(w.getLocalProducts().length)"`.
 
 `src/data/products_cache.json` is a local snapshot of WooCommerce products, including `total_sales` (synced from WooCommerce). Run `npm run sync` to refresh it. The search uses token-matching with relevance scoring — no embeddings or vector DB. Queries with genuine keyword/category relevance are scored and ranked; stock status is only a tiebreaker among already-relevant matches, never a standalone qualifier (a prior bug had every in-stock product score >0 regardless of relevance, so a query with zero real keyword overlap returned ~10 arbitrary products instead of falling back cleanly). "Best selling / popular / trending" queries are detected and ranked by `total_sales` instead of falling through to the generic relevance path.
 

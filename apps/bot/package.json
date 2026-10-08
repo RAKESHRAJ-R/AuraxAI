@@ -24,6 +24,7 @@
     "check-woo": "node src/check_woo.js",
     "test-search": "node src/test_search.js",
     "test-order-flow": "node src/test_order_flow.js",
+    "test-product-cache": "node src/test_product_cache.js",
     "test-tanglish": "node src/test_tanglish.js",
     "test-order-state": "node src/test_order_state.js",
     "test-tanglish-logic": "node src/test_tanglish_logic.js",
