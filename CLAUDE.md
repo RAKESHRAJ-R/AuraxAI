@@ -325,7 +325,12 @@ product search / list_more / other, the agent had nothing to search and the cust
 `_saysYes()` finds a real yes — "new order"/"start over" (`_wantsFreshStart()`) becomes
 `start_over`, anything else re-shows the summary and asks. An open "what do you sell?" /
 bare "kaatunga" with nothing on screen and no team named shows the browse menu whatever the
-intent. Same pattern as the discount word check below.
+intent. Same pattern as the discount word check below. ⚠️ After the first deploy the same chat
+still failed (other readings: policy_question / pick_product / size_qty, and a frustrated
+customer was handed to a human), so `openAsk` now runs at the TOP of `_routeByUnderstanding`,
+before the upset hand-off, for every intent except the ones with their own catalogue/order
+answer. It never fires for a question about one thing (size, colour, price, delivery, payment,
+offers… — `aboutAThing`) or while a jersey is being set up.
 
 **Discounts (2026-10-08, owner's rule).** Topic `discount` in `understand.js` →
 `_discountReply()`: the website's real sale prices from `woocommerceService.currentOffers()`

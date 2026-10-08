@@ -3459,6 +3459,25 @@ ${sessionContext}`;
     const several = v.questions.length >= 2;
     if (v.intent !== 'closing') session.closedAt = null;
 
+    // "Enna enna jersey's iruku" / "Show me ur options" / "Kaatunga" with no team named: show what
+    // we sell, whatever the reader called it. It was read as a product search, list_more, other,
+    // a policy question, a pick… — the agent had nothing to search and the customer got "Andha
+    // exact jersey kidaikala" again and again (live chats 2026-10-08, before AND after the first
+    // fix). Checked before the upset hand-off too: an open catalogue question is never "I didn't
+    // understand you".
+    const nothingOnScreen = !(session.lastShownProducts?.length) && !session.lastListContext;
+    // A question about one THING (size, colour, price, delivery, payment, offers…) is not "what do
+    // you sell?", even though asksWhatWeSell matches "enna size iruku" / "which payment options".
+    const aboutAThing = /\b(sizes?|colou?rs?|price|rate|evlo|cost|delivery|shipping|ship|payment|pay|cod|upi|offers?|discounts?|coupons?|returns?|exchange|refund|custom\w*|name|print\w*|version|quality|fabric|track\w*|order|address|number|kids?|sleeve|shorts)\b/i.test(userQuery);
+    const openAsk = !several && !aboutAThing && !orderState.isConfiguring(session)
+      && (nothingOnScreen || !['list_more', 'product_question', 'pick_product', 'size_qty'].includes(v.intent))
+      && (woocommerceService.asksWhatWeSell(userQuery)
+        || (nothingOnScreen && /^\s*(?:jerseys?\s+)?(?:kaatunga|kaattunga|katunga|kattunga|kaatu|show|show me|show jerseys?|send pics?|list)\s*(?:bro|anna|pls|please)?\s*[!.?]*\s*$/i.test(userQuery)))
+      && !(v.search && woocommerceService.extractSubject(v.search))
+      && !['browse_catalogue', 'list_teams', 'give_address', 'change_address', 'cancel_cart', 'restore_cart',
+        'start_over', 'complaint', 'human_request', 'cancel_placed_order'].includes(v.intent)
+      && !(v.intent === 'list_more' && !nothingOnScreen);
+
     // Angry, or frustrated two messages running: say sorry, and when there is nothing concrete
     // to act on, hand the chat to a person instead of guessing again (once per 2 hours).
     const upset = v.mood === 'angry' || (v.mood === 'frustrated' && session.lastMood === 'frustrated');
@@ -3468,9 +3487,14 @@ ${sessionContext}`;
       const handedOff = session.handoffAt && Date.now() - session.handoffAt < 2 * 60 * 60 * 1000;
       // A bare "hey" from an upset customer is "are you listening?", not a fresh hello — the
       // 2026-10-02 chat got "Sorry" + the full "Vanakkam! Naan Aura…" introduction.
-      if (!handedOff && ['other', 'not_understood', 'complaint', 'human_request', 'greeting'].includes(v.intent)) {
+      if (!handedOff && !openAsk && ['other', 'not_understood', 'complaint', 'human_request', 'greeting'].includes(v.intent)) {
         return this._handOffToHuman(senderId, session, userQuery, v);
       }
+    }
+
+    if (openAsk) {
+      const text = this.browseMenuReply(session.language, session);
+      if (text) return reply(text, 'understood_browse');
     }
 
     // Our own "change the product? YES/NO" question is answered by the order-state turn.
@@ -3519,19 +3543,6 @@ ${sessionContext}`;
       if (pointed && !v.size && !v.qty && rest.length > 0 && rest.every(w => GENERIC.test(w)) && /enna|ena|what|details?|info|pathi|patthi|\?/i.test(userQuery)) {
         return reply(this._productDetailReply(session, pointed), 'understood_product_detail', [pointed.productId]);
       }
-    }
-
-    // "Enna enna jersey's iruku" / "Kaatunga" with no team named: show what we sell. The reader
-    // called these a product search, "list more" or "other", the agent had nothing to search,
-    // and the customer got "Andha exact jersey kidaikala" three times (live chat 2026-10-08).
-    const nothingOnScreen = !(session.lastShownProducts?.length) && !session.lastListContext;
-    const openAsk = woocommerceService.asksWhatWeSell(userQuery)
-      || (nothingOnScreen && /^\s*(?:jerseys?\s+)?(?:kaatunga|kaattunga|katunga|kattunga|kaatu|show|show me|show jerseys?|send pics?|list)\s*(?:bro|anna|pls|please)?\s*[!.?]*\s*$/i.test(userQuery));
-    if (openAsk && !several && ['product_search', 'list_more', 'other', 'product_question'].includes(v.intent)
-        && !(v.intent === 'product_search' && v.search && woocommerceService.extractSubject(v.search))
-        && !(v.intent === 'list_more' && !nothingOnScreen)) {
-      const text = this.browseMenuReply(session.language, session);
-      if (text) return reply(text, 'understood_browse');
     }
 
     switch (v.intent) {

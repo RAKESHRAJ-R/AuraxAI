@@ -736,6 +736,32 @@ console.log('\nLive chat 2026-10-08 — "Hi new order" placed an order; "enna en
     r = await ask(id, text, v);
     check(`"${text}" (read as ${v.intent}) → the product menu, no LLM`, MENU.test(r.replyText) && llmCalls === 0 && !/kidaikala/.test(r.replyText), r.replyText.slice(0, 120));
   }
+  // After the first deploy it still failed: other readings, and a frustrated customer was handed off.
+  const more = [
+    ["Enna enna jersey's iruku", V('policy_question')],
+    ['Show me ur options', V('pick_product')],
+    ['Show me ur options', V('size_qty')],
+    ["Enna enna jersey's iruku", V('other', { mood: 'frustrated' })],
+    ["what's in stock?", V('product_search', { search: 'in stock' })],
+  ];
+  for (const [text, v] of more) {
+    id = await newCustomer({ lastOrder: { orderId: 78015, checkoutUrl: PAY_URL, at: Date.now() - 60000 } });
+    const s0 = await state(id); s0.lastMood = 'frustrated'; await dbService.saveSession(id, s0);
+    r = await ask(id, text, v);
+    check(`"${text}" (read as ${v.intent}${v.mood === 'frustrated' ? ', frustrated' : ''}) → the menu, never a hand-off`, MENU.test(r.replyText) && !/purinjukala/.test(r.replyText), r.replyText.slice(0, 120));
+  }
+  // …but a question about one thing is not "what do you sell?".
+  const notMenu = [
+    ['enna enna size iruku?', V('product_question'), { lastShownProducts: [lockOf(GUARDIOLA)] }],
+    ['which payment options do you have?', V('payment_question', { topic: 'payment' }), {}],
+    ['enna enna offers iruku', V('policy_question', { topic: 'discount' }), {}],
+  ];
+  for (const [text, v, extra] of notMenu) {
+    id = await newCustomer(extra);
+    r = await ask(id, text, v);
+    check(`"${text}" is NOT answered with the menu`, !MENU.test(r.replyText), r.replyText.slice(0, 120));
+  }
+
   id = await newCustomer();
   llmScript = [say('Real Madrid jerseys 👇')];
   r = await ask(id, 'Real Madrid jersey kaatunga', V('product_search', { search: 'Real Madrid jersey' }));
