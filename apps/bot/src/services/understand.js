@@ -56,7 +56,7 @@ const INTENTS = [
 const TOPICS = [
   'delivery', 'payment', 'cod', 'sizing', 'customisation', 'returns', 'quality', 'versions',
   'shipping_charge', 'international', 'care', 'bulk', 'tracking', 'kids', 'fc_set', 'giveaway',
-  'contact', 'none',
+  'contact', 'discount', 'none',
 ];
 
 const MOODS = ['fine', 'confused', 'frustrated', 'angry'];
@@ -82,6 +82,7 @@ Read the message together with the recent chat and the order state. Decide from 
 - Insults ("loosu", "waste", "mental") or repeating the same request because the shop got it wrong = mood angry or frustrated. Still pick the intent of what they are asking for.
 - "which countries / world cup options?" = list_teams or product_search with category. "list all / ellam kaatunga / innum options" = list_more — MORE of the SAME list on screen. "other teams / vera team / <team> illama vera / vera category / something else" = something DIFFERENT from what is on screen: browse_catalogue (or list_teams), never list_more. "other best sellers / popular jerseys" = product_search with search "best selling". "ithula / athula / idhula vera type / variety" while a product is chosen or named by number = list_more (more like THAT jersey), not browse_catalogue. "9 la enna iruku?" = product_question with pick 9.
 - "purila / puriyala / what are you saying" about the shop's last reply = not_understood (NOT a complaint — nothing went wrong with an order).
+- "discount iruka / any offer / coupon code / sale / offer price / price kammi pannunga / cheaper ah tharuveengala" = topic discount (intent policy_question; product_question if it is about a jersey on screen). Wholesale or bulk price ("20 jerseys ku discount") = topic bulk.
 - A message can hold several questions; list each one in plain English.
 
 Answer with ONLY a JSON object, no prose, no code fence:

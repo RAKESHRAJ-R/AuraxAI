@@ -317,6 +317,16 @@ policy — the link is the only legitimate way. On "5"/"⭐⭐⭐⭐⭐",
 order, `status:'hold'` (wp-admin → Products → Reviews) unless `REVIEW_AUTO_APPROVE=true`. Nothing
 is posted without a rating; "no" posts nothing.
 
+**Discounts (2026-10-08, owner's rule).** Topic `discount` in `understand.js` →
+`_discountReply()`: the website's real sale prices from `woocommerceService.currentOffers()`
+(in stock, `price` < `regular_price` — the struck-through price on the site), numbered and set
+as `lastShownProducts` so "1" orders it; asked about jerseys when only gear is discounted → says
+so, then lists what is on offer. No offers → "no discounts available right now, we'll let you
+know as soon as any special offers are added" (and stamps `session.offerInterestAt`). A confident
+Knowledge Hub answer (a coupon code / festival offer the owner typed) wins. The agent prompt gets
+the same list via `offersFact()` in STORE FACTS. Wholesale discounts stay topic `bulk`. Offers
+refresh with `npm run sync` — the bot only knows a sale after the catalogue is synced.
+
 **First reply of a conversation opens with a greeting** (new session or 6h+ idle), added at the
 egress in `_answerQueryLocked` — the greeting FAQ only fires for a message that is nothing but
 a greeting, so *"Hii bro jersey kadikuma??"* got no hello.

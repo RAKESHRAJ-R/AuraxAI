@@ -746,7 +746,21 @@ class AIService {
       { topic: 'payment', text: '- Cash on Delivery is NOT available (see PAYMENT below).' },
       { topic: 'wholesale', text: `- Wholesale / bulk / reseller enquiries → reply with exactly: "For Wholesale Prices, Collections & Enquiries Contact: ${config.support.wholesaleNumber}". Never quote wholesale prices.` },
       { topic: 'giveaway', text: '- Giveaway → it was cancelled for now due to some issues and will be announced soon. Never invent dates, prizes, winners or reasons.' },
+      { topic: 'website_offers', text: this.offersFact() },
     ];
+  }
+
+  /**
+   * The website's live discounts, as one prompt line. Changes only when the catalogue is synced,
+   * so the cached prompt prefix stays stable between syncs.
+   */
+  offersFact() {
+    const offers = woocommerceService.currentOffers(8);
+    if (offers.length === 0) {
+      return '- Discounts/offers: there are NONE on the website right now. If asked, say there are no discounts available right now and we will let them know as soon as any special offers are added. Never invent one or lower a price.';
+    }
+    const list = offers.map(o => `${o.product.name} ₹${o.price} (was ₹${o.regular}, ${o.percent}% off)`).join('; ');
+    return `- Discounts/offers on the website right now (the ONLY ones — never invent another or lower any other price): ${list}.${offers.some(o => o.isJersey) ? '' : ' No jersey is discounted right now — say so, and that we will let them know when a jersey offer is added.'}`;
   }
 
   /**
@@ -832,9 +846,9 @@ Innum options website la iruku. Edhu venum, enna size?"
 • REAL MADRID HOME 25-26 — ₹799 [S, M, L, XL]
 Idhu paakureengala?"
 
-[Tanglish] Price feels high — no invented discount; explain value, offer a real cheaper option:
+[Tanglish] Price feels high — no invented discount (only the website offers in the facts); offer a real cheaper option:
   Customer: "price konjam kammi pannunga"
-  → Reply: "Sorry, price fixed dhaan — discount ippo illa. Aana shipping free. Budget ah venumna vera version la cheap ah iruka nu search panni kaattava?"
+  → Reply (when the facts list no jersey offer): "Sorry, indha jersey ku ippo discount illa — offer vandha udane solrom. Aana shipping free. Budget ah venumna cheap ah iruka nu search panni kaattava?"
 
 [Tanglish] Undecided customer — suggest real best sellers, don't lecture:
   Customer: "enna vaanganum nu theriyala"
@@ -925,7 +939,7 @@ ${this.storeFactsBlock()}
 
 HOW THE SHOP WORKS (always true, whatever the facts above say):
 - You cannot add a custom name to an order yourself: collect the name they want, then call 'create_support_ticket' (issueType "other", description "Custom name: <name> on <product>") so the team adds it and its charge — and tell the customer the team will confirm it.
-- Discounts, offers and coupon codes: none unless a tool result or the facts above show one. Prices are what the product listing says — never negotiate or promise a lower price.
+- Discounts, offers and coupon codes: ONLY the website offers in the facts above. If none apply, say there are no discounts available right now and we'll let them know as soon as any special offers are added. Prices are what the product listing says — never negotiate or promise a lower price.
 - Anything not covered above or by a tool (stock, exact sizes, order status, policies) — never guess. Say the team will check it, and raise a ticket if needed.
 
 HOW TO THINK BEFORE EVERY REPLY:
@@ -3344,6 +3358,49 @@ ${sessionContext}`;
     return faq ? faqService.answerFor(faq, session.language) : null;
   }
 
+  /**
+   * "Any discount / offer?" (2026-10-08, owner's rule): if the website has a discount, share it;
+   * otherwise say there is none right now and that we'll tell them when an offer comes. The
+   * offers are the website's own sale prices (woocommerceService.currentOffers), never invented.
+   * They are numbered and become the list on screen, so "1" or "1 M 2" orders straight away.
+   */
+  _discountReply(session, userQuery = '') {
+    const isT = session.language === 'tanglish';
+    const offers = woocommerceService.currentOffers(8);
+    const askedJersey = /\b(jersey|jersy|jersi|jerseys|kit|shirt|tshirt|t-shirt)\b/i.test(userQuery);
+    const jerseyOffers = offers.filter(o => o.isJersey);
+    const noneText = isT
+      ? 'Ippo discount edhuvum illa 🙂 Special offers vandha udane ungalukku solrom! Aana ella order kum shipping free 🚚'
+      : "There are no discounts available right now 🙂 We'll let you know as soon as any special offers are added! Shipping is free on every order though 🚚";
+    if (offers.length === 0) {
+      session.offerInterestAt = Date.now();   // who asked, for when an offer is added
+      return noneText;
+    }
+    // Asked about jerseys and only gear is discounted: say so first, then show what IS on offer.
+    let lead;
+    let shown;
+    if (askedJersey && jerseyOffers.length === 0) {
+      session.offerInterestAt = Date.now();
+      lead = isT
+        ? 'Jerseys ku ippo discount illa 🙂 Jersey offer vandha udane solrom! Ippo offer la irukradhu idhu dhaan 👇'
+        : "There's no discount on jerseys right now 🙂 We'll let you know as soon as a jersey offer is added! Here's what is on offer today 👇";
+      shown = offers;
+    } else {
+      shown = askedJersey ? jerseyOffers : offers;
+      lead = isT ? '🔥 Ippo website la irukura offers 👇' : '🔥 Current offers on our website 👇';
+    }
+    session.lastShownProducts = shown.map(o => ({
+      productId: o.product.id, name: o.product.name, price: o.product.price,
+      sizes: o.product.sizes || [], permalink: o.product.permalink || '',
+    }));
+    session.pendingProductIndex = null;
+    session.productListPending = true;
+    const lines = shown.map((o, i) =>
+      `${i + 1}. *${o.product.name}* — ₹${o.price} (${isT ? 'MRP' : 'was'} ~₹${o.regular}~, ${o.percent}% off)${o.product.permalink ? `\n${o.product.permalink}` : ''}`).join('\n');
+    const ask = isT ? 'Edhavadhu venumna number sollunga 🙂' : 'Want one? Just reply with the number 🙂';
+    return `${lead}\n\n${lines}\n\n${ask}`;
+  }
+
   /** "Okay" / "no need" / "thanks" — end warmly, and stop selling. */
   _closingReply(session, verdict) {
     const isT = session.language === 'tanglish';
@@ -3418,6 +3475,22 @@ ${sessionContext}`;
       if (r) return reply(r.text, r.intent);
     }
     if (v.intent === 'positive_review') return reply(this._reviewInvite(session, userQuery), 'understood_review');
+
+    // "Any discount?" — the website's real sale prices, or an honest "none right now". An answer
+    // the owner taught in the Knowledge Hub (a coupon code, a festival offer) wins.
+    // The word itself is checked too: "Discount lam iruka bro" was read as a payment question and
+    // answered with "no COD, prepaid only" (live chat 2026-10-07).
+    const saysDiscount = /\b(discounts?|offers?|coupons?|promo\s*codes?)\b/i.test(userQuery)
+      && !/\b(bulk|wholesale|reseller|resale)\b/i.test(userQuery) && v.topic !== 'bulk';
+    if ((v.topic === 'discount' || saysDiscount) && !several
+        && ['policy_question', 'product_question', 'product_search', 'payment_question', 'other'].includes(v.intent)
+        && !(v.intent === 'product_search' && v.search && v.topic !== 'discount')) {
+      const kh = await knowledgeService.match(userQuery, session.language).catch(() => null);
+      let text = kh && kh.tier === 'confident' ? kh.entry.answer : this._discountReply(session, userQuery);
+      const resume = this._resumeLine(session);
+      if (resume) text = `${text}\n\n${resume}`;
+      return reply(text, 'understood_discount', locked ? [locked.productId] : []);
+    }
 
     if (!item) {
       const pointed = this._pointedProduct(session, userQuery, v);
@@ -4053,6 +4126,17 @@ ${sessionContext}`;
         return stateTurn;
       }
 
+      // "Any discount?" with the reader down: same answer as the understood path.
+      if (userQuery.length <= 80
+          && /\b(discounts?|offers?|coupons?|promo\s*codes?|sale|kammi\s*pann\w*|koraichu|kuraichu)\b/i.test(userQuery)
+          && !/\b(bulk|wholesale|reseller|resale)\b|\b\d{2,}\s*(pcs|pieces|jerseys?|qty)\b/i.test(userQuery)) {
+        const kh = await knowledgeService.match(userQuery, session.language).catch(() => null);
+        let text = kh && kh.tier === 'confident' ? kh.entry.answer : this._discountReply(session, userQuery);
+        const resume = this._resumeLine(session);
+        if (resume) text = `${text}\n\n${resume}`;
+        return this._replyAndSave(senderId, session, userQuery, text, 'keyword_discount');
+      }
+
       // --- Tanglish complaint: a fixed first reply (added 2026-09-29) ---
       // The client's example of a "meaningless" reply was a complaint answered in free-written
       // Tamil: "Service miss pannite ah naurom nu ninaikirenga nu puriyuthu … appo pathi naan
@@ -4514,7 +4598,7 @@ ${sessionContext}`;
                     content: JSON.stringify({
                       products: previouslyShown.slice(0, 3).map(p => ({ name: p.name, price: p.price, sizes: p.sizes })),
                       matchQuality: 'already_shown',
-                      message: 'No new team or product was named — the customer is asking about the products already shown. Answer their question about these directly and briefly. Prices are fixed: no discounts or offers. Do not search again and do not list teams.'
+                      message: 'No new team or product was named — the customer is asking about the products already shown. Answer their question about these directly and briefly. Prices are as listed — the only discounts are the website offers in the store facts; never invent one. Do not search again and do not list teams.'
                     })
                   });
                   continue;

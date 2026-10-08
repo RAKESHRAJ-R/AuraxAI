@@ -663,6 +663,106 @@ console.log('\n"Need another jersey?" before checkout (2026-10-07)');
   check('a bulk quantity is not asked "another jersey?"', !MORE.test(r.replyText), r.replyText);
 }
 
+// ---------------------------------------------------------------- three sizes, whole purchase
+console.log('\n"M la onnu L la onnu S la onnu" — pick → sizes → another? → address → YES → WooCommerce');
+{
+  const hasSizes = p => ['S', 'M', 'L'].every(sz => (p.sizes || []).some(x => String(x).toUpperCase().split(/[-\s]/)[0] === sz));
+  const MESSI = products.find(p => /BARCELONA 2009 FINAL HOME FULL SLEEVE/i.test(p.name) && hasSizes(p))
+    || products.find(p => p.stock_status === 'instock' && woo.hasValidPrice(p) && hasSizes(p));
+  const shown = [MESSI].map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: '' }));
+  const id = await newCustomer({ lastShownProducts: shown, productListPending: true });
+  await ask(id, '1', V('pick_product', { pick: 1 }));
+  // The reader adds the three "onnu"s up — the split must still win.
+  let r = await ask(id, 'M la onnu L la onnu S la onnu', V('size_qty', { size: 'M', qty: 3 }));
+  let s = await state(id);
+  check('three lines: S × 1, M × 1, L × 1', s.cart.map(i => `${i.size}x${i.qty}`).sort().join(',') === 'Lx1,Mx1,Sx1', JSON.stringify(s.cart));
+  check('…and "Innum vera jersey venuma?" before the address', /vera jersey venuma/.test(r.replyText) && !/Pincode/.test(r.replyText), r.replyText);
+  r = await ask(id, 'illa', V('closing'));
+  check('"illa" → asks for the shipping details', /Name, Address, Pincode, Mobile number/.test(r.replyText), r.replyText);
+  r = await ask(id, 'Pranav, No 1386 10th Street tnhb colony, Velachery, Chennai 600042, 9361475788', V('give_address'));
+  s = await state(id);
+  const total = 3 * parseFloat(MESSI.price);
+  check('summary lists all three sizes with the right total', /S size, 1 qty/.test(r.replyText) && /M size, 1 qty/.test(r.replyText) && /L size, 1 qty/.test(r.replyText) && r.replyText.includes(`₹${total}`), r.replyText);
+
+  let sentCart = null;
+  const realCreate = woo.createOrder;
+  const realAvail = woo.orderingAvailable;
+  woo.orderingAvailable = true;
+  woo.createOrder = async (cart) => { sentCart = cart.map(i => ({ ...i })); return { success: true, orderId: 88123, paymentUrl: PAY_URL }; };
+  r = await ask(id, 'YES', V('confirm_order'));
+  woo.createOrder = realCreate;
+  woo.orderingAvailable = realAvail;
+  check('YES places ONE order with three lines — S, M, L, qty 1 each, same jersey', sentCart?.length === 3
+    && sentCart.every(i => String(i.productId) === String(MESSI.id) && Number(i.qty) === 1)
+    && sentCart.map(i => i.size).sort().join(',') === 'L,M,S', JSON.stringify(sentCart));
+  check('…and the customer gets the order number', /88123/.test(r.replyText), r.replyText);
+}
+
+// ---------------------------------------------------------------- discounts
+console.log('\nDiscounts — the website\'s offers, or "none right now" (2026-10-08)');
+{
+  const realOffers = woo.currentOffers.bind(woo);
+  const live = realOffers(8);
+  check('currentOffers() reads only in-stock products the website really discounts', live.every(o => o.product.stock_status === 'instock' && o.price < o.regular && o.percent > 0), JSON.stringify(live.map(o => o.product.name)));
+
+  // No offers at all.
+  woo.currentOffers = () => [];
+  let id = await newCustomer({ language: 'english' });
+  let r = await ask(id, 'Any discount available?', V('policy_question', { topic: 'discount' }));
+  check('no offer → "no discounts available right now" + "we\'ll let you know"', /no discounts available right now/i.test(r.replyText) && /let you know/i.test(r.replyText), r.replyText);
+  check('…with no LLM call, and the interest is remembered', llmCalls === 0 && Boolean((await state(id)).offerInterestAt), `llm=${llmCalls}`);
+  id = await newCustomer();
+  r = await ask(id, 'discount iruka bro?', V('policy_question', { topic: 'discount' }));
+  check('Tanglish: "Ippo discount edhuvum illa … offers vandha udane solrom"', /discount edhuvum illa/.test(r.replyText) && /solrom/.test(r.replyText), r.replyText);
+
+  // A jersey on sale: listed with the old price, and orderable by number.
+  const J = products.find(p => p.stock_status === 'instock' && woo.hasValidPrice(p) && /JERSEY|HOME|AWAY/i.test(p.name) && (p.sizes || []).length);
+  woo.currentOffers = () => [{ product: J, price: parseFloat(J.price), regular: parseFloat(J.price) * 2, percent: 50, isJersey: true }];
+  id = await newCustomer({ language: 'english' });
+  r = await ask(id, 'Do you have any offers on jerseys?', V('policy_question', { topic: 'discount' }));
+  check('a website offer is shared: name, offer price, old price, % off', r.replyText.includes(J.name) && r.replyText.includes(`₹${parseFloat(J.price)}`) && /50% off/.test(r.replyText), r.replyText);
+  check('…and becomes the list on screen ("1" orders it)', (await state(id)).lastShownProducts?.[0]?.productId === J.id, '');
+  const offersLine = aiService.offersFact();
+  check('the agent\'s prompt carries the same offer', offersLine.includes(J.name) && /50% off/.test(offersLine), offersLine);
+
+  // Only gear on sale, customer asks about jerseys.
+  const BALL = products.find(p => /BALL/.test(p.name) && p.stock_status === 'instock') || J;
+  woo.currentOffers = () => [{ product: BALL, price: 1499, regular: 2999, percent: 50, isJersey: false }];
+  id = await newCustomer({ language: 'english' });
+  r = await ask(id, 'jersey discount?', V('policy_question', { topic: 'discount' }));
+  check('only a ball on sale + "jersey discount?" → "no discount on jerseys right now", then the ball', /no discount on jerseys right now/i.test(r.replyText) && r.replyText.includes(BALL.name), r.replyText);
+
+  // Live chat 2026-10-07: read as a payment question, answered "no COD, prepaid only".
+  woo.currentOffers = () => [];
+  id = await newCustomer({ cart: [item(GUARDIOLA, 'L', 1)], selectedProduct: lockOf(GUARDIOLA), state: 'COLLECTING_ADDRESS',
+    addressDraft: { name: 'Pranav', address: 'No 1386 10th Street tnhb colony Velachery Chennai', pincode: '600042', phone: '' } });
+  r = await ask(id, 'Discount lam Iruka bro', V('payment_question', { topic: 'payment' }));
+  check('"Discount lam Iruka bro" misread as payment → still the discount answer, no COD speech', /discount edhuvum illa/.test(r.replyText) && !/COD/.test(r.replyText), r.replyText);
+  check('…then asks only for the missing mobile number', /Mobile number/.test(r.replyText) && (await state(id)).cart.length === 1, r.replyText);
+
+  // Mid-order: answer, then bring them back.
+  woo.currentOffers = () => [];
+  id = await newCustomer({ language: 'english', cart: [item(GUARDIOLA)], selectedProduct: lockOf(GUARDIOLA), state: 'CONFIRMING_ORDER', addressDetails: ADDRESS, customerProfile: ADDRESS });
+  r = await ask(id, 'any coupon code?', V('policy_question', { topic: 'discount' }));
+  check('mid-order: the answer, then "reply YES to confirm", cart kept', /no discounts/i.test(r.replyText) && /YES/.test(r.replyText) && (await state(id)).cart.length === 1, r.replyText);
+
+  // Reader down: the keyword fallback gives the same answer.
+  id = await newCustomer({ language: 'english' });
+  r = await ask(id, 'any offers going on?', null);
+  check('no verdict: "any offers going on?" still gets the discount answer', /no discounts available right now/i.test(r.replyText), r.replyText);
+  r = await ask(id, 'wholesale discount for 20 jerseys', null);
+  check('…but a wholesale discount is not answered as a sale', !/no discounts available/i.test(r.replyText), r.replyText);
+
+  // The owner's own Knowledge Hub answer (a coupon code) wins.
+  const realMatch = knowledgeService.match;
+  knowledgeService.match = async () => ({ tier: 'confident', entry: { answer: 'Use code DIWALI10 for 10% off till Nov 5!' } });
+  id = await newCustomer({ language: 'english' });
+  r = await ask(id, 'any discount?', V('policy_question', { topic: 'discount' }));
+  check('an owner-taught offer answer wins', /DIWALI10/.test(r.replyText), r.replyText);
+  knowledgeService.match = realMatch;
+  woo.currentOffers = realOffers;
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 try { fs.rmSync(process.env.AURAX_DATA_DIR, { recursive: true, force: true }); } catch {}
 process.exit(failed > 0 ? 1 : 0);

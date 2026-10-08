@@ -313,6 +313,31 @@ class WooCommerceService {
   }
 
   /**
+   * What the website is selling at a discount right now: in stock, with a sale price that
+   * WooCommerce is actually charging (price below the regular price — the struck-through price
+   * on the product page). Biggest discount first, then best sellers. The answer to "any
+   * discount / offer?" (2026-10-08); an empty list means there is no offer, and the bot says so.
+   */
+  currentOffers(limit = 8) {
+    return this.getLocalProducts()
+      .filter(p => p.stock_status === 'instock' && this.hasValidPrice(p) && p.sale_price !== '' && p.sale_price != null
+        && parseFloat(p.regular_price) > parseFloat(p.price))
+      .map(p => {
+        const regular = parseFloat(p.regular_price);
+        const price = parseFloat(p.price);
+        const cats = (p.categories || []).map(c => String(c.name || c));
+        return {
+          product: p, price, regular,
+          percent: Math.round((1 - price / regular) * 100),
+          // Balls and other gear vs jerseys, so "jersey discount?" gets an honest answer.
+          isJersey: !cats.some(c => /^(ball|football|accessories|socks|gear)$/i.test(c)) && !/\b(ball|football)\s*$/i.test(p.name),
+        };
+      })
+      .sort((a, b) => b.percent - a.percent || (b.product.total_sales || 0) - (a.product.total_sales || 0))
+      .slice(0, limit);
+  }
+
+  /**
    * Get fallback products when search returns zero results.
    * Returns cheapest in-stock items as suggestions.
    */
