@@ -1462,7 +1462,9 @@ ${sessionContext}`;
           // text only needs to be correct, not inventive.
           temperature: typeof opts.temperature === 'number' ? opts.temperature
             : language === 'tanglish' ? (attempt <= 2 ? 0.3 : 0.15) : (attempt <= 2 ? 0.7 : 0.2),
-          ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {})
+          ...(isQwenReasoning ? { reasoning_format: 'hidden' } : {}),
+          // Only the understanding step passes this, and only when UNDERSTAND_REASONING_EFFORT is set.
+          ...(opts.reasoningEffort && isFireworks ? { reasoning_effort: opts.reasoningEffort } : {})
         }), provider, keyIndex);
       } catch (err) {
         // Daily token quota (TPD) exhaustion — not recoverable by retrying with backoff.
@@ -3268,7 +3270,8 @@ ${sessionContext}`;
       // The retry (attempt 2) gets double the budget: an empty or cut-off verdict is almost
       // always a reasoning model running out of tokens before the JSON.
       callModel: (messages, { attempt = 1 } = {}) => this.callLLMWithFallback(messages, 'english', senderId, {
-        noTools: true, maxTokens: (config.understand?.maxTokens || 700) * (attempt > 1 ? 2 : 1), temperature: 0,
+        noTools: true, maxTokens: (config.understand?.maxTokens || 2000) * (attempt > 1 ? 2 : 1), temperature: 0,
+        reasoningEffort: config.understand?.reasoningEffort || undefined,
       }),
     });
     if (verdict) {

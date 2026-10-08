@@ -1218,7 +1218,7 @@ keyword chain (reset / order-state / complaint / FAQ / teams / browse) runs ONLY
   (after adding `not_understood`: "purila" was being read as a complaint). Customer-facing
   Tanglish replies still go to Sarvam first.
 - **Cost:** +1 small call per message (Fireworks, ~1–2s). `UNDERSTAND_ENABLED=false` turns it
-  off (= old behaviour); `UNDERSTAND_MAX_TOKENS` (700).
+  off (= old behaviour); `UNDERSTAND_MAX_TOKENS` (**2000** since 2026-10-08 — at 700 the live log showed `finish=length, reasoning=2400–5600 chars` on most messages, i.e. the reader ran out before its JSON and nearly every message fell back to keywords; check the server `.env` does not pin 700). `UNDERSTAND_REASONING_EFFORT` (unset) passes `reasoning_effort` to Fireworks for this call only — not yet verified that the provider accepts it, so leave it unset until a one-off check.
 - **Change only the address (2026-10-01).** Live chat: "Address change panniten" became the address
   "change panniten" (`parseAddressParts` took any line starting with "Address" as a label — it now
   needs `:`/`-`, its own line, or a door number), "Ithu venaam" (meant the address) removed the

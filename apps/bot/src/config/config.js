@@ -164,7 +164,14 @@ const config = {
   // Off = the old keyword chain decides, which is also what runs whenever the model is down.
   understand: {
     enabled: String(process.env.UNDERSTAND_ENABLED || 'true').toLowerCase() !== 'false',
-    maxTokens: parseInt(process.env.UNDERSTAND_MAX_TOKENS || '700', 10),
+    // 2000, was 700 (2026-10-08): the reader (Fireworks deepseek-v4p1-flash) reasons for
+    // 2400–5600 chars before the JSON, so 700 — and the 1400 retry — ran out ("finish=length")
+    // on most messages and every one of them fell back to keywords. Only output actually used
+    // is billed, so a higher ceiling costs nothing on messages that finish early.
+    maxTokens: parseInt(process.env.UNDERSTAND_MAX_TOKENS || '2000', 10),
+    // Optional: ask the reader to think less (e.g. "low"). NOT verified against Fireworks yet —
+    // leave unset until a one-off check confirms the provider accepts it.
+    reasoningEffort: (process.env.UNDERSTAND_REASONING_EFFORT || '').trim() || null,
   },
   // What the store actually accepts. The bot's payment answers are built from THIS, never
   // from the model's imagination — so a method only reaches a customer if it is listed here.
