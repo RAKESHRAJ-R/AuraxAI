@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aurax AI Assistant — Complete Operating Manual</title>
+<style>
+  @page { size: A4; margin: 20mm 16mm 20mm 16mm; }
+
+  :root{
+    --ink:#14171c;
+    --body:#2b3038;
+    --muted:#616a76;
+    --faint:#8c95a1;
+    --gold:#b8860b;
+    --gold-soft:#fdf6e3;
+    --green:#0e7a4b;
+    --green-soft:#eef7f2;
+    --red:#c0392b;
+    --red-soft:#fdf0ee;
+    --blue:#2a5d9f;
+    --blue-soft:#eef3fa;
+    --line:#e3e7ec;
+    --bg-soft:#f7f8fa;
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    font-family:"Segoe UI","Inter",Helvetica,Arial,sans-serif;
+    font-size:10.2pt; line-height:1.62; color:var(--body);
+    margin:0; -webkit-print-color-adjust:exact; print-color-adjust:exact;
+  }
+
+  h1,h2,h3,h4{ color:var(--ink); line-height:1.25; margin:0; font-weight:700; }
+  h2{ font-size:17pt; margin:0 0 4mm; padding-bottom:2.5mm; border-bottom:2.5px solid var(--gold); }
+  h3{ font-size:12.6pt; margin:7mm 0 2.5mm; }
+  h4{ font-size:10.8pt; margin:5mm 0 1.5mm; color:#3a4048; }
+  p{ margin:0 0 3mm; }
+  ul,ol{ margin:0 0 3mm; padding-left:5.5mm; }
+  li{ margin-bottom:1.4mm; }
+  code{ font-family:"Consolas","Courier New",monospace; font-size:9pt;
+        background:var(--bg-soft); border:1px solid var(--line);
+        border-radius:3px; padding:0.4mm 1.2mm; color:#33383f; }
+  strong{ color:var(--ink); }
+  a{ color:var(--blue); text-decoration:none; }
+
+  .page-break{ page-break-before:always; }
+  h2,h3,h4{ page-break-after:avoid; }
+  table,.box,.card,.step{ page-break-inside:avoid; }
+
+  /* ---------- cover ---------- */
+  .cover{ height:250mm; display:flex; flex-direction:column; justify-content:center;
+          text-align:center; page-break-after:always; }
+  .cover .badge{ font-size:9pt; letter-spacing:3.2px; text-transform:uppercase;
+                 color:var(--gold); font-weight:700; margin-bottom:8mm; }
+  .cover h1{ font-size:33pt; letter-spacing:-0.7px; margin-bottom:4mm; }
+  .cover .sub{ font-size:14pt; color:var(--muted); font-weight:400; margin-bottom:12mm; }
+  .cover .rule{ width:36mm; height:3px; background:var(--gold); margin:0 auto 12mm; }
+  .cover .meta{ font-size:9.6pt; color:var(--faint); line-height:2; }
+  .cover .who{ margin-top:16mm; padding:6mm 8mm; background:var(--bg-soft);
+               border:1px solid var(--line); border-radius:6px;
+               font-size:9.6pt; color:var(--muted); text-align:left; }
+  .cover .who b{ display:block; color:var(--ink); margin-bottom:2mm; font-size:10pt; }
+
+  /* ---------- table of contents ---------- */
+  .toc-item{ display:flex; align-items:baseline; gap:2mm; margin-bottom:2.4mm; font-size:10.4pt; }
+  .toc-item .n{ color:var(--gold); font-weight:700; min-width:9mm; }
+  .toc-item .t{ color:var(--ink); font-weight:600; }
+  .toc-item .d{ flex:1; border-bottom:1px dotted #ccd2d9; transform:translateY(-1.2mm); }
+  .toc-sub{ margin-left:11mm; font-size:9.6pt; color:var(--muted); margin-bottom:1.6mm; }
+
+  /* ---------- callout boxes ---------- */
+  .box{ border-radius:5px; padding:3.5mm 4.5mm; margin:0 0 4mm;
+        border-left:3.5px solid var(--muted); background:var(--bg-soft); font-size:9.8pt; }
+  .box p:last-child{ margin-bottom:0; }
+  .box .bt{ font-weight:700; color:var(--ink); display:block; margin-bottom:1.2mm; }
+  .box.tip{  border-left-color:var(--green); background:var(--green-soft); }
+  .box.warn{ border-left-color:var(--red);   background:var(--red-soft); }
+  .box.note{ border-left-color:var(--blue);  background:var(--blue-soft); }
+  .box.gold{ border-left-color:var(--gold);  background:var(--gold-soft); }
+
+  /* ---------- tables ---------- */
+  table{ width:100%; border-collapse:collapse; margin:0 0 4mm; font-size:9.3pt; }
+  th{ background:#f1f3f6; color:var(--ink); text-align:left; font-weight:700;
+      padding:2.2mm 2.6mm; border:1px solid var(--line); font-size:8.9pt;
+      text-transform:uppercase; letter-spacing:0.3px; }
+  td{ padding:2.2mm 2.6mm; border:1px solid var(--line); vertical-align:top; }
+  tr:nth-child(even) td{ background:#fbfcfd; }
+  td code{ font-size:8.4pt; }
+
+  /* ---------- step lists ---------- */
+  .step{ display:flex; gap:3.5mm; margin-bottom:3.5mm; }
+  .step .num{ flex:0 0 7mm; height:7mm; border-radius:50%; background:var(--gold);
+              color:#fff; font-weight:700; font-size:9.5pt; display:flex;
+              align-items:center; justify-content:center; }
+  .step .txt{ flex:1; padding-top:0.6mm; }
+  .step .txt b{ color:var(--ink); }
+
+  /* ---------- UI element reference rows ---------- */
+  .ui{ border:1px solid var(--line); border-radius:5px; margin-bottom:3mm; overflow:hidden; }
+  .ui .h{ background:#f1f3f6; padding:2mm 3mm; font-weight:700; font-size:9.8pt; color:var(--ink); }
+  .ui .b{ padding:2.6mm 3mm; font-size:9.6pt; }
+  .ui .b p:last-child{ margin-bottom:0; }
+
+  /* ---------- decision matrix ---------- */
+  .pick{ display:flex; gap:3mm; margin-bottom:3mm; }
+  .pick > div{ flex:1; border:1px solid var(--line); border-radius:5px; padding:3mm 3.5mm; font-size:9.2pt; }
+  .pick .hd{ font-weight:700; font-size:10pt; margin-bottom:2mm; padding-bottom:1.5mm;
+             border-bottom:1px solid var(--line); }
+  .pick .a .hd{ color:var(--gold); }
+  .pick .b2 .hd{ color:var(--blue); }
+  .pick .c .hd{ color:var(--green); }
+  .pick ul{ padding-left:4.5mm; margin:0; }
+  .pick li{ margin-bottom:1.2mm; }
+
+  /* ---------- flow diagram ---------- */
+  .flow{ background:var(--bg-soft); border:1px solid var(--line); border-radius:5px;
+         padding:4mm; margin-bottom:4mm; font-family:"Consolas","Courier New",monospace;
+         font-size:8.6pt; line-height:1.75; white-space:pre; color:#3a4048; overflow:hidden; }
+
+  .kv{ font-size:9.4pt; }
+  .kv b{ color:var(--ink); }
+  .lede{ font-size:10.6pt; color:var(--muted); margin-bottom:5mm; }
+  .tag{ display:inline-block; font-size:8pt; font-weight:700; padding:0.6mm 2mm;
+        border-radius:3px; letter-spacing:.3px; text-transform:uppercase; }
+  .tag.g{ background:var(--green-soft); color:var(--green); border:1px solid #bfe0ce; }
+  .tag.r{ background:var(--red-soft);   color:var(--red);   border:1px solid #f0c8c1; }
+  .tag.b{ background:var(--blue-soft);  color:var(--blue);  border:1px solid #c5d6ec; }
+  .tag.y{ background:var(--gold-soft);  color:var(--gold);  border:1px solid #ecdcae; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════ COVER ══════════════════════════ -->
+<section class="cover">
+  <div class="badge">Theaurax.in · Operations Documentation</div>
+  <h1>Aurax AI Assistant</h1>
+  <div class="sub">Complete Operating &amp; Instruction Manual</div>
+  <div class="rule"></div>
+  <div class="meta">
+    WhatsApp Sales Bot &nbsp;·&nbsp; Admin Console &nbsp;·&nbsp; Knowledge Hub<br>
+    Version 1.0 &nbsp;·&nbsp; 5 August 2026
+  </div>
+  <div class="who">
+    <b>Who this manual is for</b>
+    The store owner and anyone on the Aurax or testing team who operates the assistant day to day.
+    No coding knowledge is required for Parts 1–7. Part 8 onward contains technical reference
+    material for whoever maintains the server.
+  </div>
+</section>
+
+<!-- ══════════════════════════ CONTENTS ══════════════════════════ -->
+<section>
+  <h2>Contents</h2>
+
+  <div class="toc-item"><span class="n">1</span><span class="t">What This System Is</span><span class="d"></span></div>
+  <div class="toc-sub">The three parts · what the assistant can and cannot do · how a message is answered</div>
+
+  <div class="toc-item"><span class="n">2</span><span class="t">Signing In to the Admin Console</span><span class="d"></span></div>
+  <div class="toc-sub">Addresses · team passwords · sessions · the sidebar and its badges</div>
+
+  <div class="toc-item"><span class="n">3</span><span class="t">Monitor — Watching the Bot Work</span><span class="d"></span></div>
+  <div class="toc-sub">Every tile, chart, table and log line explained · what "normal" looks like</div>
+
+  <div class="toc-item"><span class="n">4</span><span class="t">WhatsApp — Connecting the Number</span><span class="d"></span></div>
+  <div class="toc-sub">Pairing by QR · the linked-account panel · logging out · safe mode</div>
+
+  <div class="toc-item"><span class="n">5</span><span class="t">Knowledge Hub — Teaching the Bot</span><span class="d"></span></div>
+  <div class="toc-sub">5.1 Teach the bot · 5.2 Knowledge sources · 5.3 Review mistakes · 5.4 The "needs answer" queue</div>
+
+  <div class="toc-item"><span class="n">6</span><span class="t">Choosing the Right Knowledge Option</span><span class="d"></span></div>
+  <div class="toc-sub">Website crawl vs. document upload vs. Q&amp;A · decision tree · 12 worked scenarios · mistakes to avoid</div>
+
+  <div class="toc-item"><span class="n">7</span><span class="t">Support Tickets — After-Sales</span><span class="d"></span></div>
+  <div class="toc-sub">How tickets are raised · every column · filters · resolving and reopening</div>
+
+  <div class="toc-item"><span class="n">8</span><span class="t">What the Bot Does on Its Own</span><span class="d"></span></div>
+  <div class="toc-sub">Instant answers · the order flow · language · follow-ups · alerts · <b>unread backlogs and traffic bursts</b></div>
+
+  <div class="toc-item"><span class="n">9</span><span class="t">Your Operating Routine</span><span class="d"></span></div>
+  <div class="toc-sub">Daily, weekly and monthly checklists · what to do after a product launch</div>
+
+  <div class="toc-item"><span class="n">10</span><span class="t">Troubleshooting</span><span class="d"></span></div>
+  <div class="toc-sub">Symptom → cause → fix, for the fifteen problems that actually happen</div>
+
+  <div class="toc-item"><span class="n">11</span><span class="t">Technical Reference</span><span class="d"></span></div>
+  <div class="toc-sub">Limits · settings · API endpoints · files · glossary</div>
+</section>
+
+<!-- ══════════════════════════ 1 ══════════════════════════ -->
+<section class="page-break">
+  <h2>1 · What This System Is</h2>
+  <p class="lede">
+    Aura is an AI sales assistant that replies to customers on WhatsApp for Theaurax.in.
+    It answers questions, searches the live product catalogue, takes orders, sends payment
+    links, and raises support tickets — around the clock, in English and in Tanglish.
+  </p>
+
+  <h3>1.1 The three parts</h3>
+  <table>
+    <tr><th style="width:26%">Part</th><th>What it does</th><th style="width:24%">Who touches it</th></tr>
+    <tr>
+      <td><b>The bot</b></td>
+      <td>Runs on the server, stays logged in to your WhatsApp number, and replies to every
+          customer message automatically.</td>
+      <td>Nobody — it runs unattended.</td>
+    </tr>
+    <tr>
+      <td><b>The admin console</b></td>
+      <td>The web page you sign in to. Four sections: Monitor, WhatsApp, Knowledge Hub,
+          Support Tickets.</td>
+      <td>You and your team, daily.</td>
+    </tr>
+    <tr>
+      <td><b>Your WooCommerce store</b></td>
+      <td>The real source of products, prices, stock and orders. The bot reads from it and
+          creates real orders in it.</td>
+      <td>Managed as usual in WordPress.</td>
+    </tr>
+  </table>
+
+  <h3>1.2 What the assistant can do</h3>
+  <ul>
+    <li>Greet customers and answer common questions instantly (COD, delivery time, sizing,
+        returns, customization, bulk orders, tracking, jersey care, kids sizes).</li>
+    <li>Search the live product catalogue and show matching jerseys with price and stock.</li>
+    <li>Take a size and quantity, collect a shipping address, and confirm an order.</li>
+    <li>Create a <b>real WooCommerce order</b> and send the customer a direct payment link.</li>
+    <li>Look up an existing order's status for the customer who placed it.</li>
+    <li>Raise a support ticket for wrong items, damage, delays, exchanges, or a request to
+        speak to a human — and alert you on WhatsApp the moment it happens.</li>
+    <li>Alert you for bulk enquiries above your configured quantity threshold.</li>
+    <li>Re-engage a customer who went quiet mid-conversation.</li>
+    <li>Reply in Tanglish to a customer who writes in Tanglish, for the whole conversation.</li>
+  </ul>
+
+  <h3>1.3 What it deliberately will not do</h3>
+  <ul>
+    <li>It will not promise a refund, a discount, or a specific resolution to a complaint —
+        it logs a ticket and tells the customer the team will follow up.</li>
+    <li>It will not invent a tracking number that does not exist yet.</li>
+    <li>It will not share an order's details with a WhatsApp number that did not place it.</li>
+    <li>It will not answer from an uploaded document if the document does not actually cover
+        the question — it falls back to answering normally.</li>
+  </ul>
+
+  <h3>1.4 How a single customer message gets answered</h3>
+  <p>Understanding this order matters, because it explains <b>why your corrections take effect
+     the way they do</b>. The bot tries the cheapest, most reliable route first and only falls
+     through to the AI model when it has to.</p>
+
+  <div class="flow">  Customer message arrives on WhatsApp
+            │
+            ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ 1. Your Knowledge Hub answer  (Teach tab)               │  ← highest priority
+  │    Strong keyword match → replied instantly, no AI      │
+  └─────────────────────────────────────────────────────────┘
+            │  no strong match
+            ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ 2. Built-in FAQ  (14 standard topics, EN + Tanglish)     │
+  │    Only when the chat is idle → replied instantly        │
+  └─────────────────────────────────────────────────────────┘
+            │  not an FAQ
+            ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ 3. Shortcuts:  "M size 2"  ·  "2 M 5"  ·  "yes"          │
+  │    Read directly as cart / confirmation, no AI           │
+  └─────────────────────────────────────────────────────────┘
+            │  not a shortcut
+            ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ 4. AI assistant                                          │
+  │    + your soft-matching Knowledge Hub answers            │
+  │    + top 3 relevant chunks from documents / website      │
+  │    + tools: search products, cart, address, order,       │
+  │             order lookup, support ticket, escalate       │
+  └─────────────────────────────────────────────────────────┘
+            │
+            ▼
+        Reply sent back to the customer</div>
+
+  <div class="box gold">
+    <span class="bt">The single most important consequence</span>
+    A <b>Knowledge Hub answer beats everything else</b>, including the built-in FAQ. If the bot
+    is saying something wrong, teaching it the right answer in the Teach tab overrides the old
+    behaviour immediately — no restart, no developer.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 2 ══════════════════════════ -->
+<section class="page-break">
+  <h2>2 · Signing In to the Admin Console</h2>
+
+  <h3>2.1 Where to open it</h3>
+  <table>
+    <tr><th style="width:32%">Address</th><th>When to use it</th></tr>
+    <tr><td><b>Your Vercel URL</b><br><span class="kv">e.g. <code>https://aurax-admin.vercel.app</code></span></td>
+        <td>The normal, everyday address. Fastest, and always up to date.</td></tr>
+    <tr><td><b><code>http://&lt;server&gt;:3000/admin</code></b></td>
+        <td>The backup copy served by the bot itself. Use it if the Vercel address is down.
+            It can be slightly older than the main one.</td></tr>
+  </table>
+  <p>Both work on a phone as well as a desktop. On a phone the sidebar is hidden behind the
+     <b>☰</b> button in the top-left.</p>
+
+  <h3>2.2 Signing in</h3>
+  <div class="step"><div class="num">1</div><div class="txt">Open the address. You will see the <b>AURAX Admin</b> sign-in card.</div></div>
+  <div class="step"><div class="num">2</div><div class="txt">Type your <b>team password</b> and press Enter or click <b>Sign in</b>.</div></div>
+  <div class="step"><div class="num">3</div><div class="txt">You land on the <b>Monitor</b> page. Your team name appears at the bottom of the sidebar.</div></div>
+
+  <p>There are two passwords, and which one you use decides which team the session is tagged as:</p>
+  <table>
+    <tr><th style="width:26%">Password</th><th style="width:22%">Signs you in as</th><th>Access</th></tr>
+    <tr><td><code>AURAX_TEAM_PASSWORD</code></td><td>Aurax Team</td><td>Full access to all four sections.</td></tr>
+    <tr><td><code>TESTING_TEAM_PASSWORD</code></td><td>Testing Team</td><td>Identical access — the tag exists so you know who is signed in, not to restrict anything.</td></tr>
+  </table>
+
+  <div class="box warn">
+    <span class="bt">Treat these passwords like the store's keys</span>
+    Anyone who signs in can read every customer conversation, see phone numbers, unlink your
+    WhatsApp number, and change what the bot says. Share them only with people who need them,
+    and ask the developer to change them when someone leaves the team.
+  </div>
+
+  <div class="box note">
+    <span class="bt">Why you sometimes get signed out</span>
+    Sign-in sessions are held in the server's memory. Whenever the bot server restarts — a
+    deploy, a reboot, a crash recovery — every signed-in session ends and everyone must sign in
+    again. This is normal and is not a sign of a problem.
+  </div>
+
+  <h3>2.3 The sidebar</h3>
+  <table>
+    <tr><th style="width:24%">Item</th><th>What it is</th></tr>
+    <tr><td><b>📊 Monitor</b> <span class="tag g">live</span></td>
+        <td>Live health of the bot: requests, tokens, active chats, API keys, server log.</td></tr>
+    <tr><td><b>💬 WhatsApp</b></td>
+        <td>Connect or disconnect the WhatsApp number the bot replies from.</td></tr>
+    <tr><td><b>🧠 Knowledge Hub</b> <span class="tag r">3</span></td>
+        <td>Teach answers, add documents and websites, review mistakes. A <b>red number</b>
+            means that many questions are waiting for you to write an answer.</td></tr>
+    <tr><td><b>🎫 Support Tickets</b> <span class="tag r">2</span></td>
+        <td>After-sales issues. A <b>red number</b> is the count of open tickets awaiting your team.</td></tr>
+    <tr><td><b>Sign out</b></td>
+        <td>Ends your session on this device. Always use it on a shared or public computer.</td></tr>
+  </table>
+  <p>Both red badges refresh every 30 seconds, on whichever page you are on.</p>
+</section>
+
+<!-- ══════════════════════════ 3 ══════════════════════════ -->
+<section class="page-break">
+  <h2>3 · Monitor — Watching the Bot Work</h2>
+  <p class="lede">
+    The Monitor page is your instrument panel. Nothing here is a setting — it is all read-only.
+    Statistics refresh every 5 seconds and the server log every 2.5 seconds.
+  </p>
+
+  <h3>3.1 The four tiles at the top</h3>
+
+  <div class="ui"><div class="h">🖧 API Requests</div><div class="b">
+    <p>Total AI requests made since the bot last started, split into <b>success</b> and
+       <b>errors</b> underneath.</p>
+    <p><b>Read it as:</b> a few errors alongside many successes is normal — the bot retries and
+       switches providers automatically. Errors climbing while successes stay flat means every
+       provider is failing; check the server log and the key list.</p>
+  </div></div>
+
+  <div class="ui"><div class="h">🧮 Tokens Used</div><div class="b">
+    <p>Total text volume processed across all AI providers since restart. Tokens are how AI usage
+       is billed and rate-limited — roughly one token per ¾ of a word.</p>
+    <p><b>Read it as:</b> your cost and quota meter. A sudden jump without a matching jump in
+       chats usually means long conversations, not more customers.</p>
+  </div></div>
+
+  <div class="ui"><div class="h">💬 Active Chats</div><div class="b">
+    <p>How many customer conversations are currently held in memory — people the bot is
+       mid-conversation with.</p>
+  </div></div>
+
+  <div class="ui"><div class="h">🧠 Active Provider</div><div class="b">
+    <p>Which AI service answered most recently, and which of its keys. You may see Groq,
+       Sarvam, Fireworks, OpenAI, OpenRouter or Gemini here.</p>
+    <p><b>Read it as:</b> switching between providers is <b>designed behaviour</b>, not a fault.
+       The bot moves down a fallback chain whenever one provider is busy or out of quota.
+       "None" simply means no AI call has been made since the last restart.</p>
+  </div></div>
+
+  <h3>3.2 Call Traffic &amp; Token Usage</h3>
+  <p>The green-and-red line chart covers the <b>last 24 hours in eight 3-hour blocks</b>. Green is
+     successful calls, red is failed ones. Under it, one bar per provider shows how much of its
+     assumed allowance has been consumed.</p>
+  <div class="box note">
+    <span class="bt">What the provider bars really mean</span>
+    Those percentages are measured against a built-in reference allowance per provider, not a
+    live reading from the provider's own billing. Use them to compare providers against each
+    other and to spot an unusual spike — not as an exact bill.
+  </div>
+
+  <h3>3.3 API Keys &amp; Cooldowns</h3>
+  <p>One row per key the bot holds, named <code>provider · Key #0</code>, <code>#1</code> and so on.</p>
+  <table>
+    <tr><th style="width:30%">Indicator</th><th>Meaning</th></tr>
+    <tr><td><span class="tag g">Active</span></td><td>The key is available for use right now.</td></tr>
+    <tr><td><span class="tag y">Cooldown 42m 10s</span></td>
+        <td>That key hit its daily or per-minute limit. The bot has parked it and is using the
+            others. It comes back automatically when the timer runs out — <b>no action needed</b>.</td></tr>
+    <tr><td><b>Green dot</b> beside the name</td><td>This is the key that served the most recent call.</td></tr>
+  </table>
+  <p><b>When to worry:</b> only when <i>every</i> key of <i>every</i> provider shows a cooldown at
+     the same time. Then customers are getting the "we're getting a lot of messages" reply, and
+     their questions are being queued for automatic retry.</p>
+
+  <h3>3.4 Active Chat Sessions</h3>
+  <table>
+    <tr><th style="width:20%">Column</th><th>What it tells you</th></tr>
+    <tr><td><b>Customer</b></td><td>The customer's WhatsApp number.</td></tr>
+    <tr><td><b>State</b></td>
+        <td><span class="tag b">IDLE</span> browsing or chatting ·
+            <span class="tag y">COLLECTING_ADDRESS</span> the bot is taking their address ·
+            <span class="tag g">CONFIRMING_ORDER</span> one "yes" away from an order.</td></tr>
+    <tr><td><b>Language</b></td><td>English or Tanglish. Locked for the whole conversation on first contact.</td></tr>
+    <tr><td><b>Cart</b></td><td>What they are about to buy — quantity, product, size. The cart holds one product at a time.</td></tr>
+    <tr><td><b>Escalate</b></td><td><span class="tag r">Alert</span> means this chat needs a human. You will also have had a WhatsApp alert.</td></tr>
+    <tr><td><b>Last active</b></td><td>How long since their last message.</td></tr>
+  </table>
+  <div class="box tip">
+    <span class="bt">The most valuable habit on this page</span>
+    Scan for rows stuck in <b>COLLECTING_ADDRESS</b> or <b>CONFIRMING_ORDER</b> with a "last
+    active" of an hour or more. That is a customer who nearly bought and stopped. The bot will
+    nudge them automatically after 3 hours — but a personal message from you converts far better.
+  </div>
+
+  <h3>3.5 Server console</h3>
+  <p>The dark panel at the bottom is the live server log — the last 250 lines, auto-scrolling.
+     Grey is informational, amber is a warning, red is an error. Scroll up and it stops
+     following so you can read; scroll back to the bottom and it resumes.</p>
+  <p><b>Lines worth recognising:</b></p>
+  <table>
+    <tr><th style="width:34%">Line starts with</th><th>Meaning</th></tr>
+    <tr><td><code>[Tokens] &lt;provider&gt; …</code></td><td>A successful AI call, with its token counts. Routine.</td></tr>
+    <tr><td><code>[Retrieval Service] …</code></td><td>Something about your uploaded documents or crawled website.</td></tr>
+    <tr><td><code>[Knowledge Service] …</code></td><td>Something about your taught Q&amp;A answers.</td></tr>
+    <tr><td><code>[Diagnose] …</code></td><td>The half-hourly scan that finds questions the bot failed to answer.</td></tr>
+    <tr><td>Anything red and repeating</td><td>Copy the line and send it to your developer. That is the useful thing to report.</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════ 4 ══════════════════════════ -->
+<section class="page-break">
+  <h2>4 · WhatsApp — Connecting the Number</h2>
+  <p class="lede">
+    This page links a real WhatsApp account to the bot. Whatever number is linked here is the
+    number your customers message, and every message it receives is answered by Aura.
+  </p>
+
+  <h3>4.1 The status badge</h3>
+  <table>
+    <tr><th style="width:28%">Badge</th><th>Meaning</th><th style="width:32%">What to do</th></tr>
+    <tr><td><span class="tag g">Connected &amp; active</span></td><td>The bot is live and answering customers.</td><td>Nothing.</td></tr>
+    <tr><td><span class="tag y">Scan QR code</span></td><td>Waiting for a phone to pair with it.</td><td>Scan it — see 4.2.</td></tr>
+    <tr><td><span class="tag b">Connecting…</span></td><td>Starting up or reconnecting.</td><td>Wait about 30 seconds.</td></tr>
+    <tr><td><span class="tag r">Disconnected</span></td><td>Not linked to any number. <b>Customers are not being answered.</b></td><td>Wait for the QR, then pair.</td></tr>
+  </table>
+
+  <h3>4.2 Pairing a number for the first time</h3>
+  <div class="step"><div class="num">1</div><div class="txt">Wait for the page to show <b>Scan QR code</b> and display the QR image.</div></div>
+  <div class="step"><div class="num">2</div><div class="txt">On the phone that owns the business number, open <b>WhatsApp</b>.</div></div>
+  <div class="step"><div class="num">3</div><div class="txt">Tap <b>Menu</b> (Android) or <b>Settings</b> (iPhone) → <b>Linked devices</b> → <b>Link a device</b>.</div></div>
+  <div class="step"><div class="num">4</div><div class="txt">Point the phone at the QR code on screen.</div></div>
+  <div class="step"><div class="num">5</div><div class="txt">The badge turns green and a <b>✓</b> replaces the QR. The bot is live.</div></div>
+
+  <div class="box warn">
+    <span class="bt">The QR code expires</span>
+    If it has been on screen a while and scanning does nothing, wait — the page refreshes every
+    2.5 seconds and a fresh code appears on its own. Scan the new one.
+  </div>
+
+  <div class="box tip">
+    <span class="bt">Unread chats already on the phone WILL be answered</span>
+    If you connect a number with, say, 1,000 unread conversations sitting on it, the bot finds
+    every one where the customer is still waiting for a reply and answers them — recent ones
+    straight away, older ones gradually over the following hours.
+    <br><br>
+    You will get a WhatsApp summary within a minute of connecting telling you how many were
+    found. Nothing is discarded. See section 8.7 for exactly how it is paced.
+  </div>
+
+  <h3>4.3 The linked-account panel</h3>
+  <p>Once connected, the page shows exactly which account is paired. This exists so you never
+     have to check "Linked devices" on every handset in the shop to find out which phone is
+     running the bot.</p>
+  <table>
+    <tr><th style="width:32%">Field</th><th>What it shows</th></tr>
+    <tr><td><b>Linked number</b></td><td>The WhatsApp number customers are messaging, e.g. <code>+91 98765 43210</code>.</td></tr>
+    <tr><td><b>Account name</b></td><td>The WhatsApp profile name on that account.</td></tr>
+    <tr><td><b>Device</b></td><td>The phone's platform (Android, iPhone).</td></tr>
+    <tr><td><b>Linked since</b></td><td>How long the current session has been connected.</td></tr>
+  </table>
+  <p>This panel appears <b>only while connected</b>. It is deliberately hidden when the badge is
+     red, so a stale number can never sit next to a "Disconnected" badge and mislead you.</p>
+
+  <h3>4.4 🔌 Log out this number</h3>
+  <p>Unlinks the phone from the bot. Use it when moving the bot to a different number, or if you
+     suspect the session has been compromised.</p>
+  <div class="box warn">
+    <span class="bt">This stops the bot answering customers</span>
+    From the moment you confirm until someone scans a new QR code, <b>every incoming customer
+    message goes unanswered</b>. The confirmation dialog names the exact number so you cannot
+    unlink the wrong one by accident. Do it at a quiet hour, and have the new phone in hand.
+  </div>
+  <p><b>What happens when you click it:</b></p>
+  <ul>
+    <li>A confirmation appears naming the number. Cancel is safe.</li>
+    <li>The session is revoked on the phone <b>and</b> cleared on the server — the bot cannot
+        silently re-pair the same number afterwards.</li>
+    <li>After about two seconds the bot restarts its connection and a <b>fresh QR code</b> appears
+        on the same page. No server restart is needed.</li>
+    <li>If the unlink fails, the page says so plainly and tells you what is needed — it will not
+        claim a clean unlink that did not happen.</li>
+  </ul>
+
+  <h3>4.5 Safe mode</h3>
+  <p>The grey banner at the bottom of the page is a reminder that <b>safe mode</b> may be on. When
+     the server is configured with a list of tester numbers, the bot replies <b>only</b> to those
+     numbers and silently ignores everyone else.</p>
+  <div class="box warn">
+    <span class="bt">The classic false alarm</span>
+    "The bot is connected but customers get no reply" is almost always safe mode still switched
+    on after testing. It is a server setting, not a button on this page — ask your developer to
+    clear the tester-number list when you go live.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 5 ══════════════════════════ -->
+<section class="page-break">
+  <h2>5 · Knowledge Hub — Teaching the Bot</h2>
+  <p class="lede">
+    This is the section that makes the assistant yours. Everything you save here goes live
+    immediately — no restart, no deploy, no developer. It has three tabs.
+  </p>
+
+  <table>
+    <tr><th style="width:26%">Tab</th><th>Use it to…</th></tr>
+    <tr><td><b>📚 Teach the bot</b></td><td>Write exact answers to exact questions. The most direct and most reliable control you have.</td></tr>
+    <tr><td><b>🗂 Knowledge sources</b></td><td>Upload documents or crawl your website so the bot can read from them.</td></tr>
+    <tr><td><b>🔎 Review mistakes</b></td><td>Read real conversations that went wrong and fix them on the spot.</td></tr>
+  </table>
+
+  <h3>5.1 The "Teach the bot" tab</h3>
+  <p>The form at the top adds or edits one answer. Below it is every answer you have saved.</p>
+
+  <div class="ui"><div class="h">Customer question</div><div class="b">
+    <p>One realistic example of how a customer would ask. This is a <b>label for you</b> — it helps
+       you find the entry later, and it is what appears in the saved list. It is not what the
+       matching is based on.</p>
+    <p><span class="kv">Example: <i>Do you deliver to Sri Lanka?</i></span></p>
+  </div></div>
+
+  <div class="ui"><div class="h">Correct answer</div><div class="b">
+    <p><b>Word for word what the bot should reply.</b> When the match is strong, this text is sent
+       to the customer exactly as written. Write it in the tone you want customers to hear —
+       complete sentences, your own phrasing, emoji if you like.</p>
+    <p>Keep it to a WhatsApp-sized reply. Two or three sentences beats a paragraph.</p>
+  </div></div>
+
+  <div class="ui"><div class="h">Trigger keywords — comma separated</div><div class="b">
+    <p><b>This is the field that actually decides when your answer is used.</b> The question field
+       does not; the keywords do. Getting these right is the whole skill.</p>
+    <p>Two kinds of keyword behave differently:</p>
+    <ul>
+      <li><b>Phrases</b> (two or more words, e.g. <code>sri lanka</code>) are a <b>strong</b> signal.
+          One phrase match is enough for the bot to reply with your answer directly.</li>
+      <li><b>Single words</b> (e.g. <code>international</code>) are a <b>weaker</b> signal. It takes
+          <b>two</b> different single words matching for a direct reply. A single word on its own
+          only nudges the AI toward your answer.</li>
+    </ul>
+    <p><b>Practical rule: give every entry at least one phrase, plus three or four single words.</b></p>
+  </div></div>
+
+  <div class="ui"><div class="h">Language</div><div class="b">
+    <table style="margin:0">
+      <tr><th style="width:30%">Setting</th><th>Use when</th></tr>
+      <tr><td><b>Both</b> (default)</td><td>Almost always. The answer is available to every customer.</td></tr>
+      <tr><td><b>English only</b></td><td>The answer is written in English and would read oddly to a Tanglish customer.</td></tr>
+      <tr><td><b>Tanglish only</b></td><td>The answer is written in Tanglish.</td></tr>
+    </table>
+    <p style="margin-top:2mm">To answer the same question properly in both languages, create
+       <b>two entries</b> — one English-only, one Tanglish-only, each with keywords in its own
+       language. The bot picks the one matching the customer's locked language.</p>
+  </div></div>
+
+  <div class="ui"><div class="h">Active checkbox</div><div class="b">
+    <p>Ticked, the bot uses this answer. Unticked, it is saved but ignored — useful for a seasonal
+       answer (a festival offer, a stock pause) you want to switch back on later rather than
+       retype.</p>
+  </div></div>
+
+  <p><b>💾 Save answer</b> stores it and it is live on the very next customer message. Saving with
+     an empty answer is refused.</p>
+
+  <h4>Reading the saved-answers list</h4>
+  <table>
+    <tr><th style="width:32%">Chip on the card</th><th>Meaning</th></tr>
+    <tr><td><span class="tag r">needs answer</span></td><td>The system found a question the bot failed on and drafted it for you. It is <b>not</b> being used until you write an answer.</td></tr>
+    <tr><td><span class="tag b">asked 4×</span></td><td>How many times that unanswered question has come up. Answer the high numbers first.</td></tr>
+    <tr><td><span class="tag y">from a real chat</span></td><td>You created this from the Review tab.</td></tr>
+    <tr><td><span class="tag y">auto-found</span></td><td>Started as an auto-draft and you have since answered it.</td></tr>
+    <tr><td><span class="tag b">both / english / tanglish</span></td><td>The entry's language setting.</td></tr>
+    <tr><td><span class="tag b">inactive</span></td><td>Saved but switched off.</td></tr>
+  </table>
+  <p><b>Edit</b> reopens the entry in the form at the top. <b>Delete</b> removes it permanently
+     (with a confirmation) and the bot stops using it at once.</p>
+
+  <h3>5.2 The "🗂 Knowledge sources" tab</h3>
+  <p>Where you give the bot material to read: your website, or files you upload. Part 6 covers
+     <i>which</i> to use; this section covers <i>how</i>.</p>
+
+  <h4>🌐 Website</h4>
+  <table>
+    <tr><th style="width:26%">Field</th><th>What to enter</th></tr>
+    <tr><td><b>URL</b></td>
+        <td>The page to start from. <b>Point it at the most specific page that holds the
+            information</b> — <code>https://theaurax.in/shipping-policy</code>, not just
+            <code>https://theaurax.in</code>.</td></tr>
+    <tr><td><b>Max pages</b><br><span class="kv">default 15</span></td>
+        <td>How many pages the crawl may read before stopping. Keeps a crawl from running away.</td></tr>
+    <tr><td><b>Link depth</b><br><span class="kv">default 2</span></td>
+        <td>How many clicks away from the starting page it may travel. <b>0</b> = that one page
+            only. <b>1</b> = it and the pages it links to. <b>2</b> = one step further.</td></tr>
+  </table>
+  <p><b>🌐 Crawl &amp; index</b> starts it. The button reads "Crawling…" while it works — this can
+     take a minute or two. When it finishes you get a message like
+     <i>"Indexed 6 page(s) — 41 chunks."</i></p>
+
+  <div class="box warn">
+    <span class="bt">Depth 2 from the homepage is usually a waste</span>
+    A real crawl of theaurax.in at 15 pages / depth 2 spent its entire budget on product-category
+    grids and empty account pages, and <b>never reached the shipping, returns or about pages</b> —
+    the exact prose the feature exists to index. The crawler follows links in alphabetical order,
+    so category pages consume the budget first.
+    <br><br>
+    <b>Do this instead:</b> crawl your policy pages one at a time at <b>depth 0</b>. Three precise
+    crawls beat one broad one every time.
+  </div>
+
+  <div class="box warn">
+    <span class="bt">Re-crawling the same URL does not replace the old copy</span>
+    It creates a <b>second</b> source, and the bot then searches both — near-identical duplicates
+    competing with each other. <b>Always delete the existing source first</b>, then crawl the URL
+    again.
+  </div>
+
+  <h4>📄 Document</h4>
+  <p>Choose a file and click <b>📄 Upload &amp; index</b>.</p>
+  <table>
+    <tr><th style="width:30%">Requirement</th><th>Detail</th></tr>
+    <tr><td><b>Accepted types</b></td><td>PDF, DOCX, TXT, MD, HTML</td></tr>
+    <tr><td><b>Maximum size</b></td><td>20 MB per file</td></tr>
+    <tr><td><b>Must contain real text</b></td>
+        <td>A <b>scanned or photographed PDF will be rejected</b>. If you can select and copy the
+            text in a PDF reader, it will work; if it is a picture of a page, it will not.
+            Re-export it from Word, or retype it into a TXT file.</td></tr>
+  </table>
+  <p>Uploaded files are read into memory, indexed, and never written to the server's disk.</p>
+
+  <h4>Reading a source card</h4>
+  <table>
+    <tr><th style="width:32%">Chip</th><th>Meaning</th></tr>
+    <tr><td><span class="tag b">website</span> / <span class="tag b">document</span></td><td>Which kind of source it is.</td></tr>
+    <tr><td><span class="tag b">41 chunks</span></td><td>How many searchable pieces it was split into. Roughly one per 900 characters.</td></tr>
+    <tr><td><span class="tag b">118.1 KB</span></td><td>How much text was extracted.</td></tr>
+    <tr><td><span class="tag b">6 pages</span></td><td>Pages crawled, or pages in the PDF.</td></tr>
+    <tr><td><span class="tag g">semantic search</span></td><td><b>Good.</b> The bot understands re-worded questions against this source.</td></tr>
+    <tr><td><span class="tag y">keyword only</span></td><td>The bot can only match this source on the exact words used. It will miss paraphrases.</td></tr>
+  </table>
+  <p><b>Turn off / Turn on</b> takes a source out of use immediately without deleting it — the fastest
+     way to test whether a source is causing bad answers. <b>Delete</b> removes the source and all
+     of its chunks permanently.</p>
+  <p>The <b>Indexed knowledge</b> bar shows total size across all sources. There is no hard limit;
+     the bar is there to give you a sense of scale.</p>
+
+  <div class="box note">
+    <span class="bt">If a "⚠️ Keyword-only matching" warning appears at the top of the tab</span>
+    Semantic search is temporarily unavailable, so anything indexed <i>while it is showing</i>
+    will only ever match on exact words. Wait until it clears, then delete and re-add those
+    sources so they pick up proper semantic indexing.
+  </div>
+
+  <h3>5.3 The "🔎 Review mistakes" tab</h3>
+  <p>A list of real conversations that show a sign of trouble. A chat is flagged when it contains:</p>
+  <ul>
+    <li>an <b>error or fallback reply</b> — the bot said it couldn't process something;</li>
+    <li>a <b>repeated question</b> — the customer asked the same thing twice or more, which almost
+        always means the first answer missed;</li>
+    <li>an <b>abandoned cart</b> — they got partway through buying and stopped.</li>
+  </ul>
+  <p>Each card shows the customer, the reasons it was flagged, and the last few turns of the real
+     conversation. Read them — this is the single best source of ideas for what to teach.</p>
+  <p><b>✏️ Teach the right answer</b> jumps you to the Teach tab with the customer's actual question
+     already filled in and keywords suggested from it. Write the answer, check the keywords, save.
+     <b>This is the core improvement loop of the whole system.</b></p>
+
+  <h3>5.4 The "needs answer" queue and the red badge</h3>
+  <p>Every 30 minutes the server scans conversations for questions the bot stumbled on, and drafts
+     each one as an <b>inactive</b> entry at the top of your Teach tab. The red number on the
+     sidebar is how many are waiting. You also get a WhatsApp ping when new ones appear.</p>
+  <p>Two ways to clear one:</p>
+  <table>
+    <tr><th style="width:26%">Action</th><th>Use when</th><th>Result</th></tr>
+    <tr><td><b>✏️ Answer</b></td><td>It is a real question worth answering.</td>
+        <td>Write the reply and save. It becomes a live answer and the badge drops by one.</td></tr>
+    <tr><td><b>Dismiss</b></td><td>It is noise — a typo, a wrong number, something irrelevant.</td>
+        <td>Permanently removed. <b>It will never be suggested again</b>, even though the old
+            conversation still exists.</td></tr>
+  </table>
+  <div class="box tip">
+    <span class="bt">Use Dismiss freely</span>
+    Dismiss exists precisely so the queue stays meaningful. A queue full of junk you keep
+    scrolling past is a queue you will stop reading. Ten minutes a week keeping it at zero is
+    the highest-value maintenance you can do on this system.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 6 ══════════════════════════ -->
+<section class="page-break">
+  <h2>6 · Choosing the Right Knowledge Option</h2>
+  <p class="lede">
+    Three ways to give the bot information, and picking the wrong one is the most common reason
+    people conclude "it doesn't work". This part exists to make the choice obvious.
+  </p>
+
+  <h3>6.1 The three options at a glance</h3>
+  <div class="pick">
+    <div class="a">
+      <div class="hd">📚 Teach (Q&amp;A)</div>
+      <b>Exact answers, word for word</b>
+      <ul>
+        <li>Highest priority — beats everything</li>
+        <li>Replies instantly, no AI involved</li>
+        <li>You control the exact wording</li>
+        <li>One question at a time</li>
+        <li>Live the moment you save</li>
+      </ul>
+    </div>
+    <div class="b2">
+      <div class="hd">📄 Document</div>
+      <b>Reference material to read from</b>
+      <ul>
+        <li>Feeds the AI, doesn't override it</li>
+        <li>Handles many facts in one upload</li>
+        <li>Wording is the AI's, not yours</li>
+        <li>Needs selectable text</li>
+        <li>Best for tables and lists</li>
+      </ul>
+    </div>
+    <div class="c">
+      <div class="hd">🌐 Website</div>
+      <b>Your live pages, indexed</b>
+      <ul>
+        <li>Same behaviour as a document</li>
+        <li>No file to prepare</li>
+        <li>Only as good as the page's text</li>
+        <li>Does <b>not</b> auto-refresh</li>
+        <li>Best for existing policy pages</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>6.2 The decision tree</h3>
+  <div class="flow">  START: what do you want the bot to know?
+       │
+       ├─ Is there ONE right answer you want said a specific way?
+       │  (a price, a policy, a phone number, a promise)
+       │        │
+       │        └─► ✅ TEACH TAB (Q&A).   Nothing else guarantees the wording.
+       │
+       ├─ Is it many facts — a table, a chart, a long policy?
+       │        │
+       │        ├─ Does a page on your site already contain it,
+       │        │  written as readable text?
+       │        │        │
+       │        │        ├─ YES ─► ✅ WEBSITE CRAWL of that exact page (depth 0)
+       │        │        │
+       │        │        └─ NO  ─► ✅ DOCUMENT UPLOAD
+       │        │
+       │        └─ Is it in a spreadsheet / image / scan?
+       │                 └─► Convert to PDF or DOCX with real text, then UPLOAD
+       │
+       ├─ Is it changing this week (an offer, a stock pause)?
+       │        └─► ✅ TEACH TAB. Easy to edit, easy to switch off.
+       │
+       └─ Did the bot get something WRONG in a real chat?
+                └─► ✅ REVIEW TAB → "Teach the right answer"</div>
+
+  <h3>6.3 When to use each — the full table</h3>
+  <table>
+    <tr><th style="width:34%">You want the bot to…</th><th style="width:22%">Use</th><th>Why</th></tr>
+    <tr><td>Quote the exact COD charge</td><td><b>Teach</b></td><td>A number must be exact. Only Teach guarantees the words sent.</td></tr>
+    <tr><td>Give the correct returns window</td><td><b>Teach</b></td><td>A policy promise. Never leave the wording to the AI.</td></tr>
+    <tr><td>Answer "do you ship to Sri Lanka?"</td><td><b>Teach</b></td><td>A yes/no with consequences. One sentence, said the same way every time.</td></tr>
+    <tr><td>Share the wholesale contact number</td><td><b>Teach</b></td><td>Digits must be perfect.</td></tr>
+    <tr><td>Announce a festival offer for two weeks</td><td><b>Teach</b> (untick Active after)</td><td>Trivial to switch off when it ends.</td></tr>
+    <tr><td>Fix a wrong reply seen in a real chat</td><td><b>Review → Teach</b></td><td>Pre-fills the customer's real words for you.</td></tr>
+    <tr><td>Know a 40-row size chart</td><td><b>Document</b></td><td>Far too many facts for one Q&amp;A. Chunking keeps a table intact.</td></tr>
+    <tr><td>Know a 6-page club-wise price list</td><td><b>Document</b></td><td>Many facts, structured, changes rarely.</td></tr>
+    <tr><td>Explain a long customization process</td><td><b>Document</b></td><td>The AI can summarise the relevant part for each customer.</td></tr>
+    <tr><td>Know the fabric / GSM / care details</td><td><b>Document</b></td><td>Detail-heavy reference nobody wants to retype as Q&amp;As.</td></tr>
+    <tr><td>Use your existing shipping-policy page</td><td><b>Website</b> (depth 0)</td><td>Already written and public — no file to make.</td></tr>
+    <tr><td>Use your About / brand story page</td><td><b>Website</b> (depth 0)</td><td>Background prose, no exact wording needed.</td></tr>
+    <tr><td>Use your FAQ page</td><td><b>Website</b> (depth 0)</td><td>One crawl covers many questions at once.</td></tr>
+    <tr><td>Know current prices and stock</td><td><b>None — it already does</b></td><td>Live from WooCommerce. Never put prices in a document; it will go stale and conflict.</td></tr>
+  </table>
+
+  <h3>6.4 Website crawl or document upload? The five-question test</h3>
+  <table>
+    <tr><th style="width:52%">Question</th><th style="width:24%">Yes →</th><th style="width:24%">No →</th></tr>
+    <tr><td>Is the information already on a public page of your site?</td><td>Website</td><td>Document</td></tr>
+    <tr><td>Is that page mostly readable paragraphs, not a grid of product tiles?</td><td>Website</td><td>Document</td></tr>
+    <tr><td>Will the page's wording change often?</td><td>Document<sup>*</sup></td><td>Website</td></tr>
+    <tr><td>Is it a table, chart, or list of measurements?</td><td>Document</td><td>Either</td></tr>
+    <tr><td>Is it internal — not published on the website at all?</td><td>Document</td><td>Website</td></tr>
+  </table>
+  <p><span class="kv"><sup>*</sup> Neither option updates itself. But a document you control is easier
+     to re-upload deliberately than a page that quietly changed under you without anyone
+     re-crawling it.</span></p>
+
+  <div class="box warn">
+    <span class="bt">Neither documents nor website crawls refresh automatically</span>
+    An indexed source is a <b>snapshot taken the moment you added it</b>. Edit the page on your
+    website, and the bot keeps answering from the old text until someone deletes the source and
+    crawls it again. Put a reminder in your calendar whenever you change a policy page.
+  </div>
+
+  <h3>6.5 Twelve real scenarios</h3>
+  <table>
+    <tr><th style="width:44%">Situation</th><th style="width:20%">Do this</th><th>Notes</th></tr>
+    <tr><td>"COD charges keep being answered wrong."</td><td><b>Teach</b></td><td>Keywords: <code>cod charge, cash on delivery, cod fee, cod, charges</code></td></tr>
+    <tr><td>"We just started shipping to Nepal."</td><td><b>Teach</b></td><td>Add the entry; also delete any older entry that said India-only.</td></tr>
+    <tr><td>"Customers keep asking for the size chart."</td><td><b>Document</b></td><td>Upload the chart as a real-text PDF or DOCX.</td></tr>
+    <tr><td>"Our shipping policy page is already detailed."</td><td><b>Website</b>, depth 0</td><td>Crawl that exact URL, not the homepage.</td></tr>
+    <tr><td>"We changed the returns window from 7 to 10 days."</td><td><b>Teach</b> + re-crawl</td><td>Teach it first so it is right today, then delete and re-crawl the policy page.</td></tr>
+    <tr><td>"The bot mixes up two similar club jerseys."</td><td><b>Neither</b></td><td>That is product search, not knowledge. Fix the product names/tags in WooCommerce and re-sync.</td></tr>
+    <tr><td>"It quotes an old price."</td><td><b>Delete the source</b></td><td>A price got indexed from a document or old page. Remove it — live prices come from WooCommerce.</td></tr>
+    <tr><td>"We want a Tanglish reply for delivery time."</td><td><b>Teach</b> ×2</td><td>One entry Tanglish-only with Tanglish keywords, one English-only.</td></tr>
+    <tr><td>"Diwali offer for two weeks."</td><td><b>Teach</b></td><td>Untick <b>Active</b> when it ends instead of deleting.</td></tr>
+    <tr><td>"Customers ask about washing the jersey."</td><td><b>Check first</b></td><td>Jersey care is already a built-in FAQ. Only teach an entry if the built-in answer is wrong for you.</td></tr>
+    <tr><td>"We have a 30-page brand deck."</td><td><b>Neither</b></td><td>Marketing decks are slide fragments — they index badly. Extract the 5 useful facts into Q&amp;As.</td></tr>
+    <tr><td>"Bot said something we can't stand behind."</td><td><b>Review → Teach</b>, immediately</td><td>Highest priority. Your answer overrides everything from the next message onward.</td></tr>
+  </table>
+
+  <h3>6.6 Mistakes to avoid</h3>
+  <table>
+    <tr><th style="width:44%">Mistake</th><th>What goes wrong</th></tr>
+    <tr><td>Crawling the homepage at depth 2 and expecting policies</td><td>The budget is eaten by category grids and account pages. Crawl the policy page itself at depth 0.</td></tr>
+    <tr><td>Re-crawling a URL without deleting the old source</td><td>Two near-identical copies compete in search. Delete first, always.</td></tr>
+    <tr><td>Uploading a scanned or photographed PDF</td><td>Rejected — there is no text in it, only an image. Re-export or retype.</td></tr>
+    <tr><td>Putting prices or stock in a document</td><td>It will contradict the live catalogue the day something changes.</td></tr>
+    <tr><td>One keyword per Q&amp;A entry</td><td>A single word only nudges the AI. Give a phrase plus three or four words.</td></tr>
+    <tr><td>Very generic keywords like <code>jersey</code> or <code>order</code></td><td>Fires on almost every message and hijacks unrelated conversations.</td></tr>
+    <tr><td>Trusting a document for a promise you must honour</td><td>The AI paraphrases documents. Promises belong in the Teach tab.</td></tr>
+    <tr><td>Uploading everything "just in case"</td><td>More weak material makes it harder for the right chunk to win. Add deliberately.</td></tr>
+    <tr><td>Never opening the Review tab</td><td>The system finds your problems for you, but only if someone reads them.</td></tr>
+  </table>
+
+  <div class="box gold">
+    <span class="bt">If you remember one paragraph from this manual</span>
+    <b>Anything you must say exactly — a price, a policy, a promise, a phone number — goes in the
+    Teach tab.</b> Documents and website crawls are for background knowledge the AI may summarise
+    in its own words. When in doubt, teach it.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 7 ══════════════════════════ -->
+<section class="page-break">
+  <h2>7 · Support Tickets — After-Sales</h2>
+  <p class="lede">
+    When a customer has a problem the bot cannot solve, it raises a ticket and alerts you on
+    WhatsApp straight away. This page is the shared list your team works from. It refreshes
+    every 10 seconds.
+  </p>
+
+  <h3>7.1 How a ticket gets created</h3>
+  <p>The bot raises one on its own when a customer reports an after-sales issue. Before doing so
+     it apologises, collects their <b>name</b>, the <b>order ID</b> and a <b>short description</b>,
+     and asks for a <b>photo</b> when the issue is a wrong, damaged or misprinted item. Then it:</p>
+  <ul>
+    <li>creates the ticket with a reference like <code>TKT-1043</code>;</li>
+    <li>sends you the full details on WhatsApp immediately, photo included;</li>
+    <li>gives the customer the reference number and the support email;</li>
+    <li>promises only that the team will follow up — <b>never</b> a refund or a specific outcome.</li>
+  </ul>
+
+  <h3>7.2 The four tiles</h3>
+  <table>
+    <tr><th style="width:26%">Tile</th><th>Meaning</th></tr>
+    <tr><td><b>🎫 Total Tickets</b></td><td>Every ticket ever raised.</td></tr>
+    <tr><td><b>📬 Open</b></td><td>Awaiting your team. This is the number on the sidebar badge.</td></tr>
+    <tr><td><b>✅ Resolved</b></td><td>Closed out.</td></tr>
+    <tr><td><b>📷 With Photos</b></td><td>Tickets where the customer sent an image — already forwarded to you on WhatsApp.</td></tr>
+  </table>
+
+  <h3>7.3 The ticket table</h3>
+  <table>
+    <tr><th style="width:20%">Column</th><th>What it shows</th></tr>
+    <tr><td><b>Ticket</b></td><td>The reference the customer was given. Use it when you call them back.</td></tr>
+    <tr><td><b>Customer</b></td><td>Name, WhatsApp number, and email if collected.</td></tr>
+    <tr><td><b>Issue</b></td><td>The category — see below.</td></tr>
+    <tr><td><b>Order</b></td><td>The order number, or <b>—</b> if the customer could not give one.</td></tr>
+    <tr><td><b>Photo</b></td><td>📷 means an image came with it, already sent to your WhatsApp.</td></tr>
+    <tr><td><b>Details</b></td><td>The problem in the customer's own words.</td></tr>
+    <tr><td><b>Created</b></td><td>How long ago it was raised.</td></tr>
+    <tr><td><b>Action</b></td><td><b>Resolve</b>, or <b>Reopen</b> if already resolved.</td></tr>
+  </table>
+
+  <h4>Issue types</h4>
+  <table>
+    <tr><th style="width:30%">Label</th><th>Meaning</th><th style="width:22%">Priority</th></tr>
+    <tr><td><span class="tag r">Wrong item</span></td><td>They received a different product.</td><td>Urgent</td></tr>
+    <tr><td><span class="tag r">Damaged</span></td><td>Arrived torn, stained or defective.</td><td>Urgent</td></tr>
+    <tr><td><span class="tag r">Missing package</span></td><td>Marked delivered but not received.</td><td>Urgent</td></tr>
+    <tr><td><span class="tag y">Delayed delivery</span></td><td>Taking longer than expected.</td><td>Same day</td></tr>
+    <tr><td><span class="tag y">Wrong customization</span></td><td>Wrong name or number printed.</td><td>Same day</td></tr>
+    <tr><td><span class="tag y">Exchange</span></td><td>Size exchange request.</td><td>Same day</td></tr>
+    <tr><td><span class="tag g">Talk to human</span></td><td>Explicitly asked for a person.</td><td>Fast — they are already impatient</td></tr>
+    <tr><td><span class="tag b">Other</span></td><td>Anything else.</td><td>Read it</td></tr>
+  </table>
+
+  <h3>7.4 Working the list</h3>
+  <ul>
+    <li><b>Open / Resolved / All</b> switches the view. It opens on <b>Open</b> — your work queue.</li>
+    <li>The <b>search box</b> filters by name, phone, ticket ID, order number, issue type or any
+        word in the description. Searching the order number is the fast way to find a returning
+        customer's history.</li>
+    <li><b>Resolve</b> marks it done and removes it from the Open list and the sidebar badge.
+        <b>Mark it resolved only after you have actually contacted the customer</b> — the bot does
+        not tell them anything when you click it.</li>
+    <li><b>Reopen</b> puts a resolved ticket back in the queue if the customer comes back about it.</li>
+  </ul>
+
+  <div class="box tip">
+    <span class="bt">A working rhythm</span>
+    Clear <b>Wrong item</b>, <b>Damaged</b> and <b>Missing package</b> first — they cost you a
+    customer if they sit. Then <b>Talk to human</b>: that customer is already frustrated and the
+    bot has told them a person is coming. Aim to end each day with the sidebar badge at zero.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 8 ══════════════════════════ -->
+<section class="page-break">
+  <h2>8 · What the Bot Does on Its Own</h2>
+  <p class="lede">
+    Nothing in this part needs managing. It is here so that when a customer forwards you a
+    screenshot, you know exactly why the bot said what it said.
+  </p>
+
+  <h3>8.1 Instant answers</h3>
+  <p>Four kinds of message are handled in code, with no AI call at all — which is why they are
+     fast, consistent and never invent anything:</p>
+  <table>
+    <tr><th style="width:32%">Message</th><th>Handled as</th></tr>
+    <tr><td>A question matching one of your taught answers</td><td>Your answer, sent word for word.</td></tr>
+    <tr><td>A standard question while the chat is idle</td><td>The built-in FAQ — 14 topics, English and Tanglish.</td></tr>
+    <tr><td><code>"M size 2"</code>, <code>"1st one, L 3"</code>, <code>"2 M 5"</code>, <code>"XL"</code></td>
+        <td>Read directly as product, size and quantity, and put in the cart.</td></tr>
+    <tr><td><code>"yes"</code>, <code>"confirm"</code>, <code>"seri"</code>, <code>"ok"</code> while confirming</td>
+        <td>The order is placed immediately.</td></tr>
+  </table>
+  <p>The confirmation shortcut only fires when the message is <i>entirely</i> a confirmation.
+     "Yes but change the address" correctly goes to the AI instead.</p>
+
+  <h3>8.2 The order flow</h3>
+  <div class="flow">  Customer asks for a jersey
+        ↓  bot searches the live WooCommerce catalogue
+  Bot shows matching products with price and stock
+        ↓  customer gives size and quantity
+  Cart updated                                  [state: IDLE]
+        ↓  bot asks for the shipping address
+  Address collected                             [state: COLLECTING_ADDRESS]
+        ↓  bot reads the full order back
+  Customer confirms                             [state: CONFIRMING_ORDER]
+        ↓
+  A REAL WooCommerce order is created
+        ↓
+  Customer receives a direct payment link       [state: IDLE]</div>
+  <p>The order appears in WooCommerce exactly like any other. If order creation fails, the bot
+     falls back to sending a branded PDF proforma invoice so the sale is not lost. The cart holds
+     one product at a time — a new product replaces the previous one.</p>
+
+  <h3>8.3 Language</h3>
+  <p>The language is decided from the customer's <b>first</b> message and locked for the whole
+     conversation, so the bot never drifts between English and Tanglish mid-chat. Tanglish
+     conversations are routed to an AI provider trained on code-mixed Indian text; English
+     conversations go to a faster general provider.</p>
+
+  <h3>8.4 Cold-lead follow-up</h3>
+  <p>Every 30 minutes the bot looks for customers who went quiet. Anyone inactive for <b>3 hours
+     or more</b> gets a friendly re-engagement message, mentioning what was in their cart if
+     anything was. <b>Maximum two follow-ups per customer</b> — it will not pester.</p>
+
+  <h3>8.5 When you get pinged on WhatsApp</h3>
+  <table>
+    <tr><th style="width:34%">Alert</th><th>Why</th></tr>
+    <tr><td><b>🎫 New Support Ticket</b></td><td>An after-sales issue was logged. Full details and photo included.</td></tr>
+    <tr><td><b>Bulk order enquiry</b></td><td>Someone asked about a quantity at or above your bulk threshold. Worth a personal reply.</td></tr>
+    <tr><td><b>Escalation</b></td><td>The bot judged that a human should take this conversation over.</td></tr>
+    <tr><td><b>Knowledge gap found</b></td><td>New questions the bot could not answer are waiting in the Teach tab.</td></tr>
+  </table>
+
+  <h3>8.6 When every AI provider is busy</h3>
+  <p>The bot works down a chain of providers and keys automatically. If they are all exhausted at
+     once, the customer gets a polite "we're getting a lot of messages" reply and <b>their question
+     is saved to a retry queue</b>. It is answered automatically once quota frees up — and the
+     queue survives a server restart, so nothing is silently dropped.</p>
+
+  <h3>8.7 Missed messages — nobody is left unanswered</h3>
+  <p>The bot only sees messages that arrive while it is actually connected. On its own, that would
+     mean two groups of customers never got a reply: people who were already sitting unread on the
+     phone when you paired it, and anyone who wrote while the server was restarting or down.</p>
+  <p><b>A catch-up sweep closes both gaps.</b> Every time the bot connects, it checks every chat and
+     finds the ones where the customer spoke last and never got an answer — that is exactly the
+     definition of someone you owe a reply to. Those customers are then answered.</p>
+
+  <table>
+    <tr><th style="width:52%">Situation</th><th>Does the bot reply?</th></tr>
+    <tr><td>A message arrives while the bot is connected and running</td>
+        <td><span class="tag g">Yes</span> — within seconds.</td></tr>
+    <tr><td>Unread chats already on the phone when you paired the bot</td>
+        <td><span class="tag g">Yes</span> — found by the sweep and answered.</td></tr>
+    <tr><td>Messages that arrived while the server was down or disconnected</td>
+        <td><span class="tag g">Yes</span> — found the moment it comes back.</td></tr>
+    <tr><td>A chat where you or a staff member already replied from the phone</td>
+        <td><span class="tag b">No</span> — correctly left alone. The bot only answers where nobody has.</td></tr>
+    <tr><td>A message received but not answerable (all AI providers busy)</td>
+        <td><span class="tag g">Yes</span> — queued and retried automatically. See 8.6.</td></tr>
+  </table>
+
+  <h4>How the catch-up is paced</h4>
+  <p>Answering a thousand-message backlog as fast as possible is the single most reliable way to get
+     a WhatsApp number banned. So missed customers are split into two groups:</p>
+  <table>
+    <tr><th style="width:26%">Group</th><th>When they wrote</th><th>What happens</th></tr>
+    <tr><td><b>Still waiting</b></td><td>Within the last 12 hours</td>
+        <td>Answered right away when the bot reconnects. These people are very likely still
+            interested.</td></tr>
+    <tr><td><b>Older backlog</b></td><td>More than 12 hours ago</td>
+        <td>Answered gradually — roughly two per minute, and only while no live customer is
+            mid-conversation. A 1,000-chat backlog clears in about eight hours.</td></tr>
+  </table>
+
+  <div class="box tip">
+    <span class="bt">Three things that make this safe rather than embarrassing</span>
+    • <b>Old messages are answered as old messages.</b> Anything more than a day late opens by
+      apologising for the delay, rather than replying as if it just arrived.<br>
+    • <b>Live customers always come first.</b> The backlog pauses itself whenever someone is
+      actually chatting, and resumes when the line is clear.<br>
+    • <b>Nobody is answered twice.</b> If a queued customer messages again before their turn
+      comes, the old queued reply is dropped and they are handled as a normal live conversation.
+  </div>
+
+  <div class="box note">
+    <span class="bt">It survives restarts</span>
+    The queue of missed customers is written to the database, not just held in memory. If the
+    server restarts halfway through clearing a backlog, it picks up exactly where it left off —
+    which is the whole point of the feature.
+  </div>
+
+  <p><b>You will be told.</b> Within a minute of the bot connecting you get a WhatsApp message like:
+     <i>"Found 47 customers waiting for a reply — 6 recent, being answered now; 41 older, going out
+     gradually over about 1 hour."</i> A second message confirms when the backlog is fully cleared.</p>
+
+  <div class="box warn">
+    <span class="bt">The one thing still worth doing yourself</span>
+    A very old backlog is answered, but slowly and by a bot. If there are <b>high-value or angry
+    customers</b> in there, message them personally rather than waiting for their turn in the
+    queue. The catch-up guarantees nobody is ignored — it does not replace judgement about who
+    deserves a call.
+  </div>
+
+  <h3>8.8 What happens when many customers message at once</h3>
+  <p>Every customer is processed in parallel, so thirty people messaging together are all understood
+     at the same time — nobody is stuck behind anybody else, and nothing is dropped. The limit is on
+     <b>sending</b>, not thinking.</p>
+  <p>All outgoing messages share one paced queue, because WhatsApp measures behaviour per account,
+     not per chat. Replying to everyone instantly is the clearest possible automation signal and is
+     what gets numbers banned. So replies leave at roughly one every 1.7 seconds.</p>
+
+  <table>
+    <tr><th style="width:30%">Customers messaging at once</th><th>Everyone answered within</th><th>The last person waits</th></tr>
+    <tr><td><b>30</b></td><td>about 51 seconds</td><td>about 51 seconds</td></tr>
+    <tr><td><b>90</b></td><td>about 2 minutes 49 seconds</td><td>about 2 minutes 49 seconds</td></tr>
+  </table>
+  <p><span class="kv">Measured against the live send pacer with the current settings. Roughly 32–35
+     replies per minute either way.</span></p>
+
+  <div class="box note">
+    <span class="bt">Customers see "typing…" the whole time they are waiting</span>
+    The typing indicator starts when their message arrives and only stops when the reply actually
+    goes out. A queued customer sees an active, busy shop rather than silence — which is why a
+    50-second wait during a rush is far less damaging than it sounds.
+  </div>
+
+  <p><b>Where it starts to show:</b> around 30 simultaneous customers the delay is barely noticeable.
+     A reel drop putting 200 or more people on you at once is where the queue becomes visible.
+     Photos cost double, because forwarding the image to you uses a slot as well as the reply, and
+     ticket and escalation alerts share the same queue.</p>
+  <p>If large bursts become routine, the pacing can be raised — but that trades directly against
+     ban risk, so it is a decision for your developer with real evidence from a real spike, not a
+     default to change.</p>
+</section>
+
+<!-- ══════════════════════════ 9 ══════════════════════════ -->
+<section class="page-break">
+  <h2>9 · Your Operating Routine</h2>
+
+  <h3>9.1 Every day — about 5 minutes</h3>
+  <div class="step"><div class="num">1</div><div class="txt"><b>WhatsApp page</b> — confirm the badge is green and the linked number is the right one.</div></div>
+  <div class="step"><div class="num">2</div><div class="txt"><b>Tickets</b> — clear the open queue. Urgent categories first.</div></div>
+  <div class="step"><div class="num">3</div><div class="txt"><b>Knowledge Hub badge</b> — if there is a red number, answer or dismiss those questions.</div></div>
+  <div class="step"><div class="num">4</div><div class="txt"><b>Monitor</b> — glance at the traffic chart. Green rising, red flat is healthy.</div></div>
+
+  <h3>9.2 Every week — about 20 minutes</h3>
+  <div class="step"><div class="num">1</div><div class="txt"><b>Review mistakes tab</b> — read every flagged conversation. Teach an answer for each real gap.</div></div>
+  <div class="step"><div class="num">2</div><div class="txt"><b>Saved answers</b> — skim your entries. Delete anything that is no longer true.</div></div>
+  <div class="step"><div class="num">3</div><div class="txt"><b>Active chats</b> — look for stalled carts and message those customers personally.</div></div>
+  <div class="step"><div class="num">4</div><div class="txt"><b>Knowledge sources</b> — check nothing has drifted out of date since you indexed it.</div></div>
+
+  <h3>9.3 Every month — about 30 minutes</h3>
+  <ul>
+    <li>Re-index any source whose underlying page or file has changed. <b>Delete first, then re-add.</b></li>
+    <li>Check every source still shows <span class="tag g">semantic search</span>. If one says
+        keyword only, delete and re-add it.</li>
+    <li>Ask your developer to run the product sync so the catalogue matches WooCommerce.</li>
+    <li>Read a handful of ordinary, unflagged conversations end to end. Flags catch failures;
+        only reading catches an answer that is technically fine but sounds wrong for your brand.</li>
+  </ul>
+
+  <h3>9.4 Before and after a product launch or reel drop</h3>
+  <table>
+    <tr><th style="width:22%">When</th><th>Do this</th></tr>
+    <tr><td><b>The day before</b></td>
+        <td>Run the product sync so new items are searchable. Teach a Q&amp;A for the launch itself
+            ("when does the new kit drop?"). Confirm WhatsApp is connected.</td></tr>
+    <tr><td><b>During</b></td>
+        <td>Keep the Monitor page open. Expect provider switching and key cooldowns under a
+            traffic spike — that is the system working, not failing.</td></tr>
+    <tr><td><b>The day after</b></td>
+        <td>Review flagged conversations while the traffic is fresh — a launch produces the
+            richest batch of real questions you will ever get. Teach them all.</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════ 10 ══════════════════════════ -->
+<section class="page-break">
+  <h2>10 · Troubleshooting</h2>
+
+  <table>
+    <tr><th style="width:26%">Symptom</th><th style="width:34%">Most likely cause</th><th>What to do</th></tr>
+    <tr><td><b>Customers get no reply at all</b></td>
+        <td>WhatsApp shows Disconnected, or safe mode is still on.</td>
+        <td>Open the WhatsApp page. If red, wait for the QR and re-pair. If green but still
+            silent, safe mode is on — ask your developer to clear the tester-number list.</td></tr>
+    <tr><td><b>Only some people get replies</b></td>
+        <td>Safe mode, almost certainly.</td>
+        <td>The numbers that work are the tester list. Have it cleared.</td></tr>
+    <tr><td><b>The old backlog is being answered slowly</b></td>
+        <td><b>Not a fault.</b> Older missed customers are deliberately dripped out to protect the
+            number from a ban.</td>
+        <td>Expected — roughly two per minute. Message any high-value customers personally instead
+            of waiting for their turn. See section 8.7.</td></tr>
+    <tr><td><b>Replies are slow during a rush</b></td>
+        <td>The send queue is pacing them to protect the number from a ban.</td>
+        <td>Expected. Thirty simultaneous customers all get answered inside about a minute, and
+            they see "typing…" while they wait. Only worth changing if 200+ bursts are routine.</td></tr>
+    <tr><td><b>No "missed messages" summary after a restart</b></td>
+        <td>Either nothing was missed, or catch-up is switched off on the server.</td>
+        <td>No summary means no missed customers, which is good news. If you expect one and it
+            never comes, ask your developer to confirm catch-up is enabled.</td></tr>
+    <tr><td><b>A customer got a reply to a very old message</b></td>
+        <td>Working as designed — the backlog sweep reached them.</td>
+        <td>Nothing to fix. The reply opens by apologising for the delay.</td></tr>
+    <tr><td><b>"We're getting a lot of messages" replies</b></td>
+        <td>Every AI key is in cooldown.</td>
+        <td>Check the key list on Monitor. It recovers on its own; those questions are queued and
+            answered automatically. If it happens daily, you need more capacity — tell your developer.</td></tr>
+    <tr><td><b>The bot ignores an answer I taught</b></td>
+        <td>Keywords too weak, or wrong language setting.</td>
+        <td>Add a two-word phrase keyword plus three or four single words. Confirm <b>Active</b> is
+            ticked and the language is <b>Both</b>.</td></tr>
+    <tr><td><b>A taught answer fires on the wrong questions</b></td>
+        <td>Keywords too generic.</td>
+        <td>Remove broad words like <code>jersey</code>, <code>order</code>, <code>price</code>. Keep
+            distinctive phrases only.</td></tr>
+    <tr><td><b>Uploading a PDF fails</b></td>
+        <td>It is a scan, over 20 MB, or an unsupported type.</td>
+        <td>Try selecting text in a PDF reader — if you can't, it's an image. Re-export from Word
+            or retype into a TXT file.</td></tr>
+    <tr><td><b>Crawl says the site is blocking us</b></td>
+        <td>A security plugin, Cloudflare rule, or maintenance mode.</td>
+        <td>The on-screen message names the cause. It is fixed in WordPress, not here. Maintenance
+            mode is a toggle in wp-admin.</td></tr>
+    <tr><td><b>Crawl finished but the bot still doesn't know it</b></td>
+        <td>The crawl never reached the page with the information.</td>
+        <td>Check the source card's page count. Delete it and crawl the specific policy URL at
+            depth 0.</td></tr>
+    <tr><td><b>A source says "keyword only"</b></td>
+        <td>Semantic search was unavailable when it was indexed.</td>
+        <td>Once the warning at the top of the tab has cleared, delete and re-add the source.</td></tr>
+    <tr><td><b>The bot gives outdated information</b></td>
+        <td>An old source or a stale taught answer.</td>
+        <td>Search your saved answers first and fix or delete. Then check sources — turn one off
+            to test whether it is the culprit.</td></tr>
+    <tr><td><b>Prices quoted are wrong</b></td>
+        <td>A price was indexed from a document or old page.</td>
+        <td>Delete that source. Live prices come from WooCommerce and should never be duplicated
+            into knowledge.</td></tr>
+    <tr><td><b>Signed out unexpectedly</b></td>
+        <td>The server restarted.</td>
+        <td>Sign in again. Normal.</td></tr>
+    <tr><td><b>Console won't load at all</b></td>
+        <td>The bot server is down, or the browser cached an old version.</td>
+        <td>Try the backup address <code>http://&lt;server&gt;:3000/admin</code>. If that also fails,
+            the server is down — contact your developer.</td></tr>
+    <tr><td><b>Red badge count never drops</b></td>
+        <td>Drafts are being answered but new ones keep arriving.</td>
+        <td>Healthy, if the questions are genuinely new. Dismiss the junk so the number stays meaningful.</td></tr>
+    <tr><td><b>Bot mixes up two similar jerseys</b></td>
+        <td>Product naming in WooCommerce, not knowledge.</td>
+        <td>Make the product titles and tags more distinct in WooCommerce and re-sync. No amount
+            of teaching fixes catalogue search.</td></tr>
+  </table>
+
+  <div class="box note">
+    <span class="bt">What to send your developer</span>
+    The <b>exact customer message</b>, the <b>bot's exact reply</b>, the <b>time it happened</b>,
+    and any <b>red lines from the server console</b> around that time. Those four things solve most
+    reports in one pass; "it's not working" does not.
+  </div>
+</section>
+
+<!-- ══════════════════════════ 11 ══════════════════════════ -->
+<section class="page-break">
+  <h2>11 · Technical Reference</h2>
+
+  <h3>11.1 Limits and defaults</h3>
+  <table>
+    <tr><th style="width:46%">Item</th><th>Value</th></tr>
+    <tr><td>Document upload — maximum size</td><td>20 MB per file</td></tr>
+    <tr><td>Document upload — accepted types</td><td>.pdf, .docx, .txt, .md, .html, .htm</td></tr>
+    <tr><td>Website crawl — default / maximum pages</td><td>15 / 100</td></tr>
+    <tr><td>Website crawl — default / maximum depth</td><td>2 / 3</td></tr>
+    <tr><td>Website crawl — scope</td><td>Same origin only, 400 ms delay between pages</td></tr>
+    <tr><td>Text chunk size / overlap</td><td>≈900 characters / 150 characters</td></tr>
+    <tr><td>Chunks injected per customer question</td><td>Top 3, capped at 2,400 characters</td></tr>
+    <tr><td>Relevance threshold for injection</td><td>0.33 (hybrid: 75% meaning, 25% keyword)</td></tr>
+    <tr><td>Q&amp;A direct-answer threshold</td><td>One phrase keyword, or two single-word keywords</td></tr>
+    <tr><td>Built-in FAQ topics</td><td>14, English and Tanglish</td></tr>
+    <tr><td>Cold-lead follow-up</td><td>After 3 hours idle, maximum 2 per customer, checked every 30 min</td></tr>
+    <tr><td>Unanswered-question scan</td><td>20 s after start, then every 30 minutes</td></tr>
+    <tr><td>Server console buffer</td><td>Last 250 lines</td></tr>
+    <tr><td>Refresh rates</td><td>Stats 5 s · logs 2.5 s · WhatsApp 2.5 s · tickets 10 s · badges 30 s</td></tr>
+    <tr><td>Outbound WhatsApp pacing</td><td>≥1.2 s between sends plus random jitter, max 30/minute (ban protection)</td></tr>
+    <tr><td>Measured burst throughput</td><td>32–35 replies/minute · 30 customers ≈ 51 s · 90 customers ≈ 2 min 49 s</td></tr>
+    <tr><td>Missed-message catch-up — recent</td><td>Within 12 hours: answered immediately on reconnect</td></tr>
+    <tr><td>Missed-message catch-up — older backlog</td><td>≈120/hour, no age limit (≈1,000 chats in 8 hours)</td></tr>
+    <tr><td>Duplicate-message protection</td><td>Last 1,000 message IDs remembered, so a resend is never answered twice</td></tr>
+  </table>
+
+  <h3>11.2 Settings that live on the server</h3>
+  <p>These are not editable from the console — they are set in <code>apps/bot/.env</code> by whoever
+     maintains the server.</p>
+  <table>
+    <tr><th style="width:42%">Setting</th><th>Controls</th></tr>
+    <tr><td><code>AURAX_TEAM_PASSWORD</code></td><td>Aurax team console password</td></tr>
+    <tr><td><code>TESTING_TEAM_PASSWORD</code></td><td>Testing team console password</td></tr>
+    <tr><td><code>OWNER_WHATSAPP_NUMBER</code></td><td>Where ticket and escalation alerts are sent</td></tr>
+    <tr><td><code>BULK_ORDER_THRESHOLD</code></td><td>Quantity that triggers a bulk-order alert</td></tr>
+    <tr><td><code>ALLOWED_TEST_NUMBERS</code></td><td><b>Safe mode</b> — if set, only these numbers get replies</td></tr>
+    <tr><td><code>SUPPORT_EMAIL</code> / <code>WHOLESALE_NUMBER</code></td><td>Contact details the bot hands out</td></tr>
+    <tr><td><code>WOOCOMMERCE_*</code></td><td>Connection to the store: products, stock, orders</td></tr>
+    <tr><td><code>ADMIN_ALLOWED_ORIGINS</code></td><td>Which console addresses may talk to the server</td></tr>
+    <tr><td><code>MONGODB_URI</code></td><td>Database. Without it, data is stored in local files</td></tr>
+    <tr><td><code>CATCHUP_ENABLED</code></td><td>Missed-message catch-up. <b>Leave on</b> — off means missed customers are never answered</td></tr>
+    <tr><td><code>CATCHUP_FRESH_HOURS</code></td><td>How recent counts as "still waiting" (default 12)</td></tr>
+    <tr><td><code>CATCHUP_DRAIN_PER_HOUR</code></td><td>Backlog drip rate. Raising it raises ban risk</td></tr>
+  </table>
+
+  <h3>11.3 API endpoints behind the console</h3>
+  <p>Every endpoint except login requires the bearer token issued at sign-in.</p>
+  <table>
+    <tr><th style="width:50%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><code>POST /api/knowledge-hub/login</code></td><td>Sign in, returns a token</td></tr>
+    <tr><td><code>GET /api/whatsapp/status</code></td><td>Connection state, QR, linked account</td></tr>
+    <tr><td><code>POST /api/whatsapp/logout</code></td><td>Unlink the paired number</td></tr>
+    <tr><td><code>GET /api/provider-stats</code></td><td>Monitor tiles, chart, key cooldowns</td></tr>
+    <tr><td><code>GET /api/sessions</code></td><td>Active chat sessions table</td></tr>
+    <tr><td><code>GET /api/logs</code></td><td>Server console buffer</td></tr>
+    <tr><td><code>GET /api/retry-stats</code></td><td>Retry queue and provider status</td></tr>
+    <tr><td><code>GET / POST /api/knowledge</code></td><td>List and save taught answers</td></tr>
+    <tr><td><code>DELETE /api/knowledge/:id</code></td><td>Delete a taught answer</td></tr>
+    <tr><td><code>POST /api/knowledge/:id/dismiss</code></td><td>Permanently dismiss an auto-draft</td></tr>
+    <tr><td><code>GET /api/knowledge/pending-count</code></td><td>Sidebar red badge</td></tr>
+    <tr><td><code>POST /api/knowledge/diagnose</code></td><td>Re-scan for unanswered questions</td></tr>
+    <tr><td><code>GET /api/knowledge/review</code></td><td>Flagged conversations</td></tr>
+    <tr><td><code>GET /api/knowledge/sources</code></td><td>List indexed sources</td></tr>
+    <tr><td><code>POST /api/knowledge/sources/document</code></td><td>Upload and index a file</td></tr>
+    <tr><td><code>POST /api/knowledge/sources/website</code></td><td>Crawl and index a URL</td></tr>
+    <tr><td><code>POST /api/knowledge/sources/:id/toggle</code></td><td>Switch a source on or off</td></tr>
+    <tr><td><code>DELETE /api/knowledge/sources/:id</code></td><td>Delete a source and its chunks</td></tr>
+    <tr><td><code>GET /api/tickets</code></td><td>All tickets</td></tr>
+    <tr><td><code>GET /api/tickets/open-count</code></td><td>Sidebar red badge</td></tr>
+    <tr><td><code>POST /api/tickets/:id/status</code></td><td>Resolve or reopen</td></tr>
+  </table>
+
+  <h3>11.4 The tools the AI can call</h3>
+  <table>
+    <tr><th style="width:34%">Tool</th><th>What it does</th></tr>
+    <tr><td><code>search_products</code></td><td>Searches the live catalogue</td></tr>
+    <tr><td><code>update_cart</code></td><td>Sets product, size and quantity</td></tr>
+    <tr><td><code>set_shipping_address</code></td><td>Records the delivery address</td></tr>
+    <tr><td><code>confirm_order</code></td><td>Creates the real WooCommerce order and payment link</td></tr>
+    <tr><td><code>lookup_order</code></td><td>Reads an order's status, only for the number that placed it</td></tr>
+    <tr><td><code>create_support_ticket</code></td><td>Logs an after-sales ticket and alerts you</td></tr>
+    <tr><td><code>escalate_to_human</code></td><td>Flags the chat for a person and alerts you</td></tr>
+  </table>
+
+  <h3>11.5 Commands for whoever maintains the server</h3>
+  <table>
+    <tr><th style="width:40%">Command</th><th>Purpose</th></tr>
+    <tr><td><code>npm run bot</code></td><td>Start the bot and API</td></tr>
+    <tr><td><code>npm run sync</code></td><td>Refresh the product catalogue from WooCommerce</td></tr>
+    <tr><td><code>npm run review</code></td><td>Flag problem conversations from the command line</td></tr>
+    <tr><td><code>npm run test-agent</code></td><td>Run the AI agent test suite</td></tr>
+    <tr><td><code>npm run test-embeddings</code></td><td>28-check retrieval regression suite</td></tr>
+    <tr><td><code>npm run build-admin</code></td><td>Rebuild the console copy the bot serves at <code>/admin</code></td></tr>
+  </table>
+
+  <h3>11.6 Glossary</h3>
+  <table>
+    <tr><th style="width:26%">Term</th><th>Plain meaning</th></tr>
+    <tr><td><b>Chunk</b></td><td>A ~900-character slice of a document or page. Chunks are what the bot actually searches.</td></tr>
+    <tr><td><b>Semantic search</b></td><td>Matching by meaning, so a re-worded question still finds the right passage.</td></tr>
+    <tr><td><b>Keyword only</b></td><td>Matching by exact words. Works, but misses paraphrases.</td></tr>
+    <tr><td><b>Token</b></td><td>The unit AI usage is measured in — roughly ¾ of a word.</td></tr>
+    <tr><td><b>Provider</b></td><td>The AI service answering. The bot uses several and switches automatically.</td></tr>
+    <tr><td><b>Cooldown</b></td><td>A key resting after hitting its limit. Temporary and self-healing.</td></tr>
+    <tr><td><b>Fallback chain</b></td><td>The ordered list of providers tried until one succeeds.</td></tr>
+    <tr><td><b>Session / state</b></td><td>One customer's ongoing conversation and where it has reached.</td></tr>
+    <tr><td><b>Tanglish</b></td><td>Tamil written in English letters, mixed with English.</td></tr>
+    <tr><td><b>Safe mode</b></td><td>A setting that limits replies to a list of test numbers.</td></tr>
+    <tr><td><b>Escalation</b></td><td>The bot handing a conversation to a human and alerting you.</td></tr>
+    <tr><td><b>Draft / needs answer</b></td><td>A question the bot failed on, queued for you to answer. Never shown to customers.</td></tr>
+  </table>
+
+  <div class="box gold" style="margin-top:8mm">
+    <span class="bt">The three habits that keep this system good</span>
+    <b>1.</b> Clear the tickets queue daily. &nbsp;
+    <b>2.</b> Read the Review tab weekly and teach an answer for every real gap. &nbsp;
+    <b>3.</b> Put anything you must say exactly into the Teach tab, never into a document.
+    <br><br>
+    Everything else in this manual is detail. Those three keep the assistant getting better
+    instead of quietly getting worse.
+  </div>
+
+  <p style="margin-top:10mm; text-align:center; color:var(--faint); font-size:9pt;">
+    Aurax AI Assistant — Complete Operating &amp; Instruction Manual · Version 1.0 · 5 August 2026
+  </p>
+</section>
+
+</body>
+</html>
