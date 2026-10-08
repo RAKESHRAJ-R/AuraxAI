@@ -698,6 +698,50 @@ console.log('\n"M la onnu L la onnu S la onnu" — pick → sizes → another? �
   check('…and the customer gets the order number', /88123/.test(r.replyText), r.replyText);
 }
 
+// ---------------------------------------------------------------- live chat 2026-10-08
+console.log('\nLive chat 2026-10-08 — "Hi new order" placed an order; "enna enna jersey iruku" got "kidaikala"');
+{
+  let placed = 0;
+  const realConfirm = aiService._confirmOrderNow;
+  aiService._confirmOrderNow = async () => { placed++; return { ok: true, created: true, orderId: 78015, checkoutUrl: PAY_URL }; };
+  const restored = () => newCustomer({ language: 'english', cart: [item(GUARDIOLA)], selectedProduct: lockOf(GUARDIOLA),
+    state: 'CONFIRMING_ORDER', addressDetails: ADDRESS, customerProfile: ADDRESS });
+
+  let id = await restored();
+  let r = await ask(id, 'Hi new order', V('confirm_order'));
+  let s = await state(id);
+  check('"Hi new order" read as confirm_order places NO order', placed === 0 && !/78015/.test(r.replyText), r.replyText);
+  check('…it starts fresh instead (old cart set aside, undoable)', s.cart.length === 0 && s.removedCart?.cart?.length === 1 && /start fresh/i.test(r.replyText), r.replyText);
+
+  id = await restored();
+  r = await ask(id, 'order', V('confirm_order'));
+  check('a confirm_order verdict without a real yes asks first, places nothing', placed === 0 && /Shall I place this order/.test(r.replyText) && /YES/.test(r.replyText), r.replyText);
+  r = await ask(id, 'yes', V('confirm_order'));
+  check('…and a real "yes" then places it', placed === 1 && /78015/.test(r.replyText), r.replyText);
+  id = await restored();
+  r = await ask(id, 'seri podunga 👍', V('confirm_order'));
+  check('"seri podunga 👍" still confirms', placed === 2, r.replyText);
+  aiService._confirmOrderNow = realConfirm;
+
+  // The browse questions, under every misreading seen or likely.
+  const MENU = /Namma kitta idhellaam iruku|Here's everything we stock/;
+  const cases = [
+    ["Enna enna jersey's iruku", V('product_search', { search: 'jersey' })],
+    ['Kaatunga', V('list_more')],
+    ["Enna enna jersey's iruku kaatunga", V('other')],
+    ['Jersey enna enna options iruku?', V('product_question')],
+  ];
+  for (const [text, v] of cases) {
+    id = await newCustomer({ lastOrder: { orderId: 78015, checkoutUrl: PAY_URL, at: Date.now() - 60000 } });
+    r = await ask(id, text, v);
+    check(`"${text}" (read as ${v.intent}) → the product menu, no LLM`, MENU.test(r.replyText) && llmCalls === 0 && !/kidaikala/.test(r.replyText), r.replyText.slice(0, 120));
+  }
+  id = await newCustomer();
+  llmScript = [say('Real Madrid jerseys 👇')];
+  r = await ask(id, 'Real Madrid jersey kaatunga', V('product_search', { search: 'Real Madrid jersey' }));
+  check('…but "Real Madrid jersey kaatunga" is still a search, not the menu', !MENU.test(r.replyText), r.replyText.slice(0, 120));
+}
+
 // ---------------------------------------------------------------- discounts
 console.log('\nDiscounts — the website\'s offers, or "none right now" (2026-10-08)');
 {

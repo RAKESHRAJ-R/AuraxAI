@@ -3358,6 +3358,16 @@ ${sessionContext}`;
     return faq ? faqService.answerFor(faq, session.language) : null;
   }
 
+  /** "new order", "start over", "vera order" — a fresh start, never a yes to the old cart. */
+  _wantsFreshStart(text) {
+    return /\b(?:new|another|fresh|next|vera|innoru|pudhu|puthu)\s+(?:order|jersey|purchase|item)\b|\bstart\s+(?:over|again|fresh)\b|\brestart\b|\breset\b|\bfresh\s+ah\b/i.test(String(text || ''));
+  }
+
+  /** The message really says yes — required before an order is placed on the reader's word. */
+  _saysYes(text) {
+    return /\b(yes+|yeah|yep|yup|ya+|ok+|okay|okey|k|sure|confirm\w*|seri|sari|proceed|go\s*ahead|place|book|done|correct|fine|aama|aamaa|haan|podu|pannunga|panunga|paninga)\b|👍|✅|👌/i.test(String(text || ''));
+  }
+
   /**
    * "Any discount / offer?" (2026-10-08, owner's rule): if the website has a discount, share it;
    * otherwise say there is none right now and that we'll tell them when an offer comes. The
@@ -3509,6 +3519,19 @@ ${sessionContext}`;
       if (pointed && !v.size && !v.qty && rest.length > 0 && rest.every(w => GENERIC.test(w)) && /enna|ena|what|details?|info|pathi|patthi|\?/i.test(userQuery)) {
         return reply(this._productDetailReply(session, pointed), 'understood_product_detail', [pointed.productId]);
       }
+    }
+
+    // "Enna enna jersey's iruku" / "Kaatunga" with no team named: show what we sell. The reader
+    // called these a product search, "list more" or "other", the agent had nothing to search,
+    // and the customer got "Andha exact jersey kidaikala" three times (live chat 2026-10-08).
+    const nothingOnScreen = !(session.lastShownProducts?.length) && !session.lastListContext;
+    const openAsk = woocommerceService.asksWhatWeSell(userQuery)
+      || (nothingOnScreen && /^\s*(?:jerseys?\s+)?(?:kaatunga|kaattunga|katunga|kattunga|kaatu|show|show me|show jerseys?|send pics?|list)\s*(?:bro|anna|pls|please)?\s*[!.?]*\s*$/i.test(userQuery));
+    if (openAsk && !several && ['product_search', 'list_more', 'other', 'product_question'].includes(v.intent)
+        && !(v.intent === 'product_search' && v.search && woocommerceService.extractSubject(v.search))
+        && !(v.intent === 'list_more' && !nothingOnScreen)) {
+      const text = this.browseMenuReply(session.language, session);
+      if (text) return reply(text, 'understood_browse');
     }
 
     switch (v.intent) {
@@ -3782,7 +3805,16 @@ ${sessionContext}`;
       case 'size_qty':
       case 'give_address':
       case 'confirm_order': {
-        if (v.intent === 'confirm_order' && session.state === 'CONFIRMING_ORDER') return { confirm: true };
+        if (v.intent === 'confirm_order' && session.state === 'CONFIRMING_ORDER') {
+          // Placing an order cannot be undone, so the reader's word alone is not enough: the
+          // message must actually say yes. "Hi new order" was read as confirm_order and placed
+          // order #78015 off a cart restored from an expired order (live chat 2026-10-08).
+          if (this._wantsFreshStart(userQuery)) return this._routeByUnderstanding(senderId, session, userQuery, { ...v, intent: 'start_over' });
+          if (!this._saysYes(userQuery)) {
+            return reply(this._summaryReply(session, isT ? 'Order confirm pannanuma? 🙂' : 'Shall I place this order? 🙂'), 'state_confirm_check');
+          }
+          return { confirm: true };
+        }
         // A menu pick ("2" after the category menu).
         if (v.intent === 'pick_product' && session.pendingBrowse && Array.isArray(session.browseGroups)) {
           session.pendingBrowse = false;

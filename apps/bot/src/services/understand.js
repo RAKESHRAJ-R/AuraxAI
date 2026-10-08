@@ -83,6 +83,8 @@ Read the message together with the recent chat and the order state. Decide from 
 - "which countries / world cup options?" = list_teams or product_search with category. "list all / ellam kaatunga / innum options" = list_more — MORE of the SAME list on screen. "other teams / vera team / <team> illama vera / vera category / something else" = something DIFFERENT from what is on screen: browse_catalogue (or list_teams), never list_more. "other best sellers / popular jerseys" = product_search with search "best selling". "ithula / athula / idhula vera type / variety" while a product is chosen or named by number = list_more (more like THAT jersey), not browse_catalogue. "9 la enna iruku?" = product_question with pick 9.
 - "purila / puriyala / what are you saying" about the shop's last reply = not_understood (NOT a complaint — nothing went wrong with an order).
 - "discount iruka / any offer / coupon code / sale / offer price / price kammi pannunga / cheaper ah tharuveengala" = topic discount (intent policy_question; product_question if it is about a jersey on screen). Wholesale or bulk price ("20 jerseys ku discount") = topic bulk.
+- "enna enna jersey iruku / jerseys kaatunga / what jerseys do you have / kaatunga" with NO team named = browse_catalogue (never product_search with search "jersey").
+- "new order / hi new order / vera order / start fresh" = start_over — NEVER confirm_order, even right after an order summary. confirm_order needs a real yes ("yes", "ok", "confirm", "seri", "place it").
 - A message can hold several questions; list each one in plain English.
 
 Answer with ONLY a JSON object, no prose, no code fence:

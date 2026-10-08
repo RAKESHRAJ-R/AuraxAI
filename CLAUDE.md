@@ -317,6 +317,16 @@ policy — the link is the only legitimate way. On "5"/"⭐⭐⭐⭐⭐",
 order, `status:'hold'` (wp-admin → Products → Reviews) unless `REVIEW_AUTO_APPROVE=true`. Nothing
 is posted without a rating; "no" posts nothing.
 
+**The reader's verdict is checked against the words where a misread is costly (2026-10-08).**
+Live chat: *"Hi new order"* was read as `confirm_order` and **placed order #78015** off a cart the
+expired-order note had restored; *"Enna enna jersey's iruku"* / *"Kaatunga"* were read as a
+product search / list_more / other, the agent had nothing to search and the customer got
+"Andha exact jersey kidaikala" three times. Now `confirm_order` places an order only when
+`_saysYes()` finds a real yes — "new order"/"start over" (`_wantsFreshStart()`) becomes
+`start_over`, anything else re-shows the summary and asks. An open "what do you sell?" /
+bare "kaatunga" with nothing on screen and no team named shows the browse menu whatever the
+intent. Same pattern as the discount word check below.
+
 **Discounts (2026-10-08, owner's rule).** Topic `discount` in `understand.js` →
 `_discountReply()`: the website's real sale prices from `woocommerceService.currentOffers()`
 (in stock, `price` < `regular_price` — the struck-through price on the site), numbered and set
