@@ -1,0 +1,64 @@
+[
+  {
+    "id": "lead_1783765415126",
+    "userId": "test_user_single_606",
+    "name": "Customer",
+    "phone": "606",
+    "channel": "whatsapp",
+    "cart": [],
+    "address": null,
+    "status": "completed",
+    "requiresEscalation": false,
+    "conversation": [
+      {
+        "role": "user",
+        "content": "Do you have Real Madrid jerseys?"
+      },
+      {
+        "role": "assistant",
+        "content": "We have some amazing Real Madrid jerseys! 🤩 Here are the top 3 results:\n1. **REAL MADRID 11-12 HOME FULL SLEEVE — RONALDO CLR-FS** at ₹490 - available in S, M, L, XL, XXL. You can check it out here: https://theaurax.in/product/real-madrid-11-12-home-full-sleeve-ronaldo/\n2. **REAL MADRID 25-26 THIRD FULL SLEEVE JERSEY — MBAPPE** at ₹470 - available in S, M, L, XL, XXL. You can check it out here: https://theaurax.in/product/real-madrid-25-26-third-full-sleeve-jersey-mbappe/\n3. **REAL MADRID 14-15 THIRD JERSEY — TONI KROOS RN** at ₹450 - available in S, M, L, XL, XXL. You can check it out here: https://theaurax.in/product/real-madrid-14-15-third-jersey-toni-kroos/\nWhich one would you like to buy? Please let me know the size and quantity you're interested in! 🛍️"
+      }
+    ],
+    "createdAt": "2026-07-11T10:23:35.126Z",
+    "updatedAt": "2026-07-11T10:23:35.126Z"
+  },
+  {
+    "id": "lead_1783775421293",
+    "userId": "153308975087656@lid",
+    "name": "Indhu",
+    "phone": "153308975087656",
+    "channel": "whatsapp",
+    "cart": [],
+    "address": null,
+    "status": "completed",
+    "requiresEscalation": false,
+    "conversation": [
+      {
+        "role": "user",
+        "content": "Messi jersey"
+      },
+      {
+        "role": "assistant",
+        "content": "Bro! 🙏 Romba messages varudhu ippo — but ungalukku idhu kandupudichen, wait pannunga:\n\n• *FC BARCELONA 2009 FINAL HOME FULL SLEEVE — MESSI* — ₹470 [XXL-44, S-36, M-38, L-40, XL-42]\n  https://theaurax.in/product/fc-barcelona-2009-final-home-full-sleeve-messi/\n• *ARGENTINA 2006 HOME — MESSI* — ₹430 [XXL-44, S-36, M-38, L-40, XL-42]\n  https://theaurax.in/product/argentina-2006-home-messi/\n• *FC BARCELONA 2008-09 HOME —  MESSI (KIDS)* — ₹330\n  https://theaurax.in/product/fc-barcelona-2008-09-home-messi-kids/\n\nSize & quantity sollunga, naan vandhudhan sort pannuren! 🚀"
+      },
+      {
+        "role": "user",
+        "content": "Hey reply"
+      },
+      {
+        "role": "assistant",
+        "content": "Hey there! 👋 Welcome to Theaurax.in — your go-to store for premium football jerseys! We have all the latest 25/26 season jerseys from top clubs and national teams. What are you looking for today? A specific team, player jersey, or just browsing? Let me know how I can help! ⚽🔥"
+      },
+      {
+        "role": "user",
+        "content": "Reply me"
+      },
+      {
+        "role": "assistant",
+        "content": "Bro! 🙏 Romba messages varudhu ippo — but ungalukku idhu kandupudichen, wait pannunga:\n\n• *FRANCE WHITE SPECIAL EDITION 232334* — ₹0 [S-38, M-40, L-42, XL-44]\n  https://theaurax.in/product/france-white-special-edition/\n• *fc barcelona 1999 5-SLV* — ₹0 [XXL-44, S-36, M-38, L-40, XL-42]\n  https://theaurax.in/product/fc-barcelona-1999/\n• *REAL MADRID 14-15 THIRD — RONALDO (KIDS)* — ₹330\n  https://theaurax.in/product/real-madrid-14-15-third-ronaldo-kids/\n\nSize & quantity sollunga, naan vandhudhan sort pannuren! 🚀"
+      }
+    ],
+    "createdAt": "2026-07-11T13:10:21.293Z",
+    "updatedAt": "2026-07-11T13:50:12.881Z"
+  }
+]
