@@ -15,6 +15,7 @@ import orderState from './orderState.js';
 import rulesService, { numbersIn } from './rules.js';
 import * as tanglishReader from './tanglish.js';
 import understandService from './understand.js';
+import visionService from './vision.js';
 
 // "1, 2 illa 3?" was asked over a list of TWO Brazil shirts (2026-10-02). Ask for the numbers shown.
 function pickRange(n, tanglish) {
@@ -949,6 +950,14 @@ HOW TO THINK BEFORE EVERY REPLY:
 - Explain jersey terms (FC Set, Player Version, dry-fit, heat-pressed) in simple words — don't assume the customer knows them.
 - End most replies with ONE short question that moves the sale forward (which team / which size / shall I add it). Never stack several questions.
 - If the message is in a language that is neither English nor Tamil/Tanglish, don't guess: say sorry, you understand English and Tamil, and ask them to message in one of those.
+
+SELL LIKE THE SHOP'S BEST SALESPERSON (every fact still comes from the tools and the facts above):
+- Never leave a "no" bare. If the exact jersey isn't there, show the 2–3 closest REAL ones from search_products (same team another season, same player, same colours) or the best sellers, and ask if one works.
+- Help them choose: when several fit, say in one short line which one you would pick and why, using only real facts (best seller, newest season, full sleeve, player version).
+- Real reasons to buy now, never fake ones: free shipping on every order, and a website offer ONLY if the facts above list one. There are no stock counts — never say "only a few left" or "selling fast".
+- Price objection: agree it matters, mention free shipping, and offer a real cheaper jersey. Never lower a price, invent a discount or promise a coupon.
+- One step at a time: jersey → size → quantity → address → confirm. End with the one question that takes them to the next step.
+- When they say no, say they are done, or are upset: stop selling, be kind, and help with what they asked.
 
 ---
 COMMON FAQs — a code-level matcher already answers these instantly with zero LLM calls
@@ -2526,6 +2535,29 @@ ${sessionContext}`;
     session.awaitingMoreJerseys = null;   // one turn only, answered or not
     if (Date.now() - askedAt > 2 * 60 * 60 * 1000 || !session.cart?.length) return null;
     const isT = session.language === 'tanglish';
+    const answer = this._classifyMoreAnswer(userQuery);
+    if (answer === 'no') {
+      const known = this._knownAddress(session);
+      if (orderState.isAddressComplete(known)) {
+        const res = this._applyAddress(senderId, session, known);
+        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
+        const lead = isT ? 'Seri 👍 Munnadi kuduthha address ae use panren.' : "Great 👍 I'll use the address you gave me before.";
+        return this._replyAndSave(senderId, session, userQuery, this._summaryReply(session, lead), 'state_more_declined');
+      }
+      const lead = isT ? `Seri 👍 Unga cart:\n${this._cartLines(session)}` : `Great 👍 Your cart:\n${this._cartLines(session)}`;
+      return this._replyAndSave(senderId, session, userQuery,
+        `${lead}\n${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'state_more_declined');
+    }
+    if (answer === 'yes') {
+      return this._replyAndSave(senderId, session, userQuery, isT
+        ? 'Super! 🔥 Endha team illa player jersey venum? Peru sollunga.'
+        : 'Awesome! 🔥 Which team or player would you like? Just tell me the name.', 'state_more_yes');
+    }
+    return null;
+  }
+
+  /** The reply to a "need another jersey?" question: 'no', 'yes' or null (anything else). */
+  _classifyMoreAnswer(userQuery) {
     const q = String(userQuery || '').toLowerCase()
       .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, ' ')
       .replace(/[^a-z0-9' ]/g, ' ')
@@ -2539,24 +2571,298 @@ ${sessionContext}`;
     const DECLINE_WORD = /^(no+|nope|nah|illa|illai|podhum|pothum|venaam|vendaam|venam|vendam|venda|enough|nothing|else|that'?s|all|it|only|just|this|idhu|ithu|mattum|vera|checkout|check|out|proceed|continue|pannunga|panunga|done|need|not|more|other|ok|okay|seri|sari)$/;
     const declined = words.length > 0 && words.length <= 6 && words.every(w => DECLINE_WORD.test(w))
       && words.some(w => /^(no+|nope|nah|illa|illai|podhum|pothum|venaam|vendaam|venam|vendam|venda|enough|nothing|checkout|proceed|continue|done)$/.test(w));
-    if (NO.test(q) || declined) {
-      const known = this._knownAddress(session);
-      if (orderState.isAddressComplete(known)) {
-        const res = this._applyAddress(senderId, session, known);
-        if (res.bulk) return this._bulkReply(senderId, session, userQuery);
-        const lead = isT ? 'Seri 👍 Munnadi kuduthha address ae use panren.' : "Great 👍 I'll use the address you gave me before.";
-        return this._replyAndSave(senderId, session, userQuery, this._summaryReply(session, lead), 'state_more_declined');
-      }
-      const lead = isT ? `Seri 👍 Unga cart:\n${this._cartLines(session)}` : `Great 👍 Your cart:\n${this._cartLines(session)}`;
-      return this._replyAndSave(senderId, session, userQuery,
-        `${lead}\n${this._askMissingAddress(session, orderState.missingAddressFields(known))}`, 'state_more_declined');
+    if (NO.test(q) || declined) return 'no';
+    if (YES.test(q)) return 'yes';
+    return null;
+  }
+
+  /**
+   * Asked once, right after an order is placed (owner, 2026-10-24): the moment a second jersey
+   * is most likely. Answered by _answerMoreAfterOrder on the next message.
+   */
+  _afterOrderAsk(session) {
+    const isT = session.language === 'tanglish';
+    session.awaitingMoreAfterOrder = Date.now();
+    const already = session.moreAfterOrderRequested;
+    session.moreAfterOrderRequested = false;
+    if (already) {
+      return isT
+        ? 'Innoru jersey venum nu sonneenga — endha team illa player? 🔥'
+        : 'You mentioned another jersey — which team or player would you like? 🔥';
     }
-    if (YES.test(q)) {
+    return isT
+      ? 'Innum vera jersey venuma? 🙂 "YES" nu sollunga, ippo adhigam vikkura jerseys kaatturen — illa team peru sollunga.'
+      : "Would you like another jersey too? 🙂 Reply YES and I'll show you our best sellers — or just tell me the team.";
+  }
+
+  /** The answer to _afterOrderAsk. A clear yes/no is handled here; anything else is a normal message. */
+  async _answerMoreAfterOrder(senderId, session, userQuery) {
+    const askedAt = session.awaitingMoreAfterOrder;
+    if (!askedAt) return null;
+    session.awaitingMoreAfterOrder = null;   // one turn only, answered or not
+    if (Date.now() - askedAt > 2 * 60 * 60 * 1000) return null;
+    const answer = this._classifyMoreAnswer(userQuery);
+    const isT = session.language === 'tanglish';
+    if (answer === 'no') {
+      session.closedAt = Date.now();
+      const link = session.lastOrder?.checkoutUrl;
       return this._replyAndSave(senderId, session, userQuery, isT
-        ? 'Super! 🔥 Endha team illa player jersey venum? Peru sollunga.'
-        : 'Awesome! 🔥 Which team or player would you like? Just tell me the name.', 'state_more_yes');
+        ? `Seri 👍${link ? ' Mela irukura link la payment mudichidunga.' : ''} Theaurax la shop pannadhuku romba thanks! ⚽`
+        : `No problem 👍${link ? ' Just complete the payment using the link above.' : ''} Thanks for shopping with Theaurax! ⚽`, 'state_after_order_no');
+    }
+    if (answer === 'yes') {
+      const exclude = (session.lastOrder?.items || []).map(i => i.productId);
+      return this._replyAndSave(senderId, session, userQuery, this._bestSellersPitch(session, null, exclude), 'state_after_order_yes',
+        (session.lastShownProducts || []).map(p => p.productId));
     }
     return null;
+  }
+
+  /**
+   * Our best sellers, numbered and ready to order from ("2 M 1" works next). The salesperson's
+   * answer when the customer wants more but has not named anything, or what they asked for is
+   * not in stock. Real products only — nothing is printed unless the catalogue has it.
+   */
+  _bestSellersPitch(session, lead = null, exclude = []) {
+    const isT = session.language === 'tanglish';
+    const res = woocommerceService.searchProductsDetailed('best selling jersey');
+    const top = (res.products || [])
+      .filter(p => p.stock_status !== 'outofstock' && !exclude.map(String).includes(String(p.id)))
+      .slice(0, 3);
+    if (top.length === 0) {
+      return lead
+        ? `${lead}\n${isT ? 'Endha team illa player jersey venum? Peru sollunga.' : 'Which team or player would you like? Just tell me the name.'}`
+        : (isT ? 'Super! 🔥 Endha team illa player jersey venum? Peru sollunga.' : 'Awesome! 🔥 Which team or player would you like? Just tell me the name.');
+    }
+    session.lastShownProducts = top.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+    session.pendingProductIndex = null;
+    session.productListPending = true;
+    session.pendingBrowse = false;
+    session.lastListContext = null;
+    const lines = top.map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price}${p.sizes?.length ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n${p.permalink}` : ''}`).join('\n');
+    const head = lead || (isT ? 'Super! 🔥 Ippo adhigam vikkura jerseys idho 👇' : 'Awesome! 🔥 Here are our best sellers right now 👇');
+    const ask = isT ? 'Edhu pudichirukku — number sollunga, illa vera team peru sollunga 🛍️' : 'Like one? Send its number — or tell me any team or player 🛍️';
+    return `${head}\n\n${lines}\n\n${ask}`;
+  }
+
+  /*
+   * PHOTOS (2026-10-24, owner's rule). The WhatsApp layer collects an album and hands every
+   * photo over at once; they are looked at together (services/vision.js) and ONE reply goes out:
+   *   - a problem (damage, wrong item)  → one message naming each jersey and what is wrong, and
+   *                                        ONE ticket when the order is known
+   *   - "do you have this?"             → one message: have it / same team / don't have, per
+   *                                        jersey — and best sellers when nothing matches
+   *   - payment screenshot / unclear    → the agent, with what the photos show
+   * "We have it" is said only after a real catalogue search; the vision model never writes text.
+   */
+  async _visionCall(messages, senderId) {
+    const cfg = config.vision || {};
+    let lastErr = null;
+    for (const { client } of this.rotateEntries('fireworks', this.fireworksClients, 'openai', senderId)) {
+      try {
+        const started = Date.now();
+        const res = await client.chat.completions.create({
+          model: cfg.model, messages, max_tokens: cfg.maxTokens || 3000, temperature: 0,
+        }, { timeout: 60000 });
+        const u = res.usage || {};
+        console.log(`[Tokens] fireworks-vision model=${cfg.model} in=${u.prompt_tokens ?? '?'} out=${u.completion_tokens ?? '?'} (${Date.now() - started}ms)`);
+        const text = res.choices?.[0]?.message?.content || '';
+        if (text.trim()) return text;
+        lastErr = new Error(`empty answer (finish=${res.choices?.[0]?.finish_reason})`);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error('no vision provider configured');
+  }
+
+  _photoLabel(g) {
+    const title = t => t.replace(/\b\w/g, c => c.toUpperCase());
+    const bits = [g.team ? title(g.team) : null, g.kit && g.kit !== 'unknown' ? g.kit : null, g.season || null].filter(Boolean);
+    let label = bits.length ? bits.join(' ') : (g.colours ? `${g.colours} jersey` : 'jersey');
+    if (g.player) label += ` (${g.player})`;
+    return label;
+  }
+
+  /** "(photos 1–3)" — only when there is more than one photo to tell apart. */
+  _photoRefs(g, total) {
+    const n = g.images || [];
+    if (total <= 1 || n.length === 0 || n.length === total) return '';
+    const run = n.every((x, i) => i === 0 || x === n[i - 1] + 1);
+    return n.length === 1 ? ` (photo ${n[0]})` : ` (photos ${run ? `${n[0]}–${n[n.length - 1]}` : n.join(', ')})`;
+  }
+
+  /** What the photos showed, for the ticket the team reads. */
+  _photoTicketNote(session) {
+    const pa = session.photoAnalysis;
+    if (!pa || Date.now() - (pa.at || 0) > 2 * 60 * 60 * 1000) return '';
+    const seen = (pa.groups || []).map(g => `${g.label}${g.issue ? ` — ${g.issue}` : ''}`).join('; ');
+    return ` | Photos (${pa.count}, forwarded to the owner's WhatsApp)${seen ? `: ${seen}` : ''}`;
+  }
+
+  async _handleImages(senderId, session, userQuery, options) {
+    const images = options.images;
+    const count = images.length;
+    const isT = session.language === 'tanglish';
+    const cfg = config.vision || {};
+    const caption = String(userQuery || '').replace(/^\s*\[[^\]]*\]\s*$/, '').trim();
+    const recent = session.lastOrder?.orderId && Date.now() - (session.lastOrder.at || 0) < 45 * 24 * 60 * 60 * 1000
+      ? session.lastOrder : null;
+    const plural = count === 1 ? '' : 's';
+    session.photoReceived = true;
+    session.awaitingMoreAfterOrder = null;   // a photo IS the answer to "another jersey?"
+
+    let analysis = null;
+    if (cfg.enabled !== false && this.fireworksClients.length > 0) {
+      analysis = await visionService.analyse(images,
+        { caption, hasRecentOrder: Boolean(recent), cartNames: (session.cart || []).map(i => i.name) },
+        msgs => this._visionCall(msgs, senderId), { maxImages: cfg.maxImages || 6 });
+    }
+    const groups = analysis?.groups || [];
+    session.photoAnalysis = {
+      at: Date.now(), count, purpose: analysis?.purpose || null, summary: analysis?.summary || null,
+      orderText: analysis?.orderText || null,
+      groups: groups.map(g => ({ label: this._photoLabel(g), issue: g.issue || '', images: g.images })),
+    };
+    const historyText = `${caption ? `${caption} ` : ''}[sent ${count} photo${plural}${analysis?.summary ? `: ${analysis.summary}` : ''}]`;
+
+    const complains = /\b(damage\w*|torn|tear|hole|stain\w*|wrong|defect\w*|missing|fad\w*|peel\w*|refund|exchange|return|replace\w*|problem|issue|complain\w*|kizhi\w*|mosam|kevalam|loose|stitch\w*|broken|bad\s+quality|sari\s*illa|sariyilla)\b/i.test(caption);
+    const enquires = /\b(iruka|irukka|irukaa|iruku|available|have|stock|kidaikuma|kedaikuma|venum|vendum|price|evlo|rate|want|need|get|idhu|ithu|this)\b/i.test(caption);
+    const purpose = complains || analysis?.purpose === 'support_issue' ? 'support'
+      : analysis?.purpose === 'product_enquiry' || (enquires && analysis?.purpose !== 'payment_proof') ? 'enquiry'
+      : analysis?.purpose === 'payment_proof' ? 'payment' : 'other';
+    const looked = Math.min(count, cfg.maxImages || 6);
+    const lookedNote = count > looked
+      ? (isT ? ` (mudhal ${looked} photos paarthen)` : ` (I looked at the first ${looked})`) : '';
+
+    if (purpose === 'support') {
+      const orderId = (caption.match(/(?:#|order\s*(?:id|no\.?|number)?\s*[:#-]?\s*)(\d{4,7})\b/i) || [])[1]
+        || (analysis?.orderText?.match(/\b(\d{5,6})\b/) || [])[1]
+        || recent?.orderId || null;
+      const fromRecent = orderId && recent && String(orderId) === String(recent.orderId) && !caption.includes(String(orderId));
+      const seen = groups.map(g => `• *${this._photoLabel(g)}*${this._photoRefs(g, count)}${g.issue ? ` — ${g.issue}` : ''}`).join('\n');
+      let text = isT
+        ? `Photos anuppunadhuku thanks 🙏 Indha problem ku romba sorry.${lookedNote}${seen ? `\nNaan paarthadhu:\n${seen}` : ''}`
+        : `Thank you for the photo${plural} 🙏 I'm really sorry about this.${lookedNote}${seen ? `\nHere's what I can see:\n${seen}` : ''}`;
+      if (orderId) {
+        const same = session.photoTicket && String(session.photoTicket.orderId) === String(orderId)
+          && Date.now() - session.photoTicket.at < 30 * 60 * 1000;
+        let ticketId = same ? session.photoTicket.id : null;
+        if (!ticketId) {
+          this._markSideEffect(senderId);
+          const ticket = await dbService.saveTicket({
+            userId: senderId,
+            name: session.customerName || 'Customer',
+            phone: session.customerPhone || senderId.replace(/\D/g, ''),
+            email: '',
+            orderId: String(orderId),
+            issueType: /\bwrong\b/i.test(`${caption} ${seen}`) ? 'wrong_item' : 'damaged',
+            description: `Customer sent ${count} photo${plural}${caption ? ` and said: "${caption.slice(0, 300)}"` : ''}.${this._photoTicketNote(session)}`,
+            hasPhoto: true,
+          });
+          this.sendSupportTicketAlert(senderId, ticket, session);
+          session.photoReceived = false;
+          session.lastTicketId = ticket.id;
+          session.photoTicket = { id: ticket.id, orderId: String(orderId), at: Date.now() };
+          ticketId = ticket.id;
+        }
+        const other = fromRecent ? (isT ? ' (vera order na sollunga)' : " (tell me if it's a different order)") : '';
+        text += isT
+          ? `\n\nOrder #${orderId}${other} ku ticket *${ticketId}* raise panniten — namma team check panni inga reply pannuvaanga.`
+          : `\n\nI've raised ticket *${ticketId}* for order #${orderId}${other} — our team will check it and get back to you here soon.`;
+      } else {
+        text += isT
+          ? '\n\nUnga *order ID* anuppunga (order confirmation message la irukum) — udane team kitta anuppuren.'
+          : '\n\nPlease send your *order ID* (it\'s in your order confirmation message) and I\'ll pass everything to our team right away.';
+      }
+      const res = await this._replyAndSave(senderId, session, historyText, text, 'photo_support');
+      return { ...res, forwardPhotos: true };
+    }
+
+    if (purpose === 'enquiry') {
+      const jerseys = groups.filter(g => g.team || g.what !== 'other').slice(0, 3);
+      if (jerseys.length === 0) {
+        const lead = analysis
+          ? (isT ? `Photo${plural} paarthen 👍 Endha team jersey nu sariya theriyala — team peru (season theriyum na adhuvum) sollunga, udane check panren!\nAdhuvarai ippo adhigam vikkuradhu 👇`
+            : `Got your photo${plural} 👍 I can't quite make out which team this is — tell me the team (and season, if you know) and I'll check right away!\nMeanwhile, here are our best sellers 👇`)
+          : (isT ? `Photo${plural} vandhuchu 👍 Ippo photo open panna mudiyala — team peru sollunga, udane check panren!\nAdhuvarai ippo adhigam vikkuradhu 👇`
+            : `Got your photo${plural} 👍 I can't open photos right now — tell me the team and I'll check straight away!\nMeanwhile, here are our best sellers 👇`);
+        const text = this._bestSellersPitch(session, lead);
+        const res = await this._replyAndSave(senderId, session, historyText, text, 'photo_enquiry',
+          (session.lastShownProducts || []).map(p => p.productId));
+        return { ...res, forwardPhotos: !analysis };
+      }
+      const shown = [];
+      const blocks = [];
+      let misses = 0;
+      for (const g of jerseys) {
+        const label = this._photoLabel(g);
+        const refs = this._photoRefs(g, count);
+        if (!g.search) {
+          blocks.push({ head: isT ? `📸 *${label}*${refs} — team sariya theriyala, endha team nu sollunga?` : `📸 *${label}*${refs} — I can't tell the team from the photo. Which team is it?`, items: [] });
+          continue;
+        }
+        const res = woocommerceService.searchProductsDetailed(g.search);
+        let picks = (res.products || []).filter(p => !shown.some(x => x.id === p.id)).slice(0, jerseys.length > 1 ? 2 : 3);
+        let head;
+        if (res.matchQuality === 'exact' && picks.length) {
+          head = isT ? `✅ *${label}*${refs} — iruku!` : `✅ *${label}*${refs} — yes, we have it!`;
+        } else if (res.matchQuality === 'partial' && picks.length) {
+          head = isT ? `🔎 *${label}*${refs} — exact ah idhu illa, aana indha team la iruku:` : `🔎 *${label}*${refs} — not this exact one, but we have the same team:`;
+        } else {
+          picks = [];
+          misses++;
+          head = isT ? `❌ *${label}*${refs} — idhu ippo namma kitta illa.` : `❌ *${label}*${refs} — sorry, we don't have this one right now.`;
+        }
+        shown.push(...picks);
+        blocks.push({ head, items: picks });
+      }
+      const opener = count > 1
+        ? (isT ? `${count} photos-um paarthen 👍${lookedNote}` : `I've looked at all ${count} photos 👍${lookedNote}`)
+        : (isT ? 'Photo paarthen 👍' : 'Got your photo 👍');
+      let n = 0;
+      const body = blocks.map(b => [b.head, ...b.items.map(p => {
+        n++;
+        return `${n}. *${p.name}* — ₹${p.price}${p.sizes?.length ? ` [${p.sizes.join(', ')}]` : ''}${p.permalink ? `\n${p.permalink}` : ''}`;
+      })].join('\n')).join('\n\n');
+      let text;
+      if (shown.length === 0) {
+        const lead = `${opener}\n\n${body}\n\n${isT ? 'Aana indha jerseys ippo semma hit 🔥 paarunga 👇' : 'But these are flying off the shelves right now 🔥 have a look 👇'}`;
+        text = misses > 0 ? this._bestSellersPitch(session, lead) : `${opener}\n\n${body}`;
+      } else {
+        session.lastShownProducts = shown.map(p => ({ productId: p.id, name: p.name, price: p.price, sizes: p.sizes || [], permalink: p.permalink || '' }));
+        session.pendingProductIndex = null;
+        session.productListPending = true;
+        session.pendingBrowse = false;
+        session.lastListContext = null;
+        const range = shown.length > 1 ? (isT ? ` (1–${shown.length})` : ` (1–${shown.length})`) : '';
+        const ask = isT ? `Edhu venum${range}? Enna size nu sollunga 🛍️` : `Which one shall I set up for you${range}? Tell me the number and your size 🛍️`;
+        text = `${opener}\n\n${body}\n\n${ask}`;
+      }
+      const resume = this._resumeLine(session);
+      if (resume) text = `${text}\n\n${resume}`;
+      const res = await this._replyAndSave(senderId, session, historyText, text, 'photo_enquiry',
+        (session.lastShownProducts || []).map(p => p.productId));
+      return { ...res, forwardPhotos: false };
+    }
+
+    if (purpose === 'payment') {
+      return {
+        rewriteQuery: `${caption ? `${caption}\n` : ''}[The customer sent ${count} photo${plural} that look like a payment screenshot${analysis?.orderText ? ` (${analysis.orderText})` : ''}. You cannot verify a payment from a photo: thank them, say the team will check it, and look up the order if you can. Answer once for all of them.]`,
+      };
+    }
+
+    // Unclear: one short question, or the agent when they also said something.
+    if (!caption) {
+      const text = isT
+        ? `Photo${plural} vandhuchu 👍 Idhu maadhiri jersey venuma, illa vaangina order la edhavadhu problem ah?`
+        : `Got your photo${plural} 👍 How can I help — are you looking for a jersey like this, or is it about an order you received?`;
+      const res = await this._replyAndSave(senderId, session, historyText, text, 'photo_unclear');
+      return { ...res, forwardPhotos: !analysis };
+    }
+    return {
+      rewriteQuery: `${caption}\n[The customer also sent ${count} photo${plural}${analysis?.summary ? `: ${analysis.summary}` : ' — you cannot see them'}. Answer once, about all of them together.]`,
+    };
   }
 
   /** What to say to move the customer on from wherever they are. Never restarts discovery. */
@@ -3361,14 +3667,73 @@ ${sessionContext}`;
     return faq ? faqService.answerFor(faq, session.language) : null;
   }
 
-  /** "new order", "start over", "vera order" — a fresh start, never a yes to the old cart. */
+  /**
+   * "new order", "start over", "vera order" — a fresh start, never a yes to the old cart.
+   * Only an ORDER is "new": "another jersey" adds to the cart (2026-10-24 — "yes, and I want
+   * another jersey too" used to empty it).
+   */
   _wantsFreshStart(text) {
-    return /\b(?:new|another|fresh|next|vera|innoru|pudhu|puthu)\s+(?:order|jersey|purchase|item)\b|\bstart\s+(?:over|again|fresh)\b|\brestart\b|\breset\b|\bfresh\s+ah\b/i.test(String(text || ''));
+    return /\b(?:new|another|fresh|next|vera|innoru|pudhu|puthu)\s+(?:order|purchase)\b|\bstart\s+(?:over|again|fresh)\b|\brestart\b|\breset\b|\bfresh\s+ah\b/i.test(String(text || ''));
   }
 
-  /** The message really says yes — required before an order is placed on the reader's word. */
+  /** "another jersey", "one more", "innoru jersey" — wants to buy more, keeps what they have. */
+  _wantsAnotherJersey(text) {
+    return /\b(?:another|one\s+more|next|innoru|innum\s+oru|vera|extra|second)\s+(?:jersey|jersy|jersi|one|item|shirt|kit)\b|\badd\s+(?:another|one\s+more|more)\b|\binnum\s+(?:venum|vendum)\b/i.test(String(text || ''));
+  }
+
+  /**
+   * The message really says yes — required before an order is placed on the reader's word.
+   * A yes word inside a no is not a yes: "no don't place it", "not okay", "wait, correct the
+   * size first", "hold on, book later" (all passed before 2026-10-24). A wrongly refused yes
+   * only re-shows the summary; a wrongly accepted one places an order.
+   */
   _saysYes(text) {
-    return /\b(yes+|yeah|yep|yup|ya+|ok+|okay|okey|k|sure|confirm\w*|seri|sari|proceed|go\s*ahead|place|book|done|correct|fine|aama|aamaa|haan|podu|pannunga|panunga|paninga)\b|👍|✅|👌/i.test(String(text || ''));
+    const t = String(text || '');
+    if (/\b(no|not|don'?t|dont|never|wait|hold|later|stop|cancel|change|wrong|venaam|vendaam|vendam|venam|venda|illa|illai|maathu\w*|mathu\w*|apram|aprom|appuram|apparam)\b/i.test(t)) return false;
+    return /\b(yes+|yeah|yep|yup|ya+|ok+|okay|okey|k|sure|confirm\w*|seri|sari|proceed|go\s*ahead|place|book|done|correct|fine|aama|aamaa|haan|podu|pannunga|panunga|paninga)\b|👍|✅|👌/i.test(t);
+  }
+
+  /**
+   * Asks about a discount — the word as a NOUN. "Do you offer COD?" and "what sizes do you
+   * offer?" are not discount questions; they got the offers list until 2026-10-24.
+   */
+  _mentionsDiscount(text) {
+    const t = String(text || '');
+    if (/\b(bulk|wholesale|reseller|resale)\b/i.test(t)) return false;
+    return /\b(discounts?|coupons?|promo\s*codes?|offers)\b/i.test(t)
+      || /\b(any|ana|enna|edhavadhu|special|festival|diwali|pongal|current|today'?s?|website|new)\s+offers?\b/i.test(t)
+      || /\boffers?\s+(iruka|irukka|irukaa|iruku|available|undaa?|price|la|ah)\b/i.test(t)
+      || /\b(on\s+sale|sale\s+price|sale\s+la|offer\s+price)\b/i.test(t);
+  }
+
+  /**
+   * A discount the reply offers that the website does not show: a % off no live offer has, a
+   * coupon code found nowhere in the context, or a promised price cut. The owner's rule
+   * (2026-10-24): a discount is mentioned only if the website displays it.
+   */
+  inventedDiscounts(reply, contextMessages = []) {
+    const text = String(reply || '');
+    const ctx = contextMessages.map(m => (typeof m?.content === 'string' ? m.content : '')).join('\n');
+    const offers = woocommerceService.currentOffers(50);
+    const problems = [];
+    for (const m of text.matchAll(/(\d{1,2})\s*%\s*(?:off|discount|offer)|(?:discount|offer)\s+(?:of\s+)?(\d{1,2})\s*%/gi)) {
+      const pct = parseInt(m[1] || m[2], 10);
+      if (!offers.some(o => o.percent === pct) && !new RegExp(`\\b${pct}\\s*%`).test(ctx)) problems.push(`${pct}% off`);
+    }
+    for (const m of text.matchAll(/(?:[Cc]oupon|[Pp]romo)\s*[Cc]ode\s*(?:is\s*)?[:\-]?\s*\*?([A-Z0-9]{4,})/g)) {
+      if (!ctx.includes(m[1])) problems.push(`coupon ${m[1]}`);
+    }
+    if (/\b(special price for you|i can (?:give|offer) you (?:a )?(?:discount|special price|lower price|better price)|(?:reduce|lower) the price for you|kammi panni (?:tharen|tharom|thareen|tharuven|tharuvom))\b/i.test(text)) {
+      problems.push('a promised price cut');
+    }
+    return [...new Set(problems)];
+  }
+
+  /** The reply without the sentences that offer a discount the website does not show. */
+  _stripDiscountClaims(text, contextMessages = []) {
+    return String(text || '').split(/(?<=[.!?\n])\s+/)
+      .filter(sentence => this.inventedDiscounts(sentence, contextMessages).length === 0)
+      .join(' ').trim();
   }
 
   /**
@@ -3517,8 +3882,7 @@ ${sessionContext}`;
     // the owner taught in the Knowledge Hub (a coupon code, a festival offer) wins.
     // The word itself is checked too: "Discount lam iruka bro" was read as a payment question and
     // answered with "no COD, prepaid only" (live chat 2026-10-07).
-    const saysDiscount = /\b(discounts?|offers?|coupons?|promo\s*codes?)\b/i.test(userQuery)
-      && !/\b(bulk|wholesale|reseller|resale)\b/i.test(userQuery) && v.topic !== 'bulk';
+    const saysDiscount = this._mentionsDiscount(userQuery) && v.topic !== 'bulk';
     if ((v.topic === 'discount' || saysDiscount) && !several
         && ['policy_question', 'product_question', 'product_search', 'payment_question', 'other'].includes(v.intent)
         && !(v.intent === 'product_search' && v.search && v.topic !== 'discount')) {
@@ -3657,7 +4021,12 @@ ${sessionContext}`;
       }
 
       case 'start_over': {
-        const had = active ? (item || locked).name : null;
+        // Every jersey that goes, not just the first line (the cart holds several since 10-02).
+        const goingNames = [...new Set([
+          ...(session.cart || []).map(i => i.name),
+          ...(orderState.isConfiguring(session) && session.selectedProduct ? [session.selectedProduct.name] : []),
+        ].filter(Boolean))];
+        const had = active ? (goingNames.length ? goingNames.join(', ') : locked.name) : null;
         this._rememberRemovedCart(session);
         this._clearOrderSelection(session);
         session.lastShownProducts = [];
@@ -3823,10 +4192,19 @@ ${sessionContext}`;
           // Placing an order cannot be undone, so the reader's word alone is not enough: the
           // message must actually say yes. "Hi new order" was read as confirm_order and placed
           // order #78015 off a cart restored from an expired order (live chat 2026-10-08).
-          if (this._wantsFreshStart(userQuery)) return this._routeByUnderstanding(senderId, session, userQuery, { ...v, intent: 'start_over' });
-          if (!this._saysYes(userQuery)) {
+          const yes = this._saysYes(userQuery);
+          if (this._wantsFreshStart(userQuery) && !yes) return this._routeByUnderstanding(senderId, session, userQuery, { ...v, intent: 'start_over' });
+          // "Yes, and another jersey too" places THIS order, then asks which one is next.
+          // Without a yes, "another jersey" adds to the cart before checkout — never empties it.
+          if (!yes && this._wantsAnotherJersey(userQuery) && !this._wantsFreshStart(userQuery)) {
+            return reply(isT
+              ? 'Kandippa! 🔥 Endha team illa player jersey venum? Unga cart la irukradhu apdiye irukum.'
+              : 'Sure! 🔥 Which team or player would you like? Your cart stays as it is.', 'state_more_before_confirm');
+          }
+          if (!yes || this._wantsFreshStart(userQuery)) {
             return reply(this._summaryReply(session, isT ? 'Order confirm pannanuma? 🙂' : 'Shall I place this order? 🙂'), 'state_confirm_check');
           }
+          if (this._wantsAnotherJersey(userQuery)) session.moreAfterOrderRequested = true;
           return { confirm: true };
         }
         // A menu pick ("2" after the category menu).
@@ -4075,10 +4453,21 @@ ${sessionContext}`;
     let agentNote = null;
     let notePrefix = null;
     let forceConfirm = false;
+    // Photos: all of an album at once, one reply (see _handleImages).
+    if (Array.isArray(options.images) && options.images.length > 0) {
+      const photos = await this._handleImages(senderId, session, userQuery, options);
+      if (photos && typeof photos.replyText === 'string') return photos;
+      if (photos?.rewriteQuery) userQuery = photos.rewriteQuery;
+    }
     // The answer to our own "need another jersey?" — a clear no/yes is handled in code, before
     // the reader could take a bare "no" for "cancel the cart" or a goodbye.
     if (session.awaitingMoreJerseys && userQuery && !/^\s*\[/.test(userQuery)) {
       const more = await this._answerMoreJerseys(senderId, session, userQuery);
+      if (more) return more;
+    }
+    // ...and to "another jersey?" asked right after an order was placed.
+    if (session.awaitingMoreAfterOrder && userQuery && !/^\s*\[/.test(userQuery)) {
+      const more = await this._answerMoreAfterOrder(senderId, session, userQuery);
       if (more) return more;
     }
     if (userQuery && userQuery.trim()) {
@@ -4174,7 +4563,7 @@ ${sessionContext}`;
 
       // "Any discount?" with the reader down: same answer as the understood path.
       if (userQuery.length <= 80
-          && /\b(discounts?|offers?|coupons?|promo\s*codes?|sale|kammi\s*pann\w*|koraichu|kuraichu)\b/i.test(userQuery)
+          && (this._mentionsDiscount(userQuery) || /\b(kammi\s*pann\w*|koraichu|kuraichu)\b/i.test(userQuery))
           && !/\b(bulk|wholesale|reseller|resale)\b|\b\d{2,}\s*(pcs|pieces|jerseys?|qty)\b/i.test(userQuery)) {
         const kh = await knowledgeService.match(userQuery, session.language).catch(() => null);
         let text = kh && kh.tier === 'confident' ? kh.entry.answer : this._discountReply(session, userQuery);
@@ -4369,7 +4758,7 @@ ${sessionContext}`;
           // alone read as done, and nobody knew the link would die (2026-10-01).
           const hold = config.payment?.holdMinutes || 60;
           const holdText = hold % 60 === 0 ? `${hold / 60} ${hold === 60 ? 'hour' : 'hours'}` : `${hold} minutes`;
-          const reply = result.checkoutUrl
+          let reply = result.checkoutUrl
             ? (isTanglish
                 ? `Super! 🎉 Order #${result.orderId} place aayiduchu! Idha click pannunga pay pannurathukku: ${result.checkoutUrl}${payMethods ? `\n${payMethods} la pay pannunga.` : ''}\n⏳ ${holdText} kulla pay pannunga — illana order auto-cancel aagidum. Thanks for shopping with Theaurax! ⚽🔥`
                 : `Awesome! 🎉 Your order #${result.orderId} is placed! Tap here to complete payment: ${result.checkoutUrl}${payMethods ? `\nPay by ${payMethods}.` : ''}\n⏳ Please pay within ${holdText} — unpaid orders are cancelled automatically. Thanks for shopping with Theaurax! ⚽🔥`)
@@ -4387,6 +4776,8 @@ ${sessionContext}`;
             }, null);
           }
 
+          // The moment a second jersey is most likely (owner, 2026-10-24).
+          reply = `${reply}\n\n${this._afterOrderAsk(session)}`;
           session.history.push({ role: 'user', content: userQuery });
           session.history.push({ role: 'assistant', content: reply });
           // Remember the order (so "how pay?" afterwards returns THIS link) and the address
@@ -5030,7 +5421,7 @@ ${sessionContext}`;
                 email: args.email || '',
                 orderId: args.orderId || '',
                 issueType: args.issueType || 'other',
-                description: args.description || '',
+                description: `${args.description || ''}${session.photoReceived ? this._photoTicketNote(session) : ''}`,
                 hasPhoto: !!session.photoReceived,
               });
               this.sendSupportTicketAlert(senderId, ticket, session);
@@ -5103,6 +5494,15 @@ ${sessionContext}`;
           const unstockedTeams = woocommerceService.unstockedTeamsMentioned(resultText);
           // (g) it quotes a price or a number of days it never read anywhere (2026-09-29).
           const badFigures = this.unsupportedFigures(resultText, [...messages, { content: userQuery }]);
+          // Context for the discount check: the prompt, tool results and the customer — never the
+          // model's own turns or our "your last reply offered…" notes, which would make an
+          // invented discount look known the second time round.
+          const discountContext = [...messages.filter(m => m.role !== 'assistant'
+            && !(m.role === 'system' && /^Your last reply/.test(String(m.content || '')))), { content: userQuery }];
+          const badDiscounts = this.inventedDiscounts(resultText, discountContext);
+          if (badDiscounts.length > 0) {
+            console.warn(`[AI Service] Reply offers a discount the website does not show: ${badDiscounts.join(', ')} | ${resultText.slice(0, 140)}`);
+          }
           if (badFigures.length > 0) {
             console.warn(`[AI Service] Reply quotes figures found nowhere in its context: ${badFigures.join(', ')} | ${resultText.slice(0, 140)}`);
           }
@@ -5112,7 +5512,7 @@ ${sessionContext}`;
           // because the recovery for each is different (see below).
           const structuralFailure = looksLikeGreetingLeak || looksLikeRawJsonLeak
             || rawWasEmpty || askedToClarifyWithoutSearching || unstockedTeams.length > 0;
-          if (structuralFailure || languageProblems.length > 0 || badFigures.length > 0) {
+          if (structuralFailure || languageProblems.length > 0 || badFigures.length > 0 || badDiscounts.length > 0) {
             if (!forcedSearchRetryDone && loops < 5) {
               forcedSearchRetryDone = true;
               messages.push({
@@ -5127,11 +5527,17 @@ ${sessionContext}`;
                         ? `You just replied with the generic welcome greeting instead of answering. The customer's last message was: "${userQuery}". Call the search_products tool now with that exact query to answer it. Do not greet again.`
                         : unstockedTeams.length > 0
                           ? `Your last reply offered the customer teams we do NOT stock: ${unstockedTeams.join(', ')}. We stock only these: ${woocommerceService.listTeams().join(', ')}. Send the answer again naming ONLY teams from that list, and never suggest a team we do not carry.`
+                          : badDiscounts.length > 0
+                            ? `Your last reply offered ${badDiscounts.join(', ')} — that is not on the website. The ONLY discounts are the website offers in the store facts. Send the answer again without it; if they asked about a discount and none applies, say there are no discounts available right now and we will let them know as soon as an offer is added.`
                           : badFigures.length > 0
                             ? `Your last reply quoted ${badFigures.join(', ')} — that price or number of days is not in the product results, the store rules or this conversation. Send the answer again quoting ONLY figures that appear there. If you do not know one, say the team will confirm it.`
                             : `Your last reply used words that are not real Tamil: ${languageProblems.join('; ')}. Send the SAME answer again in natural Tanglish that a Chennai shop owner would actually type, keeping it to two short sentences. Where you are not certain a Tamil word is real, use the plain English word instead.`
               });
               continue;
+            }
+            // A discount it invented twice: drop those sentences, or give the honest answer.
+            if (badDiscounts.length > 0 && !structuralFailure) {
+              resultText = this._stripDiscountClaims(resultText, discountContext) || this._discountReply(session, userQuery);
             }
             // The model failed the same way twice. Only a STRUCTURAL failure justifies
             // throwing its answer away: a reply whose single fault is an odd word still
@@ -5223,6 +5629,7 @@ ${sessionContext}`;
 
     // Something code already did this turn (e.g. took the old product out of the cart).
     if (notePrefix && resultText) resultText = `${notePrefix}\n${resultText}`;
+    if (isConfirmed && resultText) resultText = `${resultText}\n\n${this._afterOrderAsk(session)}`;
 
     session.history.push({ role: 'user', content: userQuery });
     session.history.push({ role: 'assistant', content: resultText });

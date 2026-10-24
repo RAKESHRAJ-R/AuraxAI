@@ -29,7 +29,8 @@
     "test-order-state": "node src/test_order_state.js",
     "test-tanglish-logic": "node src/test_tanglish_logic.js",
     "test-understanding": "node src/test_understanding.js",
-    "replay-understanding": "node src/replay_understanding.js"
+    "replay-understanding": "node src/replay_understanding.js",
+    "test-photos-sales": "node src/test_photos_sales.js"
   },
   "overrides": {
     "sharp": "^0.35.3"

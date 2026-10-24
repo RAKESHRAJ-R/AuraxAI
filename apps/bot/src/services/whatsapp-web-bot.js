@@ -201,6 +201,8 @@ class WhatsAppWebBot {
     // strict in-order processing for a given customer while different customers still
     // run fully in parallel.
     this.senderChains = new Map();
+    // Open photo albums, by sender — see enqueueMessage.
+    this.albums = new Map();
     // whatsapp-web.js occasionally re-emits the same inbound message (reconnects,
     // session resync) with no dedupe of its own — without this, a replayed 'message'
     // event runs the full agent + LLM call twice and sends two near-identical replies
@@ -335,11 +337,68 @@ class WhatsAppWebBot {
     return false;
   }
 
+  /*
+   * PHOTO ALBUMS (2026-10-24). WhatsApp delivers each photo of an album as its own message, so
+   * five photos of one torn jersey used to get five replies. A photo now opens an album for that
+   * sender: every message from them (more photos, a caption, "do you have this?") joins it until
+   * they have been quiet for albumQuietMs, then the whole album is answered as ONE turn — the
+   * photos are looked at together (services/vision.js) and one reply goes out.
+   * A short text that points at a photo ("do you have this?", "idhu iruka") also opens one and
+   * waits albumLeadMs for the photos; if none come it is answered on its own as usual.
+   */
+  _refersToPhoto(text) {
+    const t = String(text || '').trim();
+    if (!t || t.length > 80) return false;
+    return /\b(this|these|like this|same|this one|idhu|ithu|indha|intha|ithe|idhe|mathiri|madhiri|maadhiri|photo|pic|pics|picture|image|screenshot|ss)\b/i.test(t);
+  }
+
+  _albumOpenFor(senderId) {
+    const album = this.albums.get(senderId);
+    return album && !album.closed ? album : null;
+  }
+
+  _closeAlbum(album) {
+    if (album.closed) return;
+    album.closed = true;
+    clearTimeout(album.timer);
+    if (this.albums.get(album.senderId) === album) this.albums.delete(album.senderId);
+    album.resolve();
+  }
+
+  _armAlbum(album) {
+    clearTimeout(album.timer);
+    const wa = config.whatsappWeb || {};
+    const hasPhoto = album.messages.some(m => m.hasMedia);
+    // Still waiting for the photos a "do you have this?" pointed at: the lead window.
+    const wait = hasPhoto ? (wa.albumQuietMs ?? 6000) : (wa.albumLeadMs ?? 8000);
+    const left = (wa.albumMaxWaitMs ?? 25000) - (Date.now() - album.openedAt);
+    album.timer = setTimeout(() => this._closeAlbum(album), Math.max(0, Math.min(wait, left)));
+  }
+
   enqueueMessage(msg) {
     const senderId = msg.from;
+    const open = this._albumOpenFor(senderId);
+    if (open) {
+      open.messages.push(msg);
+      this._armAlbum(open);
+      return;
+    }
+    const startsAlbum = (msg.hasMedia && (!msg.type || msg.type === 'image'))
+      || (!msg.hasMedia && this._refersToPhoto(msg.body));
+    let task = () => this.handleIncomingMessage(msg);
+    if (startsAlbum) {
+      const album = { senderId, messages: [msg], closed: false, openedAt: Date.now() };
+      album.ready = new Promise(resolve => { album.resolve = resolve; });
+      this.albums.set(senderId, album);
+      this._armAlbum(album);
+      // A lone text whose photos never came is just a message.
+      task = () => album.ready.then(() => (album.messages.length === 1 && !album.messages[0].hasMedia
+        ? this.handleIncomingMessage(album.messages[0])
+        : this.handleIncomingMessage(album.messages[0], album)));
+    }
     const previous = this.senderChains.get(senderId) || Promise.resolve();
     const chain = previous
-      .then(() => this.handleIncomingMessage(msg))
+      .then(task)
       .catch(err => console.error(`[Queue] Unhandled error processing message from ${senderId}:`, err.message))
       .finally(() => {
         if (this.senderChains.get(senderId) === chain) {
@@ -798,7 +857,7 @@ class WhatsAppWebBot {
     }
   }
 
-  async handleIncomingMessage(msg) {
+  async handleIncomingMessage(msg, album = null) {
     let typingInterval = null;
     // When the customer's message landed — humanizeDelay() measures the reply turnaround
     // from here, so deterministic zero-latency answers don't go out instantly.
@@ -812,8 +871,10 @@ class WhatsAppWebBot {
       // A message must have EITHER text or media. A photo of a damaged/wrong jersey
       // typically arrives with no caption (empty body) — previously that was dropped
       // silently, so the support flow never saw it. Accept media too.
-      const hasMedia = !!msg.hasMedia;
-      if (!msg.body && !hasMedia) return;
+      // An album (several photos + any text sent with them) is answered as one turn.
+      const parts = album ? album.messages : [msg];
+      const hasMedia = parts.some(m => m.hasMedia);
+      if (!parts.some(m => m.body) && !hasMedia) return;
 
       const senderId = msg.from; // e.g. "919940954744@c.us"
       const normalizedSender = senderId.replace(/[^0-9]/g, '');
@@ -863,26 +924,24 @@ class WhatsAppWebBot {
         }
       }
 
-      console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${msg.body}"${hasMedia ? ' [+media]' : ''}`);
+      let messageBody = parts.map(m => m.body || '').filter(t => t.trim()).join('\n');
+      console.log(`📬 [WhatsApp] Message from ${customerPhone} (LID: ${normalizedSender}): "${messageBody}"${hasMedia ? ` [+media x${parts.filter(m => m.hasMedia).length}]` : ''}`);
 
-      // Media handling: forward the customer's photo to the owner (so they can see a
-      // damaged/wrong jersey) and give the agent a text stand-in so it responds to the
-      // image instead of ignoring an empty body. Best-effort — never blocks the reply.
-      let messageBody = msg.body || '';
+      // Media: every photo is downloaded and handed to the agent, which looks at them all
+      // together (services/vision.js) and answers once. Best-effort — never blocks the reply.
+      const images = [];
       if (hasMedia) {
-        try {
-          const media = await msg.downloadMedia();
-          if (media && (media.mimetype || '').startsWith('image') && config.owner?.whatsappNumber && this.status === 'CONNECTED') {
-            const owner = config.owner.whatsappNumber.replace(/[^0-9]/g, '') + '@c.us';
-            const fwd = new MessageMedia(media.mimetype, media.data, media.filename || 'customer-photo');
-            await this.sendText(owner, fwd, {
-              caption: `📷 Photo from customer *${customerName}* (${customerPhone})${msg.body ? `\nCaption: "${msg.body}"` : ''}`
-            }).catch(e => console.error('[WhatsApp] Failed to forward media to owner:', e.message));
+        for (const part of parts.filter(m => m.hasMedia).slice(0, 10)) {
+          try {
+            const media = await part.downloadMedia();
+            if (media && (media.mimetype || '').startsWith('image') && media.data) {
+              images.push({ mimetype: media.mimetype, data: media.data, filename: media.filename || null });
+            }
+          } catch (mediaErr) {
+            console.error('[WhatsApp] downloadMedia failed:', mediaErr.message);
           }
-        } catch (mediaErr) {
-          console.error('[WhatsApp] downloadMedia failed:', mediaErr.message);
         }
-        if (!messageBody.trim()) {
+        if (!messageBody.trim() && images.length === 0) {
           messageBody = '[The customer just sent a photo/image of their item.]';
         }
       }
@@ -910,7 +969,9 @@ class WhatsAppWebBot {
       }
 
       // Answer using AI Service
-      const agentResponse = await aiService.answerQuery(senderId, messageBody, customerName, customerPhone, { hasMedia });
+      const agentResponse = await aiService.answerQuery(senderId, messageBody, customerName, customerPhone, {
+        hasMedia, images, imageCount: images.length,
+      });
 
       console.log(`🧠 [AI Agent] Intent: ${agentResponse.intent.toUpperCase()} | Matches: ${agentResponse.suggestedProductIds.length} products | Escalate: ${agentResponse.requiresEscalation}`);
 
@@ -919,14 +980,35 @@ class WhatsAppWebBot {
       await this.humanizeDelay(receivedAt, agentResponse.replyText);
       await this.sendText(senderId, agentResponse.replyText);
       console.log(`📤 [WhatsApp] Sent reply to ${normalizedSender} (${Date.now() - receivedAt}ms turnaround)`);
+      // The owner sees the photos of a problem (damaged / wrong jersey) — AFTER the customer's
+      // reply, so it never waits behind them. Reference photos for "do you have this?" are not
+      // forwarded (agentResponse.forwardPhotos === false): the send queue is shared by every
+      // customer, and five forwards would hold up everyone else's replies.
+      if (images.length > 0 && agentResponse.forwardPhotos !== false) {
+        this.forwardPhotosToOwner(images.slice(0, 5), customerName, customerPhone, messageBody, images.length);
+      }
       // Advance the catch-up watermark so the next sweep — after a restart or reconnect —
       // knows this message is dealt with and starts from here.
-      catchupService.noteHandled(msg.timestamp);
+      catchupService.noteHandled(Math.max(...parts.map(m => m.timestamp || 0)));
     } catch (err) {
       console.error(`❌ [WhatsApp Bot Error]:`, err.message);
     } finally {
       if (typingInterval) clearInterval(typingInterval);
     }
+  }
+
+  /** Fire-and-forget: the photos go through the paced send queue like every other message. */
+  forwardPhotosToOwner(images, customerName, customerPhone, caption, total) {
+    if (!config.owner?.whatsappNumber || this.status !== 'CONNECTED') return;
+    const owner = config.owner.whatsappNumber.replace(/[^0-9]/g, '') + '@c.us';
+    images.forEach((img, i) => {
+      const fwd = new MessageMedia(img.mimetype, img.data, img.filename || `customer-photo-${i + 1}`);
+      const head = i === 0
+        ? `📷 ${total} photo${total === 1 ? '' : 's'} from customer *${customerName}* (${customerPhone})${caption ? `\nThey said: "${caption.slice(0, 300)}"` : ''}${total > images.length ? `\n(first ${images.length} shown)` : ''}`
+        : undefined;
+      this.sendText(owner, fwd, head ? { caption: head } : {})
+        .catch(e => console.error('[WhatsApp] Failed to forward media to owner:', e.message));
+    });
   }
 
   getStatus() {

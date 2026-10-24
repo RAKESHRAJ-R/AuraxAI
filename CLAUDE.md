@@ -77,6 +77,8 @@ npm run test-tanglish  # Tanglish quality, machine-output leakage and guided bro
 npm run test-understanding # Understand-first routing (58, stubbed): the 2026-09-29 chat + 4 screenshots —
                        # delivery after an order, "okay"/"no need" closing, cancel/start over in code,
                        # "I want Man City jersey" never an address, country lists, list-all, fallback
+npm run test-photos-sales # Photo albums → one reply/one ticket, "another jersey?" after an order,
+                       # discounts only from the website, confirm yes/no reading (81, stubbed — no vision call)
 npm run replay-understanding -- --yes  # ⚠️ PAID (~₹1): the REAL model reads ~34 real messages;
                        # prints each verdict vs the intended meaning. Refuses without --yes
 npm run admin-user -- --email x@y.z --password "..."   # Create/recover an Owner login
@@ -134,6 +136,10 @@ PAYMENT_AUTO_CANCEL=true   # Bot cancels its own unpaid order after WC_HOLD_STOC
 GOOGLE_REVIEW_URL=         # Google review link sent to happy customers (default: Theaurax's, share.google/NC9UWrGVukD97y7U6)
 REVIEW_AUTO_APPROVE=false  # true = website reviews go live without the owner approving them
 REVIEW_EMAIL=              # Optional: email on bot-posted reviews (default whatsapp-reviews@<store>)
+VISION_ENABLED=true        # Look at customer photos (Fireworks, needs FIREWORKS_API_KEY). false = "got your photo, what is it?"
+VISION_MODEL=              # Optional: defaults to accounts/fireworks/models/deepseek-v4p1-flash (supportsImageInput)
+WA_ALBUM_QUIET_MS=6000     # Photos from one sender are collected until they've been quiet this long
+WA_ALBUM_LEAD_MS=8000      # "do you have this?" typed before the photos waits this long for them
 PORT=3000
 ```
 
@@ -342,6 +348,44 @@ know as soon as any special offers are added" (and stamps `session.offerInterest
 Knowledge Hub answer (a coupon code / festival offer the owner typed) wins. The agent prompt gets
 the same list via `offersFact()` in STORE FACTS. Wholesale discounts stay topic `bulk`. Offers
 refresh with `npm run sync` — the bot only knows a sale after the catalogue is synced.
+
+**Photos — one album, one reply (2026-10-24, owner's rule).** WhatsApp delivers each photo of
+an album as its own message, and the bot was blind (the agent saw "[customer sent a photo]"), so
+five photos of one torn jersey got five replies, five AI calls and five owner forwards.
+- `whatsapp-web-bot.js enqueueMessage()` opens a per-sender **album** on a photo (or on a short
+  text pointing at one — "do you have this?", "idhu iruka"); every message from that sender joins
+  it until they are quiet for `WA_ALBUM_QUIET_MS` (max `WA_ALBUM_MAX_WAIT_MS`), then
+  `handleIncomingMessage(first, album)` runs ONE turn with every photo + all the text.
+- `services/vision.js` looks at all photos in ONE Fireworks call (shrunk to 1024px with `sharp`)
+  and returns JSON only: purpose (`product_enquiry`/`support_issue`/`payment_proof`/`other`) and
+  **groups** — photos of the same jersey in one group. It never writes customer text.
+- `ai.js _handleImages()` writes the reply in code. Enquiry: per jersey ✅ have it / 🔎 same team /
+  ❌ don't have, real products numbered (so "1 M" orders), best sellers when nothing matches.
+  Support: one message naming each jersey + its problem; ONE ticket when the order is known
+  (caption, screenshot, or `lastOrder` within 45 days — and it says "tell me if it's a different
+  order"); more photos within 30 min reuse that ticket; else it asks for the order ID and the
+  agent's `create_support_ticket` carries what the photos showed. Payment screenshot / unclear
+  with words → the agent with a note; unclear with no words → one question.
+- Owner forwards happen AFTER the customer's reply and only for problems / unreadable photos —
+  reference photos are not forwarded (the send queue is global; five forwards delay everyone).
+- ⚠️ The live vision call has NOT been verified against Fireworks yet (paid). Until then a
+  failure is safe: `analyse()` returns null and the bot asks what the photos are.
+
+**"Another jersey?" after an order (2026-10-24, owner's request).** Both confirm paths append
+`_afterOrderAsk()` and set `session.awaitingMoreAfterOrder`; the next message goes to
+`_answerMoreAfterOrder()`: yes → `_bestSellersPitch()` (not the jersey just bought), no → a warm
+close pointing at the payment link, anything else → normal pipeline. *"Yes, and another jersey
+too"* confirms THIS order and asks which team next; *"add another jersey"* with no yes keeps the
+cart. `_saysYes()` now refuses a yes word inside a no ("no don't place it", "wait, correct the
+size"), and only "new/vera ORDER" is a fresh start — "another jersey" used to empty the cart.
+
+**Discounts only from the website (2026-10-24).** `inventedDiscounts()` in the agent loop catches a
+% off no live offer has, a coupon code in no prompt/tool/customer text, or a promised price cut;
+one regeneration, then those sentences are cut (or `_discountReply()` if nothing is left). The
+model's own turns and our retry notes are excluded from the context it checks against.
+`_mentionsDiscount()` reads "offer" as a noun only — "do you offer COD?" used to get the offers list.
+The prompt also has a SELL LIKE THE SHOP'S BEST SALESPERSON block (real alternatives on a miss,
+recommend with real facts, free shipping, no fake scarcity — there are no stock counts).
 
 **First reply of a conversation opens with a greeting** (new session or 6h+ idle), added at the
 egress in `_answerQueryLocked` — the greeting FAQ only fires for a message that is nothing but

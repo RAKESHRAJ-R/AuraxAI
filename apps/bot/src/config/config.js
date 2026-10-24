@@ -173,6 +173,17 @@ const config = {
     // leave unset until a one-off check confirms the provider accepts it.
     reasoningEffort: (process.env.UNDERSTAND_REASONING_EFFORT || '').trim() || null,
   },
+  // Look at the photos a customer sends, all of them in ONE call (services/vision.js). Off, or
+  // no Fireworks key = the bot says it got the photos and asks what they are, as before.
+  vision: {
+    enabled: String(process.env.VISION_ENABLED || 'true').toLowerCase() !== 'false',
+    // Must accept image input on Fireworks serverless (supportsImageInput). deepseek-v4p1-flash
+    // does (model listing, 2026-10-24) and is already the bot's primary model.
+    model: process.env.VISION_MODEL || 'accounts/fireworks/models/deepseek-v4p1-flash',
+    // A reasoning model: it thinks before the JSON, so it needs headroom.
+    maxTokens: parseInt(process.env.VISION_MAX_TOKENS || '3000', 10),
+    maxImages: parseInt(process.env.VISION_MAX_IMAGES || '6', 10),
+  },
   // What the store actually accepts. The bot's payment answers are built from THIS, never
   // from the model's imagination — so a method only reaches a customer if it is listed here.
   // Defaults mirror the live store: Razorpay is the only gateway, COD is disabled.
@@ -218,6 +229,14 @@ const config = {
     // Session folder name under .wwebjs_auth/. Change it for local testing so a dev
     // machine pairs a throwaway number instead of restoring the live shop session.
     clientId: process.env.WHATSAPP_CLIENT_ID || 'theaurax-bot',
+    // --- Photo albums (2026-10-24) ---
+    // WhatsApp delivers each photo of an album as its own message. They are collected until
+    // the customer has been quiet this long, then answered with ONE reply.
+    albumQuietMs: parseInt(process.env.WA_ALBUM_QUIET_MS || '6000', 10),
+    // Never hold an album longer than this, however many photos keep arriving.
+    albumMaxWaitMs: parseInt(process.env.WA_ALBUM_MAX_WAIT_MS || '25000', 10),
+    // "Do you have this?" typed BEFORE the photos: held this long for them to arrive.
+    albumLeadMs: parseInt(process.env.WA_ALBUM_LEAD_MS || '8000', 10),
     // --- Outbound send pacing (WhatsApp ban-risk protection) ---
     // whatsapp-web.js is an UNOFFICIAL client: WhatsApp bans numbers that behave like
     // bots, and the loudest signal is a burst of instant, evenly-spaced replies to many
